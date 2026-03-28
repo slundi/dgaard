@@ -1,0 +1,30 @@
+steps:
+  checks:
+    image: rust
+    environment:
+      CARGO_TERM_COLOR: always
+    when:
+      event: [push, pull_request]
+    commands:
+      - cargo fmt --check
+      - cargo clippy -- -D warnings
+      - cargo test -- --nocapture
+      - cargo build --locked
+
+  build:
+    image: rust
+    environment:
+      CARGO_TERM_COLOR: always
+    when:
+      event: [tag, release]
+    commands:
+      - cargo build --release
+
+  # deploy:
+  #   image: rust
+  #   environment:
+  #     CARGO_TERM_COLOR: always
+  #   when:
+  #     event: [tag, release]
+  #   commands:
+  #     - TODO

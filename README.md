@@ -1,0 +1,15 @@
+# MY_PROJECT
+
+SHORT DESCRIPTION
+
+DON'T FORGET TO CHANGE THE LICENCE IN `Cargo.toml` AND KEEP THE RIGHT `LICENCE.md` or `LICENCE`.
+
+## Features
+
+* FEATURE 1
+
+## Usage
+
+## Roadmap
+
+* [ ] Item 1
