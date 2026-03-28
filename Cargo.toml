@@ -1,14 +1,14 @@
 [package]
-name = "MY_PROJECT"
+name = "Dgaard"
 authors = ["Sébastien LUNDI"]
-description = "SHORT DESCRIPTION"
+description = "Privacy and security focused DNS proxy with advanced blocking."
 readme = "README.md"
 license = "Apache-2.0"
-repository = "https://codeberg.org/slundi/MY_PROJECT"
-keywords = []
-categories = []
+repository = "https://codeberg.org/slundi/dgaard"
+keywords = ["dns", "openwrt", "dga", "security", "proxy"]
+categories = ["network-programming", "embedded-software", "cryptography"]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -21,7 +21,54 @@ edition = "2021"
 # path = "src/main.rs"
 
 [dependencies]
+# Async runtime - 'rt' and 'macros' only to keep binary size small for OpenWrt
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "sync"] }
 
+# DNS Protocol handling
+trust-dns-proto = "0.23.2"
+
+# Fast hashing for the u64 fingerprints (ID-ing domains/rules)
+twox-hash = "2.1.2"
+
+# Configuration parsing
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.9.8"
+
+# High-performance matching
+# RegexSet is used for the "Complex" rule tier
+regex = { version = "1.12.3", default-features = false, features = ["std", "perf", "unicode-perl"] }
+
+# Finite State Transducers for memory-efficient suffix/wildcard matching
+fst = "0.4.7"
+
+# Bloom Filter for NRD and large blocklists (Low RAM footprint)
+bloom = "0.3.2"
+
+# Logging (Lightweight)
+log = "0.4.29"
+env_logger = "0.11"
+
+# For Domain/TLD parsing logic
+addr = "0.15.6"
+
+# Binary serialization for the Unix Socket stats
+# bincode is not the way anymore
+postcard = { version = "1.1.3", features = ["use-std"] }
+rkyv ="0.8.15"
+
+# Used for the 'Hot Cache' / Favorites
+lru = "0.16"
+
+dashmap = "6.1.0"
+arc-swap = "1.9.0"
+
+[profile.release]
+# Optimization settings for OpenWrt's limited storage and CPU
+opt-level = "z"   # Optimize for size
+lto = true        # Enable Link Time Optimization
+codegen-units = 1 # Maximize optimization at the cost of compile time
+panic = "abort"   # Remove stack unwinding to save binary space
+strip = true      # Automatically strip symbols from the binary
 
 [workspace.metadata.cargo-machete]
 ignored = []

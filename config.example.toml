@@ -1,0 +1,115 @@
+# -----------------------------------------------------------------------------
+# Dgaard Configuration File
+# -----------------------------------------------------------------------------
+
+[server]
+# The address and port your proxy listens on (usually port 53 for DNS)
+listen_addr = "192.168.1.1:53"
+# Networks allowed to use this proxy (Access Control List)
+allowed_networks = ["127.0.0.1/32", "192.168.1.0/24"]
+# Port for the Unix Socket stats stream
+stats_socket_path = "/tmp/dgaard_stats.sock"
+
+# Reject any domain containing non-ANSI characters (Punycode)
+block_idn = true
+
+# The default order optimized for OpenWrt
+pipeline = [
+    "Whitelist",   # 1. Instant pass
+    "HotCache",    # 2. Local memory hits
+    "StaticBlock", # 3. Exact match (Fast)
+    "SuffixMatch", # 4. Wildcards (FST)
+    "Heuristics",  # 5. DGA/Entropy (Math)
+    "Upstream",    # 6. Fallback to Internet
+]
+
+[upstream]
+# Where the proxy forwards "clean" queries
+# Using DNS-over-HTTPS (DoH) or standard UDP
+servers = ["1.1.1.1:53", "9.9.9.9:53"]
+timeout_ms = 2000
+
+# -----------------------------------------------------------------------------
+# TLD Filtering
+# -----------------------------------------------------------------------------
+[tld]
+# If not empty, only these TLDs are resolved.
+# allow_only = [".com", ".net", ".org", ".io"]
+# Block high-risk TLDs common in malware/DGA
+exclude = [".top", ".xyz", ".bid", ".country", ".stream", ".gdn"]
+
+# -----------------------------------------------------------------------------
+# DGA & Lexical Analysis (The "Brain")
+# -----------------------------------------------------------------------------
+[dga]
+enabled = true
+# Shannon Entropy threshold (usually 3.5 to 4.5 is the sweet spot)
+entropy_threshold = 4.0
+# Minimum domain length before triggering entropy check
+min_length = 8
+
+[lexical]
+enabled = true
+# Detect "impossible" consonant clusters (e.g., "bcdfgh")
+consonant_ratio_threshold = 0.6
+# Enable N-Gram analysis (requires a small pre-computed model file)
+use_ngram_model = true
+model_path = "/etc/dgaard/models/english_ngrams.bin"
+
+# -----------------------------------------------------------------------------
+# Behavior Monitoring
+# -----------------------------------------------------------------------------
+[nxdomain_hunting]
+enabled = true
+# Number of NXDOMAINs before a client is flagged
+threshold = 15
+# Time window in seconds
+window_seconds = 60
+# Action: "log" or "block_client" (via firewall integration)
+action = "log"
+
+[tunneling_detection]
+enabled = true
+# Max unique subdomains per SLD (e.g., v1.x.example.com)
+max_subdomains_per_minute = 50
+# Max length of a single label (detects Base64 payloads)
+max_label_length = 60
+
+# -----------------------------------------------------------------------------
+# File-Based Sources
+# -----------------------------------------------------------------------------
+[sources]
+# Newly Registered Domains (NRD)
+# This file should be updated daily via cron
+nrd_list_path = "/tmp/nrd_daily.txt"
+
+# Static blocklists (Support for multiple files)
+blacklists = ["/etc/dgaard/lists/adaway.txt", "/etc/dgaard/lists/malware_domains.txt"]
+
+# Whitelists (Overwrites all other filters)
+whitelists = ["/etc/dgaard/lists/personal_whitelist.txt", "/etc/dgaard/lists/cdn_providers.txt"]
+
+update_interval_hours = 24
+# If the download fails, how long to wait before retrying
+retry_delay_mins = 30
+
+[abp]
+# Since many ABP rules are COSMETIC (CSS), we only extract Network/Domain rules.
+extract_domain_only = true
+# Update interval in hours
+update_interval = 24
+
+# -----------------------------------------------------------------------------
+# Performance & Caching (The "Missed" items)
+# -----------------------------------------------------------------------------
+[cache]
+# Cache successful results to reduce upstream latency
+enabled = true
+max_entries = 10000
+ttl_override = 0    # 0 means use the TTL from the DNS record
+
+[memory]
+# Optimization for OpenWrt (use Bloom Filters for large lists)
+use_bloom_filter = true
+# Estimated entries for Bloom Filter (influences RAM usage)
+expected_total_domains = 1000000
