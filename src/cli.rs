@@ -1,4 +1,6 @@
-#[derive(Serialize, Deserialize, Debug)]
+use serde::Serialize;
+
+#[derive(Serialize, Debug)]
 pub enum ControlMessage {
     // Outgoing (Proxy -> CLI)
     Stat(StatEvent),

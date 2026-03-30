@@ -1,4 +1,5 @@
-use Dgaard::config::Config;
+use dgaard::{Action, config::Config};
+use serde::Deserialize;
 
 use crate::dga::{calculate_entropy, calculate_entropy_fast};
 use arc_swap::ArcSwap;
@@ -22,23 +23,6 @@ pub enum FilterStage {
     SuffixMatch,
     Heuristics,
     Upstream,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum Action {
-    /// The domain is safe. Forward the original query to the upstream DNS.
-    Allow,
-
-    /// The domain is malicious (Blacklist/DGA/NRD).
-    /// We should return an NXDOMAIN or a 0.0.0.0 response.
-    Block,
-
-    /// The domain is in our "Hot Cache" or "Favorites".
-    /// We can return this IP immediately without asking an upstream server.
-    Respond(Ipv4Addr),
-
-    /// Optional: The query is redirected to a local landing page (e.g., for a "Blocked" UI).
-    Redirect(Ipv4Addr),
 }
 
 pub struct Resolver {

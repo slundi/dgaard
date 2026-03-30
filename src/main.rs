@@ -8,11 +8,9 @@ mod resolver;
 // mod updater;
 
 use crate::config::Config;
+use crate::proxy::ProxyState;
 use crate::resolver::Resolver;
-use crate::stats::ProxyState;
 use arc_swap::ArcSwap;
-use config::Config;
-use std::env;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 
@@ -51,57 +49,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 6. Main Event Loop
     loop {
         tokio::select! {
-            // Handle Incoming DNS Queries
-            Ok((len, addr)) = socket.recv_from(&mut buf) => {
-                let query_data = buf[..len].to_vec();
-                let current_resolver = shared_resolver.load();
-                let socket_clone = socket.try_clone()?; // Or use Arc<UdpSocket>
-                let state_clone = Arc::clone(&state);
+                    // Handle Incoming DNS Queries
+                    Ok((len, addr)) = socket.recv_from(&mut buf) => {
+                        let query_data = buf[..len].to_vec();
+                        let current_resolver = shared_resolver.load();
+                        let socket_clone = socket.try_clone()?; // Or use Arc<UdpSocket>
+                        let state_clone = Arc::clone(&state);
 
-                // Spawn a task per query to keep the loop responsive
-                tokio::spawn(async move {
-                    if let Ok(response) = current_resolver.handle_packet(&query_data, addr, state_clone).await {
-                        let _ = socket.send_to(&response, addr).await;
+                        // Spawn a task per query to keep the loop responsive
+                        tokio::spawn(async move {
+                            if let Ok(response) = current_resolver.handle_packet(&query_data, addr, state_clone).await {
+                                let _ = socket.send_to(&response, addr).await;
+                            }
+        // // Inside your main loop
+        // let domain_hash = xxh3_64(domain.as_bytes());
+
+        // if self.whitelist_bloom.contains(&domain_hash) {
+        //     // Final check in the HashSet<u64> to avoid Bloom flase positive
+        //     if self.whitelist_set.contains(&domain_hash) {
+        //         return Action::Allow;
+        //     }
+        // }
+        // if let Some(packet) = DnsPacket::from_bytes(&buf[..len]) {
+        //     let domain = &packet.domain;
+        //     let client_ip = addr.ip();
+
+        //     // 1. Run the filter
+        //     let action = current_resolver.check(domain, client_ip).await;
+
+        //     match action {
+        //         Action::Block => {
+        //             let response = DnsPacket::build_nxdomain_response(&packet.message);
+        //             let _ = socket.send_to(&response, addr).await;
+        //             // Log to your Unix Socket via the ProxyState
+        //             state.log_block(domain, addr).await;
+        //         }
+        //         Action::Allow => {
+        //             // 2. Forward to Upstream (1.1.1.1, etc)
+        //             let response = forwarder.proxy_query(&buf[..len]).await;
+        //             let _ = socket.send_to(&response, addr).await;
+        //         }
+        //     }
+        // }
+                        });
                     }
-// // Inside your main loop
-// let domain_hash = xxh3_64(domain.as_bytes());
 
-// if self.whitelist_bloom.contains(&domain_hash) {
-//     // Final check in the HashSet<u64> to avoid Bloom flase positive
-//     if self.whitelist_set.contains(&domain_hash) {
-//         return Action::Allow;
-//     }
-// }
-// if let Some(packet) = DnsPacket::from_bytes(&buf[..len]) {
-//     let domain = &packet.domain;
-//     let client_ip = addr.ip();
-
-//     // 1. Run the filter
-//     let action = current_resolver.check(domain, client_ip).await;
-
-//     match action {
-//         Action::Block => {
-//             let response = DnsPacket::build_nxdomain_response(&packet.message);
-//             let _ = socket.send_to(&response, addr).await;
-//             // Log to your Unix Socket via the ProxyState
-//             state.log_block(domain, addr).await;
-//         }
-//         Action::Allow => {
-//             // 2. Forward to Upstream (1.1.1.1, etc)
-//             let response = forwarder.proxy_query(&buf[..len]).await;
-//             let _ = socket.send_to(&response, addr).await;
-//         }
-//     }
-// }
-                });
-            }
-
-            // Optional: Handle Shutdown signals (SIGINT/SIGTERM)
-            _ = tokio::signal::ctrl_c() => {
-                println!("\nShutting down Dgaard...");
-                break;
-            }
-        }
+                    // Optional: Handle Shutdown signals (SIGINT/SIGTERM)
+                    _ = tokio::signal::ctrl_c() => {
+                        println!("\nShutting down Dgaard...");
+                        break;
+                    }
+                }
     }
 
     Ok(())

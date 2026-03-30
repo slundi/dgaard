@@ -1,5 +1,5 @@
 [package]
-name = "Dgaard"
+name = "dgaard"
 authors = ["Sébastien LUNDI"]
 description = "Privacy and security focused DNS proxy with advanced blocking."
 readme = "README.md"

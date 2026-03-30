@@ -1,6 +1,6 @@
-use std::sync::Arc;
-use Dgaard::ProxyMessage;
+use dgaard::ProxyMessage;
 use dashmap::DashSet;
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 
