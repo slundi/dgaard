@@ -18,6 +18,57 @@ pub struct Config {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct StructureConfig {
+    pub max_subdomain_depth: usize,
+    pub max_domain_length: usize,
+    pub force_lowercase_ascii: bool,
+    pub max_txt_record_length: usize,
+}
+
+pub struct Gatekeeper {
+    config: StructureConfig,
+}
+
+impl Gatekeeper {
+    pub fn new(config: StructureConfig) -> Self {
+        Self { config }
+    }
+
+    /// Analyze domain structure before any heavier check
+    pub fn check_outbound(&self, domain: &str) -> bool {
+        // 1. Check total length (Zero allocation, O(1))
+        let total_len = domain.len();
+        if total_len > self.config.max_domain_length || total_len == 0 {
+            return false;
+        }
+
+        // 2. Check sub domain depth: count points `.` with .count() on an iterator is very fast
+        // .bytes() is faster than .chars() because it check UTF-8 validity
+        let dot_count = domain.bytes().filter(|&b| b == b'.').count();
+        if dot_count > self.config.max_subdomain_depth {
+            return false;
+        }
+
+        // 3. Check ASCII / Lowercase ("Fast-Drop")
+        if self.config.force_lowercase_ascii
+            && !domain
+                .bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' | b'_'))
+        {
+            return false;
+        }
+
+        true
+    }
+
+    /// Analyze TXT records in the response
+    pub fn check_inbound_txt(&self, txt_data: &[u8]) -> bool {
+        // txt_data.len() is an usize, so direct comparison
+        txt_data.len() <= self.config.max_txt_record_length
+    }
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ServerConfig {
     pub listen_addr: String,
     pub allowed_networks: Vec<String>,
