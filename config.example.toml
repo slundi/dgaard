@@ -23,6 +23,59 @@ pipeline = [
     "Upstream",    # 6. Fallback to Internet
 ]
 
+[security.structure]
+# Maximum number of dots (.) in a domain. 
+# More than 5 often indicates tunneling (e.g., data.part1.bin.zone.com)
+max_subdomain_depth = 5
+
+# Maximum allowed length for a fully qualified domain name (RFC max: 253)
+max_domain_length = 128
+
+# Reject domains that do not contain only a-z, 0-9, ‘.’, ‘-’, and ‘_’
+force_lowercase_ascii = true
+
+# --- Response Filtering (Inbound) ---
+# Maximum length of a TXT field. 
+# SPF/DKIM records are often < 200 bytes. 
+# Tunneling often uses the maximum (255 per segment).
+max_txt_record_length = 128
+
+# Block if the response contains too many records (suspicious for exfiltration)
+max_answers_per_query = 10
+
+[security.intelligence]
+# DGA & Lexical Analysis (The "Brain")
+enabled = true
+# Shannon entropy threshold (typically between 3.5 and 4.5)
+# The higher the number, the more tolerant the system is of unusual names.
+entropy_threshold = 4.0
+min_word_length = 8
+# Consonant ratio (e.g., 0.6 blocks "bcdfgh")
+consonant_ratio_threshold = 0.6
+# N-Gram analysis for "unnatural" language patterns
+use_ngram_model = false
+ngram_models = [
+    "/etc/dgaard/models/english.bin",
+    "/etc/dgaard/models/french.bin"
+]
+# if all models are bellow this threshold, it is blocking
+ngram_probability_threshold = 0.05
+
+[security.idn]
+# IDN filtering mode: "Off", "Strict" (block everything), "Smart" (european accent only)
+# force_lowercase_ascii must be false to use it
+mode = "Smart"
+allowed_scripts = ["Latin", "WesternEuropean"]
+
+[security.behavior]
+# NXDOMAIN Hunting (Detects infected clients scanning for C2)
+nxdomain_threshold = 15
+nxdomain_window = 60
+
+# Tunneling/Exfiltration Detection
+max_subdomains_per_minute = 50
+max_label_length = 60
+
 [upstream]
 # Where the proxy forwards "clean" queries
 # Using DNS-over-HTTPS (DoH) or standard UDP
@@ -37,24 +90,6 @@ timeout_ms = 2000
 # allow_only = [".com", ".net", ".org", ".io"]
 # Block high-risk TLDs common in malware/DGA
 exclude = [".top", ".xyz", ".bid", ".country", ".stream", ".gdn"]
-
-# -----------------------------------------------------------------------------
-# DGA & Lexical Analysis (The "Brain")
-# -----------------------------------------------------------------------------
-[dga]
-enabled = true
-# Shannon Entropy threshold (usually 3.5 to 4.5 is the sweet spot)
-entropy_threshold = 4.0
-# Minimum domain length before triggering entropy check
-min_length = 8
-
-[lexical]
-enabled = true
-# Detect "impossible" consonant clusters (e.g., "bcdfgh")
-consonant_ratio_threshold = 0.6
-# Enable N-Gram analysis (requires a small pre-computed model file)
-use_ngram_model = true
-model_path = "/etc/dgaard/models/english_ngrams.bin"
 
 # -----------------------------------------------------------------------------
 # Behavior Monitoring
@@ -109,6 +144,12 @@ max_entries = 10000
 ttl_override = 0    # 0 means use the TTL from the DNS record
 
 [memory]
+# LRU Cache for frequent queries
+cache_enabled = true
+# LRU cache size in input count
+cache_size = 5000
+
+# Bloom filter
 # Optimization for OpenWrt (use Bloom Filters for large lists)
 use_bloom_filter = true
 # Estimated entries for Bloom Filter (influences RAM usage)
