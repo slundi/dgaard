@@ -64,6 +64,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = socket.send_to(&response, addr).await;
                     }
 // // Inside your main loop
+// let domain_hash = xxh3_64(domain.as_bytes());
+
+// if self.whitelist_bloom.contains(&domain_hash) {
+//     // Final check in the HashSet<u64> to avoid Bloom flase positive
+//     if self.whitelist_set.contains(&domain_hash) {
+//         return Action::Allow;
+//     }
+// }
 // if let Some(packet) = DnsPacket::from_bytes(&buf[..len]) {
 //     let domain = &packet.domain;
 //     let client_ip = addr.ip();
