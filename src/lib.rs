@@ -5,9 +5,8 @@ pub mod domain;
 use std::net::Ipv4Addr;
 
 use postcard::{from_bytes, to_stdvec};
-use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug)]
 pub enum ProxyMessage {
     /// Sent only once per domain per session to "seed" the collector's database
     DomainMapping { hash: u64, domain: String },
@@ -31,7 +30,7 @@ pub enum ProxyMessage {
 //     }
 // }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum Action {
     /// The domain is safe and was found in the local cache or whitelist.
     /// Returns the cached IP address.
@@ -62,7 +61,7 @@ pub enum Action {
     Redirect(Ipv4Addr),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum BlockReason {
     /// Hit a static blacklist (e.g., OISD, StevenBlack).
     StaticBlacklist(String), // String is the name of the source file
