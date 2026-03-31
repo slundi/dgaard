@@ -11,3 +11,5 @@ worker_threads = 4
 # Optimization: Pin each worker to a specific CPU core (Core Affinity)
 cpu_pinning = true
 ```
+* IPv6 support
+* when loading ABP rules, generate if specified the ABP rule file with only CSS/JS rules
