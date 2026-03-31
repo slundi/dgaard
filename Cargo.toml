@@ -44,6 +44,9 @@ fst = "0.4.7"
 # Bloom Filter for NRD and large blocklists (Low RAM footprint)
 bloom = "0.3.2"
 
+# CLI argument parsing
+gumdrop = "0.8"
+
 # Logging (Lightweight)
 log = "0.4.29"
 env_logger = "0.11"
