@@ -1,164 +1,137 @@
-use serde::Deserialize;
-use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-#[derive(Debug, Deserialize)]
-pub struct Config {
-    pub server: ServerConfig,
-    pub upstream: UpstreamConfig,
-    pub tld: TldConfig,
-    pub dga: DgaConfig,
-    pub lexical: LexicalConfig,
-    pub nxdomain_hunting: NxHuntingConfig,
-    pub tunneling_detection: TunnelingConfig,
-    pub sources: SourcesConfig,
-    pub cache: CacheConfig,
-    pub memory: MemoryConfig,
+/// System-wide configuration path (e.g., installed via package manager).
+const SYSTEM_PATH: &str = "/etc/dgaard/config.toml";
+
+/// Local development / working-directory configuration path.
+const LOCAL_PATH: &str = "dgaard.toml";
+
+/// Resolve the configuration file path using the following priority:
+///
+/// 1. Explicit `--config <FILE>` CLI override — returned as-is, no existence
+///    check (the caller is responsible for the path being valid).
+/// 2. System path: `/etc/dgaard/config.toml`.
+/// 3. Local path: `./dgaard.toml` (relative to CWD).
+///
+/// Returns `None` if no file is found at any location.
+pub fn discover_path(override_path: Option<&str>) -> Option<PathBuf> {
+    discover_from_candidates(override_path, &[SYSTEM_PATH, LOCAL_PATH])
 }
 
-#[derive(Debug, Deserialize)]
-pub struct StructureConfig {
-    pub max_subdomain_depth: usize,
-    pub max_domain_length: usize,
-    pub force_lowercase_ascii: bool,
-    pub max_txt_record_length: usize,
-}
-
-pub struct Gatekeeper {
-    config: StructureConfig,
-}
-
-impl Gatekeeper {
-    pub fn new(config: StructureConfig) -> Self {
-        Self { config }
+/// Inner implementation that accepts an explicit candidate list so tests can
+/// inject temporary paths without touching the real filesystem locations.
+fn discover_from_candidates(override_path: Option<&str>, candidates: &[&str]) -> Option<PathBuf> {
+    if let Some(path) = override_path {
+        return Some(PathBuf::from(path));
     }
 
-    /// Analyze domain structure before any heavier check
-    pub fn check_outbound(&self, domain: &str) -> bool {
-        // 1. Check total length (Zero allocation, O(1))
-        let total_len = domain.len();
-        if total_len > self.config.max_domain_length || total_len == 0 {
-            return false;
+    for candidate in candidates {
+        let path = Path::new(candidate);
+        if path.exists() {
+            return Some(path.to_path_buf());
         }
-
-        // 2. Check sub domain depth: count points `.` with .count() on an iterator is very fast
-        // .bytes() is faster than .chars() because it check UTF-8 validity
-        let dot_count = domain.bytes().filter(|&b| b == b'.').count();
-        if dot_count > self.config.max_subdomain_depth {
-            return false;
-        }
-
-        // 3. Check ASCII / Lowercase ("Fast-Drop")
-        if self.config.force_lowercase_ascii
-            && !domain
-                .bytes()
-                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' | b'_'))
-        {
-            return false;
-        }
-
-        true
     }
 
-    /// Analyze TXT records in the response
-    pub fn check_inbound_txt(&self, txt_data: &[u8]) -> bool {
-        // txt_data.len() is an usize, so direct comparison
-        txt_data.len() <= self.config.max_txt_record_length
-    }
+    None
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ServerConfig {
-    pub listen_addr: String,
-    pub allowed_networks: Vec<String>,
-    pub stats_socket_path: PathBuf,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::env;
 
-#[derive(Debug, Deserialize)]
-pub struct UpstreamConfig {
-    pub servers: Vec<String>,
-    pub timeout_ms: u64,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TldConfig {
-    pub allow_only: Option<Vec<String>>,
-    pub exclude: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DgaConfig {
-    pub enabled: bool,
-    pub entropy_threshold: f32,
-    pub min_length: usize,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct LexicalConfig {
-    pub enabled: bool,
-    pub consonant_ratio_threshold: f32,
-    pub use_ngram_model: bool,
-    pub model_path: PathBuf,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct NxHuntingConfig {
-    pub enabled: bool,
-    pub threshold: u32,
-    pub window_seconds: u64,
-    pub action: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TunnelingConfig {
-    pub enabled: bool,
-    pub max_subdomains_per_minute: u32,
-    pub max_label_length: usize,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SourcesConfig {
-    pub nrd_list_path: PathBuf,
-    pub blacklists: Vec<PathBuf>,
-    pub whitelists: Vec<PathBuf>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CacheConfig {
-    pub enabled: bool,
-    pub max_entries: usize,
-    pub ttl_override: u32,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct MemoryConfig {
-    pub use_bloom_filter: bool,
-    pub expected_total_domains: usize,
-}
-
-impl Config {
-    /// Loads and parses the TOML configuration file
-    pub fn load(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let content = fs::read_to_string(path)?;
-        let config: Config = toml::from_str(&content)?;
-        config.validate()?;
-        Ok(config)
+    fn create_temp_dir() -> std::path::PathBuf {
+        let dir = env::temp_dir().join(format!("dgaard_test_{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        dir
     }
 
-    /// Basic validation for paths and logic
-    fn validate(&self) -> Result<(), String> {
-        if self.upstream.servers.is_empty() {
-            return Err("At least one upstream DNS server is required".to_string());
-        }
+    fn cleanup(dir: &Path) {
+        let _ = fs::remove_dir_all(dir);
+    }
 
-        // Ensure NRD path is defined if file exists check is needed
-        if !self.sources.nrd_list_path.exists() {
-            println!(
-                "Warning: NRD list path {:?} does not exist yet.",
-                self.sources.nrd_list_path
-            );
-        }
+    #[test]
+    fn explicit_override_is_returned_unconditionally() {
+        let result = discover_from_candidates(Some("/custom/dgaard.toml"), &[]);
+        assert_eq!(result, Some(PathBuf::from("/custom/dgaard.toml")));
+    }
 
-        Ok(())
+    #[test]
+    fn explicit_override_does_not_check_existence() {
+        // Even a path that does not exist must be returned when explicitly given.
+        let result = discover_from_candidates(Some("/nonexistent/path.toml"), &[]);
+        assert_eq!(result, Some(PathBuf::from("/nonexistent/path.toml")));
+    }
+
+    #[test]
+    fn no_candidates_returns_none() {
+        let result = discover_from_candidates(None, &[]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn absent_candidates_return_none() {
+        let result = discover_from_candidates(None, &["/no/such/file.toml", "/also/missing.toml"]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn first_existing_candidate_is_returned() {
+        let dir = create_temp_dir();
+        let first = dir.join("system.toml");
+        let second = dir.join("local.toml");
+
+        fs::write(&first, "").unwrap();
+        fs::write(&second, "").unwrap();
+
+        let first_str = first.to_str().unwrap();
+        let second_str = second.to_str().unwrap();
+
+        let result = discover_from_candidates(None, &[first_str, second_str]);
+        assert_eq!(result, Some(first.clone()));
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn second_candidate_used_when_first_absent() {
+        let dir = create_temp_dir();
+        let missing = dir.join("missing.toml");
+        let present = dir.join("local.toml");
+
+        fs::write(&present, "").unwrap();
+
+        let missing_str = missing.to_str().unwrap();
+        let present_str = present.to_str().unwrap();
+
+        let result = discover_from_candidates(None, &[missing_str, present_str]);
+        assert_eq!(result, Some(present.clone()));
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn override_wins_over_existing_candidate() {
+        let dir = create_temp_dir();
+        let candidate = dir.join("candidate.toml");
+        fs::write(&candidate, "").unwrap();
+
+        let result = discover_from_candidates(
+            Some("/explicit/override.toml"),
+            &[candidate.to_str().unwrap()],
+        );
+        assert_eq!(result, Some(PathBuf::from("/explicit/override.toml")));
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn public_api_smoke_test() {
+        // discover_path uses the real system/local paths; just ensure it doesn't panic
+        // and returns the correct type. We can't control whether a file exists.
+        let _result: Option<PathBuf> = discover_path(None);
+        let explicit = discover_path(Some("/tmp/smoke.toml"));
+        assert_eq!(explicit, Some(PathBuf::from("/tmp/smoke.toml")));
     }
 }
