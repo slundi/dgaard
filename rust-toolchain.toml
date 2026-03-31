@@ -2,6 +2,6 @@
 # 'stable' is good, but pinning a specific version (e.g., "1.85.0")
 # ensures total reproducibility across different machines.
 channel = "stable"
-components = ["rustfmt", "clippy", "rust-analysis", "llvm-tools-preview"]
+components = ["rustfmt", "clippy", "llvm-tools-preview"]
 targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
 profile = "default"
