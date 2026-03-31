@@ -23,8 +23,20 @@ pipeline = [
     "Upstream",    # 6. Fallback to Internet
 ]
 
+[server.runtime]
+# “auto” uses the number of logical CPU cores.
+# An integer (e.g., 2) forces a specific number of threads.
+worker_threads = "auto"
+
+# Stack size per thread (in bytes).
+# On OpenWrt, reducing this to 2MB (2 * 1024 * 1024) saves RAM.
+stack_size = 2097152
+
+# Capacity of the request queue per worker before rejecting requests.
+max_blocking_threads = 512
+
 [security.structure]
-# Maximum number of dots (.) in a domain. 
+# Maximum number of dots (.) in a domain.
 # More than 5 often indicates tunneling (e.g., data.part1.bin.zone.com)
 max_subdomain_depth = 5
 
@@ -35,8 +47,8 @@ max_domain_length = 128
 force_lowercase_ascii = true
 
 # --- Response Filtering (Inbound) ---
-# Maximum length of a TXT field. 
-# SPF/DKIM records are often < 200 bytes. 
+# Maximum length of a TXT field.
+# SPF/DKIM records are often < 200 bytes.
 # Tunneling often uses the maximum (255 per segment).
 max_txt_record_length = 128
 
