@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use crate::config::Config;
 use tokio::runtime::Builder;
@@ -6,6 +9,8 @@ use tokio::runtime::Builder;
 mod cli;
 mod config;
 mod filter;
+
+static GLOBAL_SEED: AtomicU64 = AtomicU64::new(0);
 
 fn run(config: Config) {
     println!("Dgaard starting on {}", config.server.listen_addr);
@@ -37,6 +42,22 @@ fn start_with_workers(config: Config, cpus: usize) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+pub fn init_global_seed() {
+    match getrandom::u64() {
+        Ok(seed) => GLOBAL_SEED.store(seed, Ordering::Relaxed),
+        Err(e) => {
+            eprintln!("Unable to have a random seed: {}", e);
+            GLOBAL_SEED.store(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("time should go forward")
+                    .as_secs(),
+                Ordering::Relaxed,
+            );
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts = cli::parse();
 
@@ -48,6 +69,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config::WorkerThreads::Auto => num_cpus::get(),
         config::WorkerThreads::Count(n) => n,
     };
+
+    init_global_seed();
 
     println!("Preparing dgaard runtime with {} thread(s)", cpus);
     if cpus == 1 {
