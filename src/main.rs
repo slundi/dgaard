@@ -5,6 +5,7 @@ use tokio::runtime::Builder;
 
 mod cli;
 mod config;
+mod filter;
 
 fn run(config: Config) {
     println!("Dgaard starting on {}", config.server.listen_addr);

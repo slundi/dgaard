@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 pub struct AbpFilter {
     pub blocked_domains: HashSet<String>,
     pub exceptions: HashSet<String>,
