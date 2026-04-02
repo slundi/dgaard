@@ -4,7 +4,6 @@ pub mod domain;
 
 use std::net::Ipv4Addr;
 
-use postcard::{from_bytes, to_stdvec};
 
 #[derive(Debug)]
 pub enum ProxyMessage {

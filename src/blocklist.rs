@@ -1,6 +1,5 @@
-use addr::parse_domain_name;
 use regex::RegexSet;
-use std::collections::HashSet; // From 'addr' crate to handle TLDs/Public Suffixes
+use std::collections::HashSet;
 
 pub struct Blocklist {
     // Exact matches: 'google-analytics.com'
