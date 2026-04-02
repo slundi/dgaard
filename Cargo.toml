@@ -27,8 +27,8 @@ num_cpus = "1.17.0"
 # Async runtime - 'rt' and 'macros' only to keep binary size small for OpenWrt
 tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "sync"] }
 
-# DNS Protocol handling
-trust-dns-proto = "0.23.2"
+# DNS Protocol handling and for Domain/TLD parsing logic
+hickory-resolver = "0.25.2"
 
 # Fast hashing for the u64 fingerprints (ID-ing domains/rules)
 twox-hash = "2.1.2"
@@ -52,9 +52,6 @@ gumdrop = "0.8"
 # Logging (Lightweight)
 log = "0.4.29"
 env_logger = "0.11"
-
-# For Domain/TLD parsing logic
-addr = "0.15.6"
 
 # Binary serialization for the Unix Socket stats
 # bincode is not the way anymore
