@@ -1,5 +1,3 @@
-Markdown
-
 # How to Contribute to this Project
 
 Thank you for your interest in contributing to this project! Your help is invaluable in making it better.
@@ -29,6 +27,24 @@ Here are the steps to follow:
     * **Description:** Provide a detailed description of your modification. Explain the problem you are solving, the feature you are adding, or the improvement you are making. Include steps to test your changes if necessary.
     * **Assign a reviewer (if applicable).**
     * **Add labels (if applicable).**
+
+## Types
+
+### Included in changelog
+
+Those types will be included in the changelog because user may want to know.
+
+* `feat` for new feature
+* `fix` for bug fix only when there is an issue created on the repository, if no issue it is a `chore`
+
+### Never included in changelog
+
+* `build`, `chore`, `ci`, `refactor`, `test`
+
+### Unsure
+
+* `docs`: depending if users are complaining or often asking the same thing.
+* `perf`: may be relevent for user with big networks
 
 The project team will review your Merge Request, may ask for clarifications or modifications, and will merge it once it is approved.
 
