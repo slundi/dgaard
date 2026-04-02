@@ -22,6 +22,7 @@ edition = "2024"
 
 [dependencies]
 thiserror = "2.0.18"
+num_cpus = "1.17.0"
 # Async runtime - 'rt' and 'macros' only to keep binary size small for OpenWrt
 tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "sync"] }
 
