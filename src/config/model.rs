@@ -11,7 +11,7 @@
 /// `Auto` uses the number of logical CPU cores available on the host.
 /// `Count(n)` forces exactly `n` threads — useful on OpenWrt where RAM is
 /// precious and the CPU is single- or dual-core.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Clone)]
 pub enum WorkerThreads {
     /// Use one thread per logical CPU core (recommended for desktop/server).
     #[default]
@@ -23,7 +23,7 @@ pub enum WorkerThreads {
 /// Tokio runtime tuning parameters.
 ///
 /// These map to `[server.runtime]` in the configuration file.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct RuntimeConfig {
     /// `"auto"` or an integer thread count.
     /// On OpenWrt, pin this to 1 or 2 to avoid over-subscribing the CPU.
@@ -75,7 +75,7 @@ pub enum PipelineStep {
 /// Top-level server configuration.
 ///
 /// Maps to `[server]` in the configuration file.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ServerConfig {
     /// Socket address (`ip:port`) on which the DNS proxy listens.
     /// Use port 53 for production; an unprivileged port for development.
@@ -132,7 +132,7 @@ impl Default for ServerConfig {
 /// run first to drop obviously malformed or tunneling traffic early.
 ///
 /// Maps to `[security.structure]` in the configuration file.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct StructureConfig {
     /// Maximum number of dot-separated labels in the FQDN.
     /// Domains deeper than this are characteristic of DNS-tunnel payloads
@@ -182,7 +182,7 @@ impl Default for StructureConfig {
 /// names that evade blocklist-only defences.
 ///
 /// Maps to `[security.intelligence]` in the configuration file.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct IntelligenceConfig {
     /// Master switch — set to `false` to skip all heuristic checks and rely
     /// solely on static lists.
@@ -240,7 +240,7 @@ impl Default for IntelligenceConfig {
 ///
 /// `force_lowercase_ascii` in [`StructureConfig`] must be `false` for this
 /// filter to receive any traffic.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Clone)]
 pub enum IdnMode {
     /// IDN filtering is disabled; all Unicode labels pass through.
     Off,
@@ -256,7 +256,7 @@ pub enum IdnMode {
 /// Fine-grained Internationalized Domain Name policy.
 ///
 /// Maps to `[security.idn]` in the configuration file.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct IdnConfig {
     /// Filtering mode — see [`IdnMode`] for semantics.
     pub mode: IdnMode,
@@ -286,7 +286,7 @@ impl Default for IdnConfig {
 /// They detect infected hosts exhibiting botnet / C2 scanning patterns.
 ///
 /// Maps to `[security.behavior]` in the configuration file.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct BehaviorConfig {
     /// Number of NXDOMAIN responses a single client may receive within
     /// [`nxdomain_window`] seconds before being flagged as a potential
@@ -323,7 +323,7 @@ impl Default for BehaviorConfig {
 /// Aggregated security sub-configuration.
 ///
 /// Maps to the `[security.*]` family of sections in the configuration file.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Clone)]
 pub struct SecurityConfig {
     /// Structural / syntactic label validation.
     pub structure: StructureConfig,
@@ -343,7 +343,7 @@ pub struct SecurityConfig {
 ///
 /// Clean queries that pass all filters are forwarded to one of these servers.
 /// Maps to `[upstream]` in the configuration file.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct UpstreamConfig {
     /// Ordered list of resolver addresses in `ip:port` format.
     /// Supports both plain UDP (`:53`) and DNS-over-HTTPS addresses.
@@ -370,7 +370,7 @@ impl Default for UpstreamConfig {
 /// Top-Level Domain (TLD) filtering rules.
 ///
 /// Maps to `[tld]` in the configuration file.
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, PartialEq, Default, Clone)]
 pub struct TldConfig {
     /// If non-empty, **only** these TLDs are resolved; all others are blocked.
     /// Leave empty to allow all TLDs (then use `exclude` for targeted blocks).
@@ -388,7 +388,7 @@ pub struct TldConfig {
 // ---------------------------------------------------------------------------
 
 /// Action taken when a client trips the NXDOMAIN threshold.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Clone)]
 pub enum NxdomainAction {
     /// Record the event in the structured log; do not block the client.
     #[default]
@@ -404,7 +404,7 @@ pub enum NxdomainAction {
 ///
 /// Note: overlaps with [`BehaviorConfig`]; the top-level section is
 /// intended for operators who prefer a flat configuration layout.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct NxdomainHuntingConfig {
     /// Enable or disable NXDOMAIN hunting entirely.
     pub enabled: bool,
@@ -441,7 +441,7 @@ impl Default for NxdomainHuntingConfig {
 /// that encode data in DNS labels (e.g., `aGVsbG8=.attacker.com`).
 ///
 /// Maps to `[tunneling_detection]` in the configuration file.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct TunnelingDetectionConfig {
     /// Enable or disable tunneling detection entirely.
     pub enabled: bool,
@@ -475,7 +475,7 @@ impl Default for TunnelingDetectionConfig {
 /// into the in-memory data structures (rkyv / Bloom filter).
 ///
 /// Maps to `[sources]` in the configuration file.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct SourcesConfig {
     /// Path to the Newly Registered Domains (NRD) plain-text file.
     /// Should be refreshed daily via cron.
@@ -524,7 +524,7 @@ impl Default for SourcesConfig {
 /// the network / domain rules.
 ///
 /// Maps to `[abp]` in the configuration file.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct AbpConfig {
     /// When `true`, only plain domain-level rules are extracted from ABP
     /// lists; complex CSS cosmetic rules are silently skipped.
@@ -553,7 +553,7 @@ impl Default for AbpConfig {
 /// dramatically reduces latency for frequently queried domains.
 ///
 /// Maps to `[cache]` in the configuration file.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct CacheConfig {
     /// Enable or disable response caching entirely.
     pub enabled: bool,
@@ -587,7 +587,7 @@ impl Default for CacheConfig {
 /// deserializing the full rkyv blocklist for every miss.
 ///
 /// Maps to `[memory]` in the configuration file.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct MemoryConfig {
     /// Enable the LRU hot cache for the most-frequently queried domains.
     pub cache_enabled: bool,
@@ -628,7 +628,7 @@ impl Default for MemoryConfig {
 /// Instantiate via [`Config::default()`] to obtain the recommended baseline
 /// for an OpenWrt / embedded deployment, then override individual fields
 /// before the runtime starts.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Config {
     /// Networking and runtime settings.
     pub server: ServerConfig,
