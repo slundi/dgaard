@@ -630,6 +630,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::f32;
     use std::env;
     use std::fs;
     use std::path::PathBuf;
@@ -1345,7 +1346,7 @@ mod tests {
     fn get_float_returns_float_value() {
         with_table(r#"threshold = 3.14"#, |t| {
             let v = get_float(t, "threshold").unwrap().unwrap();
-            assert!((v - 3.14).abs() < f32::EPSILON);
+            assert!((v - f32::consts::FRAC_PI_2).abs() < f32::EPSILON);
         });
     }
 
