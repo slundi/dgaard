@@ -11,18 +11,13 @@
 /// `Auto` uses the number of logical CPU cores available on the host.
 /// `Count(n)` forces exactly `n` threads — useful on OpenWrt where RAM is
 /// precious and the CPU is single- or dual-core.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub enum WorkerThreads {
     /// Use one thread per logical CPU core (recommended for desktop/server).
+    #[default]
     Auto,
     /// Force a specific thread count (recommended for embedded targets).
     Count(usize),
-}
-
-impl Default for WorkerThreads {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 /// Tokio runtime tuning parameters.
@@ -196,7 +191,7 @@ pub struct IntelligenceConfig {
     /// Shannon entropy threshold for the second-level domain (SLD).
     /// Values above this are flagged as potential DGA names.
     /// Typical range: 3.5 (strict) – 4.5 (lenient). Default: 4.0.
-    pub entropy_threshold: f64,
+    pub entropy_threshold: f32,
 
     /// Minimum SLD length (in bytes) before entropy and N-gram analysis are
     /// applied.  Short labels like `t.co` are skipped to avoid false positives.
@@ -204,7 +199,7 @@ pub struct IntelligenceConfig {
 
     /// Maximum ratio of consonants to total characters before a label is
     /// considered unpronounceable / machine-generated (e.g., `bcdfgh`).
-    pub consonant_ratio_threshold: f64,
+    pub consonant_ratio_threshold: f32,
 
     /// Enable N-gram language-model scoring.  When `true`, each domain is
     /// scored against every model in [`ngram_models`]; if all scores fall
@@ -217,7 +212,7 @@ pub struct IntelligenceConfig {
 
     /// Minimum acceptable N-gram log-probability.  A domain must score above
     /// this value in **at least one** loaded model to pass.
-    pub ngram_probability_threshold: f64,
+    pub ngram_probability_threshold: f32,
 }
 
 impl Default for IntelligenceConfig {
@@ -245,7 +240,7 @@ impl Default for IntelligenceConfig {
 ///
 /// `force_lowercase_ascii` in [`StructureConfig`] must be `false` for this
 /// filter to receive any traffic.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub enum IdnMode {
     /// IDN filtering is disabled; all Unicode labels pass through.
     Off,
@@ -254,13 +249,8 @@ pub enum IdnMode {
     Strict,
     /// Allow scripts listed in [`IdnConfig::allowed_scripts`] and block the
     /// rest.  Balances security with usability for European users.
+    #[default]
     Smart,
-}
-
-impl Default for IdnMode {
-    fn default() -> Self {
-        Self::Smart
-    }
 }
 
 /// Fine-grained Internationalized Domain Name policy.
@@ -333,7 +323,7 @@ impl Default for BehaviorConfig {
 /// Aggregated security sub-configuration.
 ///
 /// Maps to the `[security.*]` family of sections in the configuration file.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct SecurityConfig {
     /// Structural / syntactic label validation.
     pub structure: StructureConfig,
@@ -343,17 +333,6 @@ pub struct SecurityConfig {
     pub idn: IdnConfig,
     /// Per-client behavioural anomaly thresholds.
     pub behavior: BehaviorConfig,
-}
-
-impl Default for SecurityConfig {
-    fn default() -> Self {
-        Self {
-            structure: StructureConfig::default(),
-            intelligence: IntelligenceConfig::default(),
-            idn: IdnConfig::default(),
-            behavior: BehaviorConfig::default(),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -409,19 +388,14 @@ pub struct TldConfig {
 // ---------------------------------------------------------------------------
 
 /// Action taken when a client trips the NXDOMAIN threshold.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub enum NxdomainAction {
     /// Record the event in the structured log; do not block the client.
+    #[default]
     Log,
     /// Insert a firewall rule to drop all traffic from the offending client
     /// IP for the remainder of the detection window.
     BlockClient,
-}
-
-impl Default for NxdomainAction {
-    fn default() -> Self {
-        Self::Log
-    }
 }
 
 /// NXDOMAIN hunting — detects botnet C2 beacon scanning.
@@ -754,12 +728,12 @@ mod tests {
     fn intelligence_config_defaults_match_example_toml() {
         let i = IntelligenceConfig::default();
         assert!(i.enabled);
-        assert!((i.entropy_threshold - 4.0).abs() < f64::EPSILON);
+        assert!((i.entropy_threshold - 4.0).abs() < f32::EPSILON);
         assert_eq!(i.min_word_length, 8);
-        assert!((i.consonant_ratio_threshold - 0.6).abs() < f64::EPSILON);
+        assert!((i.consonant_ratio_threshold - 0.6).abs() < f32::EPSILON);
         assert!(!i.use_ngram_model);
         assert_eq!(i.ngram_models.len(), 2);
-        assert!((i.ngram_probability_threshold - 0.05).abs() < f64::EPSILON);
+        assert!((i.ngram_probability_threshold - 0.05).abs() < f32::EPSILON);
     }
 
     // -----------------------------------------------------------------------

@@ -9,6 +9,7 @@ mod model;
 mod parser;
 
 pub use model::*;
+#[allow(unused_imports)]
 pub use parser::ConfigError;
 
 use std::path::{Path, PathBuf};

@@ -73,7 +73,10 @@ mod tests {
 
     #[test]
     fn version_string_contains_cargo_version() {
-        assert!(VERSION.contains('.'), "version '{VERSION}' doesn't look like semver");
+        assert!(
+            VERSION.contains('.'),
+            "version '{VERSION}' doesn't look like semver"
+        );
         assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
     }
 }

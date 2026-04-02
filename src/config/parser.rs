@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use thiserror::Error;
-use toml_span::{Span, parse, value::{Value, ValueInner}};
+use toml_span::{Span, value::ValueInner};
 
 use super::model::*;
 
@@ -22,10 +22,10 @@ pub enum ConfigError {
     #[error("TOML syntax error: {0}")]
     Parse(String),
 
-    #[error("missing required key '{key}' at {span:?}")]
+    #[error("Missing required key '{key}' at {span:?}")]
     MissingKey { key: String, span: Span },
 
-    #[error("invalid type for key '{key}': expected {expected} at {span:?}")]
+    #[error("Invalid type for key '{key}': expected {expected} at {span:?}")]
     InvalidType {
         key: String,
         expected: &'static str,
@@ -46,11 +46,11 @@ pub enum ConfigError {
 
 /// Extract a string value from a table, returning `None` if key is absent.
 fn get_str<'a>(
-    table: &toml_span::value::Table<'a>,
+    table: &'a toml_span::value::Table<'a>,
     key: &str,
 ) -> Result<Option<&'a str>, ConfigError> {
     match table.get(key) {
-        Some(v) => match &v.inner {
+        Some(v) => match v.as_ref() {
             ValueInner::String(s) => Ok(Some(s.as_ref())),
             _ => Err(ConfigError::InvalidType {
                 key: key.to_string(),
@@ -63,8 +63,9 @@ fn get_str<'a>(
 }
 
 /// Extract a required string value from a table.
+#[allow(dead_code)]
 fn require_str<'a>(
-    table: &toml_span::value::Table<'a>,
+    table: &'a toml_span::value::Table<'a>,
     key: &str,
     parent_span: Span,
 ) -> Result<&'a str, ConfigError> {
@@ -77,7 +78,7 @@ fn require_str<'a>(
 /// Extract an optional boolean value from a table.
 fn get_bool(table: &toml_span::value::Table<'_>, key: &str) -> Result<Option<bool>, ConfigError> {
     match table.get(key) {
-        Some(v) => match &v.inner {
+        Some(v) => match v.as_ref() {
             ValueInner::Boolean(b) => Ok(Some(*b)),
             _ => Err(ConfigError::InvalidType {
                 key: key.to_string(),
@@ -90,12 +91,9 @@ fn get_bool(table: &toml_span::value::Table<'_>, key: &str) -> Result<Option<boo
 }
 
 /// Extract an optional integer value from a table.
-fn get_integer(
-    table: &toml_span::value::Table<'_>,
-    key: &str,
-) -> Result<Option<i64>, ConfigError> {
+fn get_integer(table: &toml_span::value::Table<'_>, key: &str) -> Result<Option<i64>, ConfigError> {
     match table.get(key) {
-        Some(v) => match &v.inner {
+        Some(v) => match v.as_ref() {
             ValueInner::Integer(i) => Ok(Some(*i)),
             _ => Err(ConfigError::InvalidType {
                 key: key.to_string(),
@@ -108,11 +106,11 @@ fn get_integer(
 }
 
 /// Extract an optional float value from a table (also accepts integers as floats).
-fn get_float(table: &toml_span::value::Table<'_>, key: &str) -> Result<Option<f64>, ConfigError> {
+fn get_float(table: &toml_span::value::Table<'_>, key: &str) -> Result<Option<f32>, ConfigError> {
     match table.get(key) {
-        Some(v) => match &v.inner {
-            ValueInner::Float(f) => Ok(Some(*f)),
-            ValueInner::Integer(i) => Ok(Some(*i as f64)),
+        Some(v) => match v.as_ref() {
+            ValueInner::Float(f) => Ok(Some((*f) as f32)),
+            ValueInner::Integer(i) => Ok(Some((*i) as f32)),
             _ => Err(ConfigError::InvalidType {
                 key: key.to_string(),
                 expected: "float",
@@ -129,18 +127,18 @@ fn get_string_array(
     key: &str,
 ) -> Result<Option<Vec<String>>, ConfigError> {
     match table.get(key) {
-        Some(v) => match &v.inner {
+        Some(v) => match v.as_ref() {
             ValueInner::Array(arr) => {
                 let mut result = Vec::with_capacity(arr.len());
                 for item in arr.iter() {
-                    match &item.inner {
+                    match item.as_ref() {
                         ValueInner::String(s) => result.push(s.to_string()),
                         _ => {
                             return Err(ConfigError::InvalidType {
                                 key: format!("{}[]", key),
                                 expected: "string",
                                 span: item.span,
-                            })
+                            });
                         }
                     }
                 }
@@ -162,7 +160,7 @@ fn get_table<'a>(
     key: &str,
 ) -> Result<Option<&'a toml_span::value::Table<'a>>, ConfigError> {
     match table.get(key) {
-        Some(v) => match &v.inner {
+        Some(v) => match v.as_ref() {
             ValueInner::Table(t) => Ok(Some(t)),
             _ => Err(ConfigError::InvalidType {
                 key: key.to_string(),
@@ -184,7 +182,7 @@ fn parse_runtime(table: &toml_span::value::Table<'_>) -> Result<RuntimeConfig, C
 
     // worker_threads can be "auto" or an integer
     if let Some(v) = table.get("worker_threads") {
-        match &v.inner {
+        match v.as_ref() {
             ValueInner::String(s) if s.as_ref() == "auto" => {
                 cfg.worker_threads = WorkerThreads::Auto;
             }
@@ -237,11 +235,11 @@ fn parse_server(table: &toml_span::value::Table<'_>) -> Result<ServerConfig, Con
 
     // Parse pipeline array
     if let Some(v) = table.get("pipeline") {
-        match &v.inner {
+        match v.as_ref() {
             ValueInner::Array(arr) => {
                 let mut steps = Vec::with_capacity(arr.len());
                 for item in arr.iter() {
-                    match &item.inner {
+                    match item.as_ref() {
                         ValueInner::String(s) => {
                             let step = match s.as_ref() {
                                 "Whitelist" => PipelineStep::Whitelist,
@@ -570,11 +568,9 @@ impl Config {
     pub fn parse(content: &str) -> Result<Self, ConfigError> {
         let mut cfg = Self::default();
 
-        let value = content
-            .parse::<Value<'_>>()
-            .map_err(|e| ConfigError::Parse(e.to_string()))?;
+        let value = toml_span::parse(content).map_err(|e| ConfigError::Parse(e.to_string()))?;
 
-        let root = match &value.inner {
+        let root = match value.as_ref() {
             ValueInner::Table(t) => t,
             _ => {
                 return Err(ConfigError::InvalidType {
@@ -789,20 +785,24 @@ mod tests {
         "#;
         let cfg = Config::parse(toml).unwrap();
         assert!(!cfg.security.intelligence.enabled);
-        assert!((cfg.security.intelligence.entropy_threshold - 3.5).abs() < f64::EPSILON);
+        assert!((cfg.security.intelligence.entropy_threshold - 3.5).abs() < f32::EPSILON);
         assert_eq!(cfg.security.intelligence.min_word_length, 6);
-        assert!((cfg.security.intelligence.consonant_ratio_threshold - 0.7).abs() < f64::EPSILON);
+        assert!((cfg.security.intelligence.consonant_ratio_threshold - 0.7).abs() < f32::EPSILON);
         assert!(cfg.security.intelligence.use_ngram_model);
         assert_eq!(
             cfg.security.intelligence.ngram_models,
             vec!["/path/to/model.bin"]
         );
-        assert!((cfg.security.intelligence.ngram_probability_threshold - 0.1).abs() < f64::EPSILON);
+        assert!((cfg.security.intelligence.ngram_probability_threshold - 0.1).abs() < f32::EPSILON);
     }
 
     #[test]
     fn parse_security_idn_modes() {
-        for (mode_str, expected) in [("Off", IdnMode::Off), ("Strict", IdnMode::Strict), ("Smart", IdnMode::Smart)] {
+        for (mode_str, expected) in [
+            ("Off", IdnMode::Off),
+            ("Strict", IdnMode::Strict),
+            ("Smart", IdnMode::Smart),
+        ] {
             let toml = format!(
                 r#"
                 [security.idn]
@@ -1149,7 +1149,10 @@ mod tests {
         "#;
         let result = Config::parse(toml);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ConfigError::InvalidType { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::InvalidType { .. }
+        ));
     }
 
     #[test]
@@ -1160,7 +1163,10 @@ mod tests {
         "#;
         let result = Config::parse(toml);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ConfigError::InvalidType { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::InvalidType { .. }
+        ));
     }
 
     #[test]
@@ -1171,7 +1177,10 @@ mod tests {
         "#;
         let result = Config::parse(toml);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ConfigError::InvalidType { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::InvalidType { .. }
+        ));
     }
 
     #[test]
@@ -1182,7 +1191,10 @@ mod tests {
         "#;
         let result = Config::parse(toml);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ConfigError::InvalidType { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::InvalidType { .. }
+        ));
     }
 
     #[test]
@@ -1203,6 +1215,235 @@ mod tests {
             entropy_threshold = 4
         "#;
         let cfg = Config::parse(toml).unwrap();
-        assert!((cfg.security.intelligence.entropy_threshold - 4.0).abs() < f64::EPSILON);
+        assert!((cfg.security.intelligence.entropy_threshold - 4.0).abs() < f32::EPSILON);
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper function unit tests
+    // -----------------------------------------------------------------------
+
+    /// Parse a TOML key=value string and call `f` with the root table.
+    fn with_table<F, R>(toml: &str, f: F) -> R
+    where
+        F: for<'a> FnOnce(&'a toml_span::value::Table<'a>) -> R,
+    {
+        let val = toml_span::parse(toml).unwrap();
+        match val.as_ref() {
+            ValueInner::Table(t) => f(t),
+            _ => panic!("expected table"),
+        }
+    }
+
+    // --- get_str ---
+
+    #[test]
+    fn get_str_returns_value_for_existing_key() {
+        with_table(r#"name = "dgaard""#, |t| {
+            assert_eq!(get_str(t, "name").unwrap(), Some("dgaard"));
+        });
+    }
+
+    #[test]
+    fn get_str_returns_none_for_missing_key() {
+        with_table(r#"name = "dgaard""#, |t| {
+            assert_eq!(get_str(t, "missing").unwrap(), None);
+        });
+    }
+
+    #[test]
+    fn get_str_returns_error_for_wrong_type() {
+        with_table(r#"port = 53"#, |t| {
+            let err = get_str(t, "port").unwrap_err();
+            assert!(matches!(err, ConfigError::InvalidType { ref key, .. } if key == "port"));
+        });
+    }
+
+    // --- require_str ---
+
+    #[test]
+    fn require_str_returns_value_for_existing_key() {
+        with_table(r#"addr = "127.0.0.1""#, |t| {
+            let span = toml_span::Span::default();
+            assert_eq!(require_str(t, "addr", span).unwrap(), "127.0.0.1");
+        });
+    }
+
+    #[test]
+    fn require_str_returns_missing_key_error() {
+        with_table(r#"addr = "127.0.0.1""#, |t| {
+            let span = toml_span::Span::default();
+            let err = require_str(t, "host", span).unwrap_err();
+            assert!(matches!(err, ConfigError::MissingKey { ref key, .. } if key == "host"));
+        });
+    }
+
+    // --- get_bool ---
+
+    #[test]
+    fn get_bool_returns_true() {
+        with_table(r#"enabled = true"#, |t| {
+            assert_eq!(get_bool(t, "enabled").unwrap(), Some(true));
+        });
+    }
+
+    #[test]
+    fn get_bool_returns_false() {
+        with_table(r#"enabled = false"#, |t| {
+            assert_eq!(get_bool(t, "enabled").unwrap(), Some(false));
+        });
+    }
+
+    #[test]
+    fn get_bool_returns_none_for_missing_key() {
+        with_table(r#"x = 1"#, |t| {
+            assert_eq!(get_bool(t, "enabled").unwrap(), None);
+        });
+    }
+
+    #[test]
+    fn get_bool_returns_error_for_wrong_type() {
+        with_table(r#"enabled = "yes""#, |t| {
+            let err = get_bool(t, "enabled").unwrap_err();
+            assert!(matches!(err, ConfigError::InvalidType { ref key, .. } if key == "enabled"));
+        });
+    }
+
+    // --- get_integer ---
+
+    #[test]
+    fn get_integer_returns_value() {
+        with_table(r#"port = 5353"#, |t| {
+            assert_eq!(get_integer(t, "port").unwrap(), Some(5353));
+        });
+    }
+
+    #[test]
+    fn get_integer_returns_negative_value() {
+        with_table(r#"offset = -42"#, |t| {
+            assert_eq!(get_integer(t, "offset").unwrap(), Some(-42));
+        });
+    }
+
+    #[test]
+    fn get_integer_returns_none_for_missing_key() {
+        with_table(r#"x = 1"#, |t| {
+            assert_eq!(get_integer(t, "port").unwrap(), None);
+        });
+    }
+
+    #[test]
+    fn get_integer_returns_error_for_wrong_type() {
+        with_table(r#"port = "53""#, |t| {
+            let err = get_integer(t, "port").unwrap_err();
+            assert!(matches!(err, ConfigError::InvalidType { ref key, .. } if key == "port"));
+        });
+    }
+
+    // --- get_float ---
+
+    #[test]
+    fn get_float_returns_float_value() {
+        with_table(r#"threshold = 3.14"#, |t| {
+            let v = get_float(t, "threshold").unwrap().unwrap();
+            assert!((v - 3.14).abs() < f32::EPSILON);
+        });
+    }
+
+    #[test]
+    fn get_float_coerces_integer() {
+        with_table(r#"threshold = 4"#, |t| {
+            let v = get_float(t, "threshold").unwrap().unwrap();
+            assert!((v - 4.0).abs() < f32::EPSILON);
+        });
+    }
+
+    #[test]
+    fn get_float_returns_none_for_missing_key() {
+        with_table(r#"x = 1"#, |t| {
+            assert_eq!(get_float(t, "threshold").unwrap(), None);
+        });
+    }
+
+    #[test]
+    fn get_float_returns_error_for_wrong_type() {
+        with_table(r#"threshold = "high""#, |t| {
+            let err = get_float(t, "threshold").unwrap_err();
+            assert!(matches!(err, ConfigError::InvalidType { ref key, .. } if key == "threshold"));
+        });
+    }
+
+    // --- get_string_array ---
+
+    #[test]
+    fn get_string_array_returns_vec() {
+        with_table(r#"servers = ["1.1.1.1", "9.9.9.9"]"#, |t| {
+            assert_eq!(
+                get_string_array(t, "servers").unwrap(),
+                Some(vec!["1.1.1.1".to_string(), "9.9.9.9".to_string()])
+            );
+        });
+    }
+
+    #[test]
+    fn get_string_array_returns_empty_vec() {
+        with_table(r#"servers = []"#, |t| {
+            assert_eq!(get_string_array(t, "servers").unwrap(), Some(vec![]));
+        });
+    }
+
+    #[test]
+    fn get_string_array_returns_none_for_missing_key() {
+        with_table(r#"x = 1"#, |t| {
+            assert_eq!(get_string_array(t, "servers").unwrap(), None);
+        });
+    }
+
+    #[test]
+    fn get_string_array_returns_error_for_non_array() {
+        with_table(r#"servers = "1.1.1.1""#, |t| {
+            let err = get_string_array(t, "servers").unwrap_err();
+            assert!(matches!(err, ConfigError::InvalidType { ref key, .. } if key == "servers"));
+        });
+    }
+
+    #[test]
+    fn get_string_array_returns_error_for_non_string_element() {
+        with_table(r#"ports = [53, 853]"#, |t| {
+            let err = get_string_array(t, "ports").unwrap_err();
+            assert!(matches!(err, ConfigError::InvalidType { ref key, .. } if key == "ports[]"));
+        });
+    }
+
+    // --- get_table ---
+
+    #[test]
+    fn get_table_returns_nested_table() {
+        with_table(
+            r#"
+            [server]
+            port = 53
+        "#,
+            |t| {
+                let nested = get_table(t, "server").unwrap();
+                assert!(nested.is_some());
+                let server = nested.unwrap();
+                assert!(server.get("port").is_some());
+            },
+        );
+    }
+
+    #[test]
+    fn get_table_returns_none_for_missing_key() {
+        with_table(r#"x = 1"#, |t| {
+            assert!(get_table(t, "server").unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn get_table_returns_error_for_non_table() {
+        with_table(r#"server = "localhost""#, |t| {
+            let err = get_table(t, "server").unwrap_err();
+            assert!(matches!(err, ConfigError::InvalidType { ref key, .. } if key == "server"));
+        });
     }
 }
