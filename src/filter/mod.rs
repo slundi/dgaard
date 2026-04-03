@@ -22,6 +22,33 @@ pub enum ListError<'a> {
     ParseError(#[source] std::io::Error, &'a str, &'a str),
 }
 
+pub struct FilterEngine {
+    // Exact match (WL & BL without wildcards)
+    // u64 is xxh3 of complete domain name
+    pub fast_map: HashMap<u64, u8>,
+
+    // For TLD & Wildcards (sorted by depth then hash)
+    pub hierarchical_list: Vec<DomainEntry>,
+
+    // Heavy data
+    pub regex_pool: Vec<Regex>, // compiled regex so regex.is_match(domain) to check
+    pub wildcard_patterns: Vec<String>, // TODO: transform regex into wildcard when possible
+}
+impl FilterEngine {
+    pub fn empty() -> Self {
+        Self {
+            fast_map: HashMap::with_capacity(0),
+            hierarchical_list: Vec::with_capacity(0),
+            regex_pool: Vec::with_capacity(0),
+            wildcard_patterns: Vec::with_capacity(0),
+        }
+    }
+
+    pub fn build_from_files() -> Self {
+        todo!()
+    }
+}
+
 pub fn parse_line<'a, F>(line: &'a str, parser: F) -> Result<RawDomainEntry, ListError<'a>>
 where
     F: Fn(&'a str) -> Result<RawDomainEntry, ListError<'a>>,
@@ -76,4 +103,9 @@ pub fn parse_dnsmasq_line(line: &str) -> Result<RawDomainEntry, ListError<'_>> {
         flags: DomainEntryFlags::NONE,
         depth: count_dots(domain),
     })
+}
+
+pub fn reload_lists() {
+    let new_engine = FilterEngine::build_from_files();
+    CURRENT_ENGINE.store(Arc::new(new_engine));
 }

@@ -8,8 +8,8 @@ use std::{collections::HashSet, sync::atomic::Ordering};
 
 use crate::{
     GLOBAL_SEED,
-    filter::{IS_REGEX, IS_WHITELIST, IS_WILDCARD, ListError},
-    model::RawDomainEntry,
+    filter::ListError,
+    model::{DomainEntryFlags, RawDomainEntry},
     utils::count_dots,
 };
 
@@ -19,9 +19,9 @@ pub fn parse_abp_line(line: &str) -> Result<RawDomainEntry, ListError<'_>> {
     // 1. Check if it is a whitelist (@@) or a blacklist
     let mut flags = if input.starts_with("@@") {
         input = &input[2..];
-        IS_WHITELIST
+        DomainEntryFlags::WHITELIST
     } else {
-        0
+        DomainEntryFlags::NONE
     };
 
     // 2. Cleanup option (ignore following '$')
@@ -32,7 +32,7 @@ pub fn parse_abp_line(line: &str) -> Result<RawDomainEntry, ListError<'_>> {
     // 3. Identify pattern type
     let pattern = if input.starts_with('/') && input.ends_with('/') && input.len() > 2 {
         // this is a regex
-        flags |= IS_REGEX;
+        flags |= DomainEntryFlags::REGEX;
         &input[1..input.len() - 1]
     } else {
         // it is a domain or a wildcard (ex: ||example.com^ ou *doubleclick*)
@@ -40,7 +40,7 @@ pub fn parse_abp_line(line: &str) -> Result<RawDomainEntry, ListError<'_>> {
         if input.contains('*') {
             // TODO: improve because we may have `*.example.com` so it needs to be treated as wildcard.
             // But for `some.*.thing.com` or `facebook*.com` it will be a dedicated wildcard processing
-            flags |= IS_WILDCARD;
+            flags |= DomainEntryFlags::WILDCARD;
         }
         input
     };

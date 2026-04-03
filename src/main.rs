@@ -3,7 +3,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::config::Config;
+use crate::{
+    config::Config,
+    filter::{FilterEngine, reload_lists},
+};
+use arc_swap::ArcSwap;
 use tokio::runtime::Builder;
 
 mod cli;
@@ -13,6 +17,8 @@ mod model;
 mod utils;
 
 static GLOBAL_SEED: AtomicU64 = AtomicU64::new(0);
+static CURRENT_ENGINE: std::sync::LazyLock<ArcSwap<FilterEngine>> =
+    std::sync::LazyLock::new(|| ArcSwap::from_pointee(FilterEngine::empty()));
 
 fn run(config: Config) {
     println!("Dgaard starting on {}", config.server.listen_addr);
@@ -73,6 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     init_global_seed();
+    reload_lists();
 
     println!("Preparing dgaard runtime with {} thread(s)", cpus);
     if cpus == 1 {
