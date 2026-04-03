@@ -4,14 +4,15 @@ mod fst;
 
 use core::sync::atomic::Ordering;
 use hickory_resolver::{Name, proto::ProtoError};
-use std::str::FromStr;
+use regex::Regex;
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 use thiserror::Error;
 
-use crate::{GLOBAL_SEED, model::RawDomainEntry, utils::count_dots};
-
-pub const IS_WHITELIST: u8 = 0b00000001;
-pub const IS_WILDCARD: u8 = 0b00000010;
-pub const IS_REGEX: u8 = 0b0000100;
+use crate::{
+    CURRENT_ENGINE, GLOBAL_SEED,
+    model::{DomainEntry, DomainEntryFlags, RawDomainEntry},
+    utils::count_dots,
+};
 
 #[derive(Error, Debug)]
 pub enum ListError<'a> {
@@ -51,7 +52,7 @@ pub fn parse_host_line(line: &str) -> Result<RawDomainEntry, ListError<'_>> {
     Ok(RawDomainEntry {
         hash,
         value: domain.to_string(),
-        flags: 0,
+        flags: DomainEntryFlags::NONE,
         depth: count_dots(domain),
     })
 }
@@ -72,7 +73,7 @@ pub fn parse_dnsmasq_line(line: &str) -> Result<RawDomainEntry, ListError<'_>> {
     Ok(RawDomainEntry {
         hash,
         value: domain.to_string(),
-        flags: 0,
+        flags: DomainEntryFlags::NONE,
         depth: count_dots(domain),
     })
 }

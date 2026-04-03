@@ -63,6 +63,7 @@ lru = "0.16"
 
 dashmap = "6.1.0"
 arc-swap = "1.9.0"
+bitflags = "2.11.0"
 
 [profile.release]
 # Optimization settings for OpenWrt's limited storage and CPU
