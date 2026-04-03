@@ -8,6 +8,9 @@ bitflags! {
         const REGEX = 0b000_0100;
         const ANONYMOUS = 0b0000_1000;
         const NO_LOG = 0b0001_0000;
+        /// Use for ABP lines that contains CSS or JS or any filter rule that a browser can render.
+        /// It will be usefull generate a light list for web browser so the user can serve it.
+        const INVALID = 0b1000_0000;
     }
 }
 
