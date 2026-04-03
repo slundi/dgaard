@@ -19,8 +19,8 @@ dgaard/
 │   ├── stats.rs             # Unix Socket & Postcard serialization
 │   ├── updater.rs           # Background HTTP downloader & ArcSwap logic
 │   ├── abp.rs               # ABP/EasyList domain extractor
-│   └── filter/              
-│       ├── mod.rs           
+│   └── filter/
+│       ├── mod.rs
 │       ├── bloom.rs         # Bloom Filter implementation for NRD/Large lists
 │       └── fst.rs           # Finite State Transducer for Wildcards/Suffixes
 │
@@ -65,11 +65,11 @@ struct DomainEntry {
 struct FilterEngine {
     // Exact match (WL & BL without wildcards)
     // u64 is xxh3 of complete domain name
-    fast_map: HashMap<u64, DomainFlags>, 
+    fast_map: HashMap<u64, DomainFlags>,
 
     // For TLD & Wildcards (sorted by depth then hash)
     hierarchical_list: Vec<DomainEntry>,
-    
+
     // Heavy data
     regex_pool: Vec<Regex>, // compiled regex so regex.is_match(domain) to check
     wildcard_patterns: Vec<String>, // TODO: transform regex into wildcard when possible
