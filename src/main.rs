@@ -9,6 +9,8 @@ use tokio::runtime::Builder;
 mod cli;
 mod config;
 mod filter;
+mod model;
+mod utils;
 
 static GLOBAL_SEED: AtomicU64 = AtomicU64::new(0);
 
