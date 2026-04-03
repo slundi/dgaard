@@ -1,4 +1,7 @@
-use trust_dns_proto::op::{Message, MessageType, ResponseCode};
+use std::sync::Arc;
+
+use hickory_resolver::proto::op::{Message, MessageType, ResponseCode};
+use tokio::net::UdpSocket;
 
 pub struct DnsPacket {
     pub message: Message,
@@ -33,11 +36,24 @@ impl DnsPacket {
         response.set_recursion_available(true);
         response.set_authoritative(true);
 
-        // Clear any existing answers/records just in case
-        response.clear_answers();
-        response.clear_additionals();
-        response.clear_name_servers();
+        // // Clear any existing answers/records just in case
+        // response.clear_answers();
+        // response.clear_additionals();
+        // response.clear_name_servers();
 
         response.to_vec().unwrap_or_default()
     }
+}
+
+pub(crate) async fn handle_query(
+    socket: Arc<UdpSocket>,
+    packet: Vec<u8>,
+    peer: std::net::SocketAddr,
+) -> std::io::Result<()> {
+    // TODO:
+    // 1. Parse DNS packet
+    // 2. Check against CURRENT_ENGINE (FilterEngine)
+    // 3. Forward to upstream or return blocked response
+    // 4. socket.send_to(&response, peer).await?;
+    Ok(())
 }
