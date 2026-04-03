@@ -30,7 +30,7 @@ dgaard/
         └── dgaard.init      # Procd Init script (/etc/init.d/dgaard)
 ```
 
-## Phase 1: Core Runtime & Infrastructure
+## Phase 1: Core Runtime & Infrastructure ✅
 
 *Focus: Getting the "Engine" to start and manage threads correctly.*
 
@@ -40,41 +40,10 @@ dgaard/
 * [x] 1.4.** Runtime Setup**: Use tokio::runtime::Builder to set thread counts based on the parsed config.
 * [x] 1.5 **UDP Binding**: Bind the initial socket with `UdpSocket`.
 * [x] 1.6 **Socket2 Optimization** (SO_REUSEPORT implementation): Apply set_reuse_port(true) and set_nonblocking(true) using the socket2 crate.
-```rust
-use socket2::{Socket, Domain, Type, Protocol};
-
-let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-socket.set_reuse_port(true)?; // The "Magic" for Datacenter scaling
-socket.bind(&addr.into())?;
-let udp_socket = UdpSocket::from_std(socket.into())?;
-```
 
 ## Phase 2: The Parsing Engine (Source Handling)
 
 *Focus: Converting various file formats into your internal memory format (`rkyv` or `HashSet`).*
-
-```rust
-// Compact "hot" struct: fixed size: 16 bytes, perfect for a sorted Vec or rkyv archive
-struct DomainEntry {
-    hash: u64,
-    flags: u8,  // 1: WL, 2: Wildcard, 4: Regex, 8: Anon, 16: NoLog
-    depth: u8,  // sub domain depth: 0 TLD, 1 example.com, >= 2 sub domains
-    data_idx: u32, // Index to the regex or pattern, 0 if none
-}
-
-struct FilterEngine {
-    // Exact match (WL & BL without wildcards)
-    // u64 is xxh3 of complete domain name
-    fast_map: HashMap<u64, DomainFlags>,
-
-    // For TLD & Wildcards (sorted by depth then hash)
-    hierarchical_list: Vec<DomainEntry>,
-
-    // Heavy data
-    regex_pool: Vec<Regex>, // compiled regex so regex.is_match(domain) to check
-    wildcard_patterns: Vec<String>, // TODO: transform regex into wildcard when possible
-}
-```
 
 * [ ] 2.1. **Host Format Parser**: Extract `some.domain.tld` from `0.0.0.0` or `127.0.0.1` prefixes.
 * [ ] 2.2. **Domain List Parser**: Simple line-by-line cleaner (trimming, removing comments `#`).
