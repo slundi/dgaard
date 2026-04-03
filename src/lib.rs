@@ -1,5 +1,4 @@
 pub mod blocklist;
-pub mod config;
 pub mod domain;
 
 use std::net::Ipv4Addr;

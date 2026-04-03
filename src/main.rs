@@ -1,11 +1,3 @@
-use std::sync::{Arc, atomic::AtomicU64};
-
-use crate::{
-    filter::{FilterEngine, reload_lists},
-    runtime::{init_global_seed, start_with_single_worker, start_with_workers},
-};
-use arc_swap::ArcSwap;
-
 mod cli;
 mod config;
 mod dns;
@@ -14,9 +6,20 @@ mod model;
 mod runtime;
 mod utils;
 
-static GLOBAL_SEED: AtomicU64 = AtomicU64::new(0);
-static CURRENT_ENGINE: std::sync::LazyLock<ArcSwap<FilterEngine>> =
+use std::sync::{Arc, atomic::AtomicU64};
+
+use crate::{
+    filter::{FilterEngine, reload_lists},
+    runtime::{init_global_seed, start_with_single_worker, start_with_workers},
+};
+use arc_swap::ArcSwap;
+use crate::config::Config;
+
+pub static GLOBAL_SEED: AtomicU64 = AtomicU64::new(0);
+pub static CURRENT_ENGINE: std::sync::LazyLock<ArcSwap<FilterEngine>> =
     std::sync::LazyLock::new(|| ArcSwap::from_pointee(FilterEngine::empty()));
+pub static CONFIG: std::sync::LazyLock<ArcSwap<Config>> =
+    std::sync::LazyLock::new(|| ArcSwap::from_pointee(Config::default()));
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts = cli::parse();
@@ -30,13 +33,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config::WorkerThreads::Count(n) => n,
     };
 
+    let shared_config = Arc::new(config);
+    CONFIG.store(Arc::clone(&shared_config));
+
     init_global_seed();
     reload_lists();
 
     println!("Preparing dgaard runtime with {} thread(s)", cpus);
     if cpus == 1 {
-        Ok(start_with_single_worker(config)?)
+        Ok(start_with_single_worker()?)
     } else {
-        Ok(start_with_workers(config, cpus)?)
+        Ok(start_with_workers(cpus)?)
     }
 }
