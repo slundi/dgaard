@@ -45,7 +45,7 @@ impl FilterEngine {
     }
 
     pub fn build_from_files() -> Self {
-        todo!()
+        todo!("does not load list yet")
     }
 }
 
@@ -56,7 +56,7 @@ where
     // common logic like trimming and ignoring comments
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.starts_with('#') {
-        todo!();
+        todo!("ignore the line");
     }
 
     parser(trimmed)
