@@ -29,6 +29,8 @@ tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "sync"] }
 
 # DNS Protocol handling and for Domain/TLD parsing logic
 hickory-resolver = "0.25.2"
+# to handle multiple socket on the same port
+socket2 = "0.6.3"
 
 # Fast hashing for the u64 fingerprints (ID-ing domains/rules)
 twox-hash = "2.1.2"

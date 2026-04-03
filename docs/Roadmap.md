@@ -38,8 +38,8 @@ dgaard/
 * [x] 1.2. **Config Discovery**: Logic to check `/etc/dgaard/` then local directory for the file.
 * [x] 1.3. **Congiguration loader**: parse the configuration using `toml-span` and print the listen_addr.
 * [x] 1.4.** Runtime Setup**: Use tokio::runtime::Builder to set thread counts based on the parsed config.
-* [ ] 1.5 **UDP Binding**: Bind the initial socket with `UdpSocket`.
-* [ ] 1.6 **Socket2 Optimization** (SO_REUSEPORT implementation): Apply set_reuse_port(true) and set_nonblocking(true) using the socket2 crate.
+* [x] 1.5 **UDP Binding**: Bind the initial socket with `UdpSocket`.
+* [x] 1.6 **Socket2 Optimization** (SO_REUSEPORT implementation): Apply set_reuse_port(true) and set_nonblocking(true) using the socket2 crate.
 ```rust
 use socket2::{Socket, Domain, Type, Protocol};
 
