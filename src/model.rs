@@ -1,6 +1,7 @@
 use bitflags::bitflags;
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct DomainEntryFlags: u8 {
         const NONE = 0b0000_0000;
         const WHITELIST = 0b0000_0001;

@@ -88,3 +88,135 @@ impl AbpFilter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    fn init_seed() {
+        GLOBAL_SEED.store(42, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn test_parse_abp_block_rule() {
+        init_seed();
+        let result = parse_abp_line("||example.com^").unwrap();
+        assert_eq!(result.value, "||example.com^");
+        assert_eq!(result.flags, DomainEntryFlags::NONE);
+        assert_eq!(result.depth, 1);
+    }
+
+    #[test]
+    fn test_parse_abp_whitelist_rule() {
+        init_seed();
+        let result = parse_abp_line("@@||trusted.com^").unwrap();
+        assert_eq!(result.value, "||trusted.com^");
+        assert!(result.flags.contains(DomainEntryFlags::WHITELIST));
+        assert_eq!(result.depth, 1);
+    }
+
+    #[test]
+    fn test_parse_abp_wildcard_rule() {
+        init_seed();
+        let result = parse_abp_line("||*.ads.example.com^").unwrap();
+        assert!(result.flags.contains(DomainEntryFlags::WILDCARD));
+    }
+
+    #[test]
+    fn test_parse_abp_regex_rule() {
+        init_seed();
+        let result = parse_abp_line("/ads[0-9]+\\.example\\.com/").unwrap();
+        assert!(result.flags.contains(DomainEntryFlags::REGEX));
+        assert_eq!(result.value, "ads[0-9]+\\.example\\.com");
+    }
+
+    #[test]
+    fn test_parse_abp_with_options() {
+        init_seed();
+        let result = parse_abp_line("||ads.example.com^$third-party").unwrap();
+        assert_eq!(result.value, "||ads.example.com^");
+    }
+
+    #[test]
+    fn test_parse_abp_whitelist_with_options() {
+        init_seed();
+        let result = parse_abp_line("@@||safe.com^$document").unwrap();
+        assert!(result.flags.contains(DomainEntryFlags::WHITELIST));
+        assert_eq!(result.value, "||safe.com^");
+    }
+
+    #[test]
+    fn test_parse_abp_empty_pattern() {
+        init_seed();
+        let result = parse_abp_line("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_abp_from_file() {
+        init_seed();
+        let content = include_str!("../../tests/list_abp.txt");
+        let mut parsed = 0;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('!') {
+                continue;
+            }
+            let result = parse_abp_line(trimmed);
+            assert!(result.is_ok(), "Failed to parse: {}", trimmed);
+            let entry = result.unwrap();
+            assert!(!entry.value.is_empty(), "Pattern should not be empty");
+            parsed += 1;
+        }
+        assert!(parsed > 0, "Should parse at least one ABP entry");
+    }
+
+    #[test]
+    fn test_parse_abp_subdomain_depth() {
+        init_seed();
+        let result = parse_abp_line("||sub.domain.example.com^").unwrap();
+        assert_eq!(result.depth, 3);
+    }
+
+    #[test]
+    fn test_abp_filter_parse_line_block() {
+        let mut filter = AbpFilter {
+            blocked_domains: HashSet::new(),
+            exceptions: HashSet::new(),
+        };
+        filter.parse_line("||ads.example.com^");
+        assert!(filter.blocked_domains.contains("ads.example.com"));
+    }
+
+    #[test]
+    fn test_abp_filter_parse_line_exception() {
+        let mut filter = AbpFilter {
+            blocked_domains: HashSet::new(),
+            exceptions: HashSet::new(),
+        };
+        filter.parse_line("@@||trusted.example.com^");
+        assert!(filter.exceptions.contains("trusted.example.com"));
+    }
+
+    #[test]
+    fn test_abp_filter_skips_comments() {
+        let mut filter = AbpFilter {
+            blocked_domains: HashSet::new(),
+            exceptions: HashSet::new(),
+        };
+        filter.parse_line("! This is a comment");
+        assert!(filter.blocked_domains.is_empty());
+        assert!(filter.exceptions.is_empty());
+    }
+
+    #[test]
+    fn test_abp_filter_skips_cosmetic_rules() {
+        let mut filter = AbpFilter {
+            blocked_domains: HashSet::new(),
+            exceptions: HashSet::new(),
+        };
+        filter.parse_line("example.com##.ad-banner");
+        assert!(filter.blocked_domains.is_empty());
+    }
+}
