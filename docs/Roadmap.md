@@ -45,44 +45,11 @@ dgaard/
 
 *Focus: Converting various file formats into your internal memory format (`rkyv` or `HashSet`).*
 
-* [ ] 2.1. **Host Format Parser**: Extract `some.domain.tld` from `0.0.0.0` or `127.0.0.1` prefixes.
-* [ ] 2.2. **Domain List Parser**: Simple line-by-line cleaner (trimming, removing comments `#`).
-* [ ] 2.3. **Dnsmasq Parser**: Use a Regex or `split('/')` to extract the domain from `address=/domain/0.0.0.0`.
-* [ ] 2.4. **AdGuard/ABP** "Fast Path" Parser: Identify simple `||domain^` rules and "promote" them to the exact-match list to avoid the Regex engine.
+* [x] 2.1. **Host Format Parser**: Extract `some.domain.tld` from `0.0.0.0` or `127.0.0.1` prefixes.
+* [x] 2.2. **Domain List Parser**: Simple line-by-line cleaner (trimming, removing comments `#`).
+* [x] 2.3. **Dnsmasq Parser**: Use a Regex or `split('/')` to extract the domain from `address=/domain/0.0.0.0`.
+* [x] 2.4. **AdGuard/ABP** "Fast Path" Parser: Identify simple `||domain^` rules and "promote" them to the exact-match list to avoid the Regex engine.
 * [ ] 2.5. **Archive Builder**: A commit for the logic that takes all parsed lists and serializes them into an `rkyv` Zero-Copy binary file for instant loading.
-
-```rust
-// standard approch with a `BufReader`, read line by line
-use std::fs::File;
-use std::io::{self, BufRead, BufReader};
-
-fn load_list(path: &str) -> io::Result<()> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-
-    for line in reader.lines() {
-        let line = line?; // load the line only once
-        if !line.starts_with('#') {
-            // process the line (hachage, etc.)
-        }
-    }
-    Ok(())
-}
-
-// chunck loading
-use std::io::{Read, BufReader};
-
-let mut reader = BufReader::with_capacity(1024 * 1024, file); // 1MB buffer
-let mut buffer = vec![0; 1024 * 1024];
-
-while let Ok(n) = reader.read(&mut buffer) {
-    if n == 0 { break; }
-    // example with Rayon to process 1MB block on each cores
-    buffer[..n].par_split(|&b| b == b'\n').for_each(|line| {
-        // Hachage...
-    });
-}
-```
 
 ## Phase 3: The Stratified Logic (The "Funnel")
 
