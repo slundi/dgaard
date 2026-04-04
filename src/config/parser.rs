@@ -1344,9 +1344,9 @@ mod tests {
 
     #[test]
     fn get_float_returns_float_value() {
-        with_table(r#"threshold = 3.14"#, |t| {
+        with_table(r#"threshold = 3.25"#, |t| {
             let v = get_float(t, "threshold").unwrap().unwrap();
-            assert!((v - f32::consts::FRAC_PI_2).abs() < f32::EPSILON);
+            assert!((v - 3.25_f32).abs() < f32::EPSILON);
         });
     }
 
