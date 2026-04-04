@@ -4,7 +4,7 @@
 //! * `/regex/`: regular expression
 //! * `*`: universal wildcard, can be anywhere in the domain
 
-use std::{collections::HashSet, sync::atomic::Ordering};
+use std::sync::atomic::Ordering;
 
 use crate::{
     GLOBAL_SEED,
@@ -12,6 +12,18 @@ use crate::{
     model::{DomainEntryFlags, RawDomainEntry},
     utils::count_dots,
 };
+
+/// Extract clean domain from ABP domain pattern like `||example.com^`
+/// Returns the domain without `||` prefix and `^` suffix
+fn extract_domain_from_abp(pattern: &str) -> Option<&str> {
+    let domain = pattern.strip_prefix("||")?;
+    // Split on ^ and take the first part (the domain)
+    let domain = domain.split('^').next()?;
+    if domain.is_empty() {
+        return None;
+    }
+    Some(domain)
+}
 
 pub fn parse_abp_line(line: &str) -> Result<RawDomainEntry, ListError<'_>> {
     let mut input = line.trim();
@@ -29,23 +41,27 @@ pub fn parse_abp_line(line: &str) -> Result<RawDomainEntry, ListError<'_>> {
         input = &input[..pos];
     }
 
-    // 3. Identify pattern type
-    let pattern = if input.starts_with('/') && input.ends_with('/') && input.len() > 2 {
-        // this is a regex
+    // 3. Identify pattern type and extract value
+    let (value, hash_source) = if input.starts_with('/') && input.ends_with('/') && input.len() > 2
+    {
+        // Regex pattern: /pattern/
         flags |= DomainEntryFlags::REGEX;
-        &input[1..input.len() - 1]
+        let pattern = &input[1..input.len() - 1];
+        (pattern, pattern)
+    } else if input.contains('*') {
+        // Wildcard pattern: contains *
+        flags |= DomainEntryFlags::WILDCARD;
+        // For wildcards, keep the full pattern for later matching
+        (input, input)
+    } else if let Some(domain) = extract_domain_from_abp(input) {
+        // Simple domain rule: ||domain.com^ -> extract clean domain
+        (domain, domain)
     } else {
-        // it is a domain or a wildcard (ex: ||example.com^ ou *doubleclick*)
-        // keep symbols || and ^ because they can be useful for later matching
-        if input.contains('*') {
-            // TODO: improve because we may have `*.example.com` so it needs to be treated as wildcard.
-            // But for `some.*.thing.com` or `facebook*.com` it will be a dedicated wildcard processing
-            flags |= DomainEntryFlags::WILDCARD;
-        }
-        input
+        // Fallback: use the input as-is
+        (input, input)
     };
 
-    if pattern.is_empty() {
+    if value.is_empty() {
         return Err(ListError::ParseError(
             std::io::Error::new(std::io::ErrorKind::InvalidData, "Empty ABP pattern"),
             line,
@@ -53,40 +69,15 @@ pub fn parse_abp_line(line: &str) -> Result<RawDomainEntry, ListError<'_>> {
         ));
     }
 
-    let hash = twox_hash::XxHash64::oneshot(GLOBAL_SEED.load(Ordering::Relaxed), line.as_bytes());
+    let hash =
+        twox_hash::XxHash64::oneshot(GLOBAL_SEED.load(Ordering::Relaxed), hash_source.as_bytes());
 
     Ok(RawDomainEntry {
         hash,
-        value: pattern.to_string(),
-        depth: count_dots(pattern),
+        value: value.to_string(),
+        depth: count_dots(value),
         flags,
     })
-}
-
-pub struct AbpFilter {
-    pub blocked_domains: HashSet<String>,
-    pub exceptions: HashSet<String>,
-}
-
-impl AbpFilter {
-    pub fn parse_line(&mut self, line: &str) {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('!') || line.contains("##") {
-            return; // Skip comments and cosmetic rules
-        }
-
-        if line.starts_with("@@||") {
-            // Exception rule: @@||example.com^
-            if let Some(domain) = line.strip_prefix("@@||").and_then(|s| s.split('^').next()) {
-                self.exceptions.insert(domain.to_string());
-            }
-        } else if line.starts_with("||") {
-            // Block rule: ||example.com^
-            if let Some(domain) = line.strip_prefix("||").and_then(|s| s.split('^').next()) {
-                self.blocked_domains.insert(domain.to_string());
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -102,7 +93,8 @@ mod tests {
     fn test_parse_abp_block_rule() {
         init_seed();
         let result = parse_abp_line("||example.com^").unwrap();
-        assert_eq!(result.value, "||example.com^");
+        // Clean domain extracted from ||example.com^
+        assert_eq!(result.value, "example.com");
         assert_eq!(result.flags, DomainEntryFlags::NONE);
         assert_eq!(result.depth, 1);
     }
@@ -111,7 +103,8 @@ mod tests {
     fn test_parse_abp_whitelist_rule() {
         init_seed();
         let result = parse_abp_line("@@||trusted.com^").unwrap();
-        assert_eq!(result.value, "||trusted.com^");
+        // Clean domain extracted from ||trusted.com^
+        assert_eq!(result.value, "trusted.com");
         assert!(result.flags.contains(DomainEntryFlags::WHITELIST));
         assert_eq!(result.depth, 1);
     }
@@ -121,6 +114,8 @@ mod tests {
         init_seed();
         let result = parse_abp_line("||*.ads.example.com^").unwrap();
         assert!(result.flags.contains(DomainEntryFlags::WILDCARD));
+        // Wildcard patterns keep the full pattern
+        assert_eq!(result.value, "||*.ads.example.com^");
     }
 
     #[test]
@@ -135,7 +130,8 @@ mod tests {
     fn test_parse_abp_with_options() {
         init_seed();
         let result = parse_abp_line("||ads.example.com^$third-party").unwrap();
-        assert_eq!(result.value, "||ads.example.com^");
+        // Clean domain extracted, options stripped
+        assert_eq!(result.value, "ads.example.com");
     }
 
     #[test]
@@ -143,7 +139,8 @@ mod tests {
         init_seed();
         let result = parse_abp_line("@@||safe.com^$document").unwrap();
         assert!(result.flags.contains(DomainEntryFlags::WHITELIST));
-        assert_eq!(result.value, "||safe.com^");
+        // Clean domain extracted, options stripped
+        assert_eq!(result.value, "safe.com");
     }
 
     #[test]
@@ -176,47 +173,7 @@ mod tests {
     fn test_parse_abp_subdomain_depth() {
         init_seed();
         let result = parse_abp_line("||sub.domain.example.com^").unwrap();
+        assert_eq!(result.value, "sub.domain.example.com");
         assert_eq!(result.depth, 3);
-    }
-
-    #[test]
-    fn test_abp_filter_parse_line_block() {
-        let mut filter = AbpFilter {
-            blocked_domains: HashSet::new(),
-            exceptions: HashSet::new(),
-        };
-        filter.parse_line("||ads.example.com^");
-        assert!(filter.blocked_domains.contains("ads.example.com"));
-    }
-
-    #[test]
-    fn test_abp_filter_parse_line_exception() {
-        let mut filter = AbpFilter {
-            blocked_domains: HashSet::new(),
-            exceptions: HashSet::new(),
-        };
-        filter.parse_line("@@||trusted.example.com^");
-        assert!(filter.exceptions.contains("trusted.example.com"));
-    }
-
-    #[test]
-    fn test_abp_filter_skips_comments() {
-        let mut filter = AbpFilter {
-            blocked_domains: HashSet::new(),
-            exceptions: HashSet::new(),
-        };
-        filter.parse_line("! This is a comment");
-        assert!(filter.blocked_domains.is_empty());
-        assert!(filter.exceptions.is_empty());
-    }
-
-    #[test]
-    fn test_abp_filter_skips_cosmetic_rules() {
-        let mut filter = AbpFilter {
-            blocked_domains: HashSet::new(),
-            exceptions: HashSet::new(),
-        };
-        filter.parse_line("example.com##.ad-banner");
-        assert!(filter.blocked_domains.is_empty());
     }
 }

@@ -21,6 +21,8 @@ use crate::{
     utils::count_dots,
 };
 
+use abp::parse_abp_line;
+
 /// 2MB chunk size for reading large list files
 const CHUNK_SIZE: usize = 2 * 1024 * 1024;
 
@@ -195,6 +197,12 @@ fn detect_format(line: &str) -> ListFormat {
         || line.starts_with(":: ")
     {
         ListFormat::Hosts
+    } else if line.starts_with("||") || line.starts_with("@@||") {
+        // ABP domain rules: ||example.com^ or @@||example.com^
+        ListFormat::Abp
+    } else if line.starts_with('/') && line.len() > 2 && line[1..].contains('/') {
+        // ABP regex rules: /pattern/
+        ListFormat::Abp
     } else if !line.contains(' ') && !line.contains('/') {
         ListFormat::Plain
     } else {
@@ -207,6 +215,7 @@ enum ListFormat {
     Hosts,
     Dnsmasq,
     Plain,
+    Abp,
     Unknown,
 }
 
@@ -223,6 +232,7 @@ fn process_line(
             ListFormat::Hosts => parse_host_line(trimmed),
             ListFormat::Dnsmasq => parse_dnsmasq_line(trimmed),
             ListFormat::Plain => parse_plain_domain(trimmed),
+            ListFormat::Abp => parse_abp_line(trimmed),
             ListFormat::Unknown => Err(ListError::ParseError(
                 std::io::Error::new(std::io::ErrorKind::InvalidData, "Unknown format"),
                 trimmed,
@@ -235,16 +245,36 @@ fn process_line(
             // Merge base_flags with entry flags (e.g., WHITELIST from config + WILDCARD from parser)
             let combined_flags = base_flags | entry.flags;
 
-            // Add to fast_map for exact matching
-            fast_map.insert(entry.hash, combined_flags.bits());
+            // Intelligent dispatch based on flags
+            // parse_abp_line already extracts clean domains and hashes them appropriately
+            if combined_flags.contains(DomainEntryFlags::REGEX) {
+                // Regex rules: only add to hierarchical list (for later regex pool processing)
+                hierarchical_list.push(DomainEntry {
+                    hash: entry.hash,
+                    flags: combined_flags,
+                    depth: entry.depth,
+                    data_idx: 0,
+                });
+                todo!("compile regex, put on the good vec");
+            } else if combined_flags.contains(DomainEntryFlags::WILDCARD) {
+                // Wildcard rules: only add to hierarchical list
+                hierarchical_list.push(DomainEntry {
+                    hash: entry.hash,
+                    flags: combined_flags,
+                    depth: entry.depth,
+                    data_idx: 0,
+                });
+            } else {
+                // Standard entry: add to fast_map for O(1) lookup and hierarchical list
+                fast_map.insert(entry.hash, combined_flags.bits());
 
-            // Also add to hierarchical list for wildcards/depth-based lookups
-            hierarchical_list.push(DomainEntry {
-                hash: entry.hash,
-                flags: combined_flags,
-                depth: entry.depth,
-                data_idx: 0,
-            });
+                hierarchical_list.push(DomainEntry {
+                    hash: entry.hash,
+                    flags: combined_flags,
+                    depth: entry.depth,
+                    data_idx: 0,
+                });
+            }
         }
         Err(ListError::Skip) => {
             // Empty line or comment, silently skip
@@ -261,7 +291,12 @@ where
 {
     // common logic like trimming and ignoring comments
     let trimmed = line.trim();
-    if trimmed.is_empty() || trimmed.starts_with('#') {
+    // Skip empty lines, hosts/dnsmasq comments (#), and ABP comments (!)
+    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
+        return Err(ListError::Skip);
+    }
+    // Skip ABP cosmetic rules (contain ##)
+    if trimmed.contains("##") {
         return Err(ListError::Skip);
     }
 
@@ -742,5 +777,180 @@ mod tests {
                 "Entry should have WHITELIST flag"
             );
         }
+    }
+
+    // --- Tests for ABP format detection ---
+
+    #[test]
+    fn test_detect_format_abp_block() {
+        assert_eq!(detect_format("||example.com^"), ListFormat::Abp);
+        assert_eq!(detect_format("||ads.example.com^"), ListFormat::Abp);
+    }
+
+    #[test]
+    fn test_detect_format_abp_whitelist() {
+        assert_eq!(detect_format("@@||example.com^"), ListFormat::Abp);
+        assert_eq!(detect_format("@@||trusted.site.com^"), ListFormat::Abp);
+    }
+
+    #[test]
+    fn test_detect_format_abp_regex() {
+        assert_eq!(
+            detect_format("/ads[0-9]+\\.example\\.com/"),
+            ListFormat::Abp
+        );
+    }
+
+    // --- Tests for process_line with ABP format ---
+
+    #[test]
+    fn test_process_line_abp_simple_domain() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        let mut hierarchical_list = Vec::new();
+
+        process_line(
+            "||ads.example.com^",
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+        );
+
+        // Should extract clean domain and add to fast_map
+        assert_eq!(fast_map.len(), 1);
+        assert_eq!(hierarchical_list.len(), 1);
+
+        // Verify the hash is for "ads.example.com" not "||ads.example.com^"
+        let expected_hash = twox_hash::XxHash64::oneshot(42, "ads.example.com".as_bytes());
+        assert!(fast_map.contains_key(&expected_hash));
+        assert_eq!(hierarchical_list[0].depth, 2);
+    }
+
+    #[test]
+    fn test_process_line_abp_whitelist() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        let mut hierarchical_list = Vec::new();
+
+        process_line(
+            "@@||trusted.example.com^",
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+        );
+
+        assert_eq!(fast_map.len(), 1);
+        let flags_bits = *fast_map.values().next().unwrap();
+        assert!(
+            DomainEntryFlags::from_bits(flags_bits)
+                .unwrap()
+                .contains(DomainEntryFlags::WHITELIST)
+        );
+    }
+
+    #[test]
+    fn test_process_line_abp_wildcard() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        let mut hierarchical_list = Vec::new();
+
+        process_line(
+            "||*.tracking.com^",
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+        );
+
+        // Wildcard should only go to hierarchical_list, not fast_map
+        assert_eq!(fast_map.len(), 0);
+        assert_eq!(hierarchical_list.len(), 1);
+        assert!(
+            hierarchical_list[0]
+                .flags
+                .contains(DomainEntryFlags::WILDCARD)
+        );
+    }
+
+    #[test]
+    fn test_process_line_abp_regex() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        let mut hierarchical_list = Vec::new();
+
+        process_line(
+            "/ads[0-9]+\\.example\\.com/",
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+        );
+
+        // Regex should only go to hierarchical_list, not fast_map
+        assert_eq!(fast_map.len(), 0);
+        assert_eq!(hierarchical_list.len(), 1);
+        assert!(hierarchical_list[0].flags.contains(DomainEntryFlags::REGEX));
+    }
+
+    #[test]
+    fn test_process_line_abp_comment_skipped() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        let mut hierarchical_list = Vec::new();
+
+        process_line(
+            "! This is an ABP comment",
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+        );
+
+        assert!(fast_map.is_empty());
+        assert!(hierarchical_list.is_empty());
+    }
+
+    #[test]
+    fn test_process_line_abp_cosmetic_rule_skipped() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        let mut hierarchical_list = Vec::new();
+
+        process_line(
+            "example.com##.ad-banner",
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+        );
+
+        assert!(fast_map.is_empty());
+        assert!(hierarchical_list.is_empty());
+    }
+
+    #[test]
+    fn test_load_list_file_abp() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        let mut hierarchical_list = Vec::new();
+
+        let result = load_list_file(
+            "tests/list_abp.txt",
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+        );
+
+        assert!(result.is_ok(), "Failed to load ABP file: {:?}", result);
+        // The test file has 78 entries (excluding comments)
+        assert!(
+            fast_map.len() >= 70,
+            "Expected at least 70 entries, got {}",
+            fast_map.len()
+        );
+        assert_eq!(fast_map.len(), hierarchical_list.len());
+
+        // Verify domains are hashed correctly (not including || and ^)
+        let expected_hash = twox_hash::XxHash64::oneshot(42, "samsungads.com".as_bytes());
+        assert!(
+            fast_map.contains_key(&expected_hash),
+            "Should contain hash for samsungads.com"
+        );
     }
 }
