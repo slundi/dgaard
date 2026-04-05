@@ -6,6 +6,7 @@ mod filter;
 mod model;
 mod resolve;
 mod runtime;
+mod stats;
 mod utils;
 
 use std::{
@@ -14,6 +15,7 @@ use std::{
 };
 
 use crate::config::Config;
+use crate::stats::{StatsCounters, StatsSender};
 use crate::{
     filter::{FilterEngine, reload_lists},
     runtime::{init_global_seed, start_with_single_worker, start_with_workers},
@@ -27,6 +29,11 @@ pub static CONFIG: std::sync::LazyLock<ArcSwap<Config>> =
     std::sync::LazyLock::new(|| ArcSwap::from_pointee(Config::default()));
 /// Stores the configuration file path for hot-reload support (SIGHUP).
 pub static CONFIG_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+/// Global statistics counters for quick metrics access.
+pub static STATS_COUNTERS: StatsCounters = StatsCounters::new();
+/// Global stats sender for emitting events to the collector.
+/// Initialized when the runtime starts.
+pub static STATS_SENDER: std::sync::OnceLock<StatsSender> = std::sync::OnceLock::new();
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts = cli::parse();

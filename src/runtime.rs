@@ -7,7 +7,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::{CONFIG, CONFIG_PATH, dns::handle_query, filter::reload_lists};
+use crate::stats::{self, StatsReceiver};
+use crate::{CONFIG, CONFIG_PATH, STATS_SENDER, dns::handle_query, filter::reload_lists};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::{
     net::UdpSocket,
@@ -99,6 +100,15 @@ fn get_socket(addr: &str) -> Result<Arc<tokio::net::UdpSocket>, Box<dyn std::err
     Ok(tokio_socket)
 }
 
+/// Initialize the stats channel and store the sender globally.
+/// Returns the receiver for the collector task.
+fn init_stats_channel() -> StatsReceiver {
+    let (sender, receiver) = stats::channel();
+    // Store sender globally for DNS handlers to use
+    let _ = STATS_SENDER.set(sender);
+    receiver
+}
+
 pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = Builder::new_current_thread()
         .enable_all()
@@ -108,7 +118,11 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
     runtime.block_on(async {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         tokio::spawn(watch_for_reloads());
-        let guard = ShutdownGuard::new(shutdown_rx);
+        let guard = ShutdownGuard::new(shutdown_rx.clone());
+
+        // Initialize stats channel and spawn collector
+        let stats_receiver = init_stats_channel();
+        tokio::spawn(stats_collector_task(stats_receiver, shutdown_rx));
 
         let tokio_socket = get_socket(&CONFIG.load().server.listen_addr)?;
         // Buffer for incoming DNS packets (DNS over UDP is typically 512 bytes,
@@ -174,6 +188,10 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let guard = ShutdownGuard::new(shutdown_rx.clone());
         tokio::spawn(watch_for_reloads());
+
+        // Initialize stats channel and spawn collector
+        let stats_receiver = init_stats_channel();
+        tokio::spawn(stats_collector_task(stats_receiver, shutdown_rx.clone()));
 
         let mut handles = Vec::new();
 
@@ -257,6 +275,102 @@ async fn wait_for_tasks(guard: &ShutdownGuard) {
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+/// Stats collector task that receives events and handles logging/streaming.
+///
+/// This task:
+/// 1. Receives StatMessage events from DNS handlers via MPSC channel
+/// 2. Logs block events to stdout (basic CLI logger)
+/// 3. Will stream to Unix socket when connected (future: step 5.3)
+async fn stats_collector_task(mut receiver: StatsReceiver, mut shutdown_rx: watch::Receiver<bool>) {
+    // Track domain mappings for logging
+    let mut domain_map: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+
+    loop {
+        tokio::select! {
+            biased;
+
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    // Drain remaining messages before exit
+                    while let Ok(msg) = receiver.try_recv() {
+                        process_stat_message(&msg, &mut domain_map);
+                    }
+                    break;
+                }
+            }
+
+            msg = receiver.recv() => {
+                match msg {
+                    Some(msg) => process_stat_message(&msg, &mut domain_map),
+                    None => break, // All senders dropped
+                }
+            }
+        }
+    }
+}
+
+/// Process a single stat message (logging and future socket streaming).
+fn process_stat_message(
+    msg: &dgaard::StatMessage,
+    domain_map: &mut std::collections::HashMap<u64, String>,
+) {
+    use dgaard::{StatAction, StatBlockReason, StatMessage};
+
+    match msg {
+        StatMessage::DomainMapping { hash, domain } => {
+            domain_map.insert(*hash, domain.clone());
+        }
+        StatMessage::Event(event) => {
+            // Get domain name from mapping (or use hash as fallback)
+            let domain = domain_map
+                .get(&event.domain_hash)
+                .map(|s| s.as_str())
+                .unwrap_or("<unknown>");
+
+            // Format client IP
+            let client_ip = format_client_ip(&event.client_ip);
+
+            // Log based on action
+            match &event.action {
+                StatAction::Blocked(reason) => {
+                    let reason_str = match reason {
+                        StatBlockReason::StaticBlacklist => "blocklist",
+                        StatBlockReason::AbpRule => "abp-rule",
+                        StatBlockReason::HighEntropy => "dga",
+                        StatBlockReason::LexicalAnalysis => "lexical",
+                        StatBlockReason::InvalidStructure => "structure",
+                        StatBlockReason::SuspiciousIdn => "idn",
+                        StatBlockReason::NrdList => "nrd",
+                        StatBlockReason::TldExcluded => "tld",
+                    };
+                    println!("[BLOCK] {} -> {} ({})", client_ip, domain, reason_str);
+                }
+                StatAction::Allowed => {
+                    // Only log in verbose/debug mode (currently silent)
+                }
+                StatAction::Proxied => {
+                    // Only log in verbose/debug mode (currently silent)
+                }
+            }
+        }
+    }
+}
+
+/// Format a 16-byte IPv6 address (or IPv4-mapped) for display.
+fn format_client_ip(ip_bytes: &[u8; 16]) -> String {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    // Check for IPv4-mapped address (::ffff:x.x.x.x)
+    if ip_bytes[0..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF] {
+        let v4 = Ipv4Addr::new(ip_bytes[12], ip_bytes[13], ip_bytes[14], ip_bytes[15]);
+        return v4.to_string();
+    }
+
+    // Full IPv6
+    let v6 = Ipv6Addr::from(*ip_bytes);
+    v6.to_string()
 }
 
 pub async fn watch_for_reloads() {
