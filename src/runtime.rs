@@ -7,7 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::{CONFIG, config::Config, dns::handle_query};
+use crate::{CONFIG, dns::handle_query};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::{net::UdpSocket, runtime::Builder};
 
