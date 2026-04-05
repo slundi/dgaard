@@ -208,12 +208,36 @@ pub struct IntelligenceConfig {
     /// considered unpronounceable / machine-generated (e.g., `bcdfgh`).
     pub consonant_ratio_threshold: f32,
 
+    /// Maximum consecutive consonants allowed before flagging as suspicious.
+    /// Normal English words rarely exceed 4 consecutive consonants.
+    /// Default: 5.
+    pub max_consonant_sequence: usize,
+
     /// Enable N-gram language-model scoring.  When `true`, each domain is
     /// scored against every model in [`ngram_models`]; if all scores fall
     /// below [`ngram_probability_threshold`] the domain is blocked.
     pub use_ngram_model: bool,
 
+    /// Use embedded Markov transition matrices instead of external files.
+    ///
+    /// When `true` (default), uses compact 26×26 character transition matrices
+    /// embedded directly in the binary (~2.7 KB per language). This is the
+    /// recommended mode for OpenWrt / embedded deployments as it requires no
+    /// external files and has zero runtime allocation.
+    ///
+    /// When `false`, loads full N-gram frequency tables from the files
+    /// specified in [`ngram_models`]. This mode offers higher accuracy but
+    /// requires external `.bin` files (2-5 MB per language).
+    pub ngram_use_embedded: bool,
+
+    /// Languages to use for embedded N-gram scoring.
+    /// Only used when [`ngram_use_embedded`] is `true`.
+    /// Supported values: "english", "french", "german", "spanish", "italian".
+    /// A domain passes if it scores above threshold in ANY of these languages.
+    pub ngram_embedded_languages: Vec<String>,
+
     /// Paths to pre-computed binary N-gram model files.
+    /// Only used when [`ngram_use_embedded`] is `false`.
     /// One file per language (e.g., `english.bin`, `french.bin`).
     pub ngram_models: Vec<String>,
 
@@ -230,12 +254,15 @@ impl Default for IntelligenceConfig {
             entropy_fast: true,
             min_word_length: 8,
             consonant_ratio_threshold: 0.6,
+            max_consonant_sequence: 5,
             use_ngram_model: false,
+            ngram_use_embedded: true,
+            ngram_embedded_languages: vec![String::from("english"), String::from("french")],
             ngram_models: vec![
                 String::from("/etc/dgaard/models/english.bin"),
                 String::from("/etc/dgaard/models/french.bin"),
             ],
-            ngram_probability_threshold: 0.05,
+            ngram_probability_threshold: -4.0,
         }
     }
 }
@@ -740,9 +767,12 @@ mod tests {
         assert!(i.entropy_fast);
         assert_eq!(i.min_word_length, 8);
         assert!((i.consonant_ratio_threshold - 0.6).abs() < f32::EPSILON);
+        assert_eq!(i.max_consonant_sequence, 5);
         assert!(!i.use_ngram_model);
+        assert!(i.ngram_use_embedded);
+        assert_eq!(i.ngram_embedded_languages, vec!["english", "french"]);
         assert_eq!(i.ngram_models.len(), 2);
-        assert!((i.ngram_probability_threshold - 0.05).abs() < f32::EPSILON);
+        assert!((i.ngram_probability_threshold - (-4.0)).abs() < f32::EPSILON);
     }
 
     // -----------------------------------------------------------------------

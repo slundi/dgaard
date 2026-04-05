@@ -21,6 +21,7 @@ bitflags! {
 pub enum Action {
     /// The domain is safe and was found in the local cache or whitelist.
     /// Returns the cached IP address.
+    #[allow(dead_code)] // For future cache implementation
     LocalResolve(IpAddr),
 
     /// The domain passed all filters and must be sent to the upstream provider.
@@ -32,9 +33,11 @@ pub enum Action {
     Block(BlockReason),
 
     /// A specialized internal response (e.g., redirecting to a local landing page).
+    #[allow(dead_code)] // For future landing page feature
     InternalRedirect(IpAddr),
 
     /// The query was ignored or dropped (e.g., malformed or from unauthorized ACL).
+    #[allow(dead_code)] // For future ACL implementation
     Drop,
 
     /// The domain is safe. Forward the original query to the upstream DNS.
@@ -42,9 +45,11 @@ pub enum Action {
 
     /// The domain is in our "Hot Cache" or "Favorites".
     /// We can return this IP immediately without asking an upstream server.
+    #[allow(dead_code)] // For future cache implementation
     Respond(IpAddr),
 
     /// Optional: The query is redirected to a local landing page (e.g., for a "Blocked" UI).
+    #[allow(dead_code)] // For future landing page feature
     Redirect(IpAddr),
 }
 
@@ -177,6 +182,7 @@ impl StatMessage {
 
     /// Deserialize from binary format.
     /// Expects: [msg_len: u16][type: u8][payload...]
+    #[allow(dead_code)] // For stats client/dashboard integration
     pub fn deserialize(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < 3 {
             return None;

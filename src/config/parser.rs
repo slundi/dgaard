@@ -331,8 +331,17 @@ fn parse_intelligence(
     if let Some(f) = get_float(table, "consonant_ratio_threshold")? {
         cfg.consonant_ratio_threshold = f;
     }
+    if let Some(n) = get_integer(table, "max_consonant_sequence")? {
+        cfg.max_consonant_sequence = n as usize;
+    }
     if let Some(b) = get_bool(table, "use_ngram_model")? {
         cfg.use_ngram_model = b;
+    }
+    if let Some(b) = get_bool(table, "ngram_use_embedded")? {
+        cfg.ngram_use_embedded = b;
+    }
+    if let Some(arr) = get_string_array(table, "ngram_embedded_languages")? {
+        cfg.ngram_embedded_languages = arr;
     }
     if let Some(arr) = get_string_array(table, "ngram_models")? {
         cfg.ngram_models = arr;
@@ -784,9 +793,12 @@ mod tests {
             entropy_fast = false
             min_word_length = 6
             consonant_ratio_threshold = 0.7
+            max_consonant_sequence = 4
             use_ngram_model = true
+            ngram_use_embedded = false
+            ngram_embedded_languages = ["english", "german"]
             ngram_models = ["/path/to/model.bin"]
-            ngram_probability_threshold = 0.1
+            ngram_probability_threshold = -5.0
         "#;
         let cfg = Config::parse(toml).unwrap();
         assert!(!cfg.security.intelligence.enabled);
@@ -794,12 +806,20 @@ mod tests {
         assert!(!cfg.security.intelligence.entropy_fast);
         assert_eq!(cfg.security.intelligence.min_word_length, 6);
         assert!((cfg.security.intelligence.consonant_ratio_threshold - 0.7).abs() < f32::EPSILON);
+        assert_eq!(cfg.security.intelligence.max_consonant_sequence, 4);
         assert!(cfg.security.intelligence.use_ngram_model);
+        assert!(!cfg.security.intelligence.ngram_use_embedded);
+        assert_eq!(
+            cfg.security.intelligence.ngram_embedded_languages,
+            vec!["english", "german"]
+        );
         assert_eq!(
             cfg.security.intelligence.ngram_models,
             vec!["/path/to/model.bin"]
         );
-        assert!((cfg.security.intelligence.ngram_probability_threshold - 0.1).abs() < f32::EPSILON);
+        assert!(
+            (cfg.security.intelligence.ngram_probability_threshold - (-5.0)).abs() < f32::EPSILON
+        );
     }
 
     #[test]
@@ -1070,9 +1090,12 @@ mod tests {
             entropy_threshold = 4.0
             min_word_length = 8
             consonant_ratio_threshold = 0.6
+            max_consonant_sequence = 5
             use_ngram_model = false
+            ngram_use_embedded = true
+            ngram_embedded_languages = ["english", "french"]
             ngram_models = ["/etc/dgaard/models/english.bin", "/etc/dgaard/models/french.bin"]
-            ngram_probability_threshold = 0.05
+            ngram_probability_threshold = -4.0
 
             [security.idn]
             mode = "Smart"

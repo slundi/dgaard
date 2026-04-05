@@ -3,16 +3,31 @@
 //! This module implements the core domain resolution logic that checks
 //! incoming DNS queries against various filters (whitelist, blocklist,
 //! heuristics, etc.) based on the configured pipeline order.
+//! 
+//! Pipeline flow:
+//! ```
+//!   Domain → Whitelist → HotCache → StaticBlock → SuffixMatch → Heuristics → Upstream
+//!                                                                 ↓
+//!                                                 ┌─────────────────────────────────┐
+//!                                                 │ 1. Entropy check (threshold)    │
+//!                                                 │ 2. Consonant ratio/sequence     │
+//!                                                 │ 3. N-gram language models (OR)  │
+//!                                                 └─────────────────────────────────┘
+//! ``````
 
 use core::sync::atomic::Ordering;
 
 use crate::config::PipelineStep;
-use crate::dga::{calculate_entropy, calculate_entropy_fast};
+use crate::dga::{
+    NgramLanguage, calculate_entropy, calculate_entropy_fast, is_consonant_suspicious,
+    ngram_check_embedded,
+};
 use crate::model::{Action, BlockReason, DomainEntryFlags};
 use crate::{CONFIG, CURRENT_ENGINE, GLOBAL_SEED};
 
 /// Result of checking a domain against the filter engine.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)] // For future engine query API
 pub enum FilterResult {
     /// Domain is whitelisted - allow immediately
     Whitelisted,
@@ -200,36 +215,79 @@ fn segment_matches(domain_seg: &str, pattern_seg: &str) -> bool {
     true
 }
 
-/// Check if domain is suspicious based on DGA heuristics.
-/// Uses Shannon entropy on the second-level domain (SLD).
-pub fn is_dga_suspicious(domain: &str) -> bool {
+/// Check DGA heuristics and return the specific BlockReason if suspicious.
+///
+/// This function applies multiple heuristics in order:
+/// 1. Shannon entropy check (detects random character strings)
+/// 2. Consonant clustering check (detects unpronounceable patterns)
+/// 3. N-gram language model check (detects non-natural language patterns)
+///
+/// Returns `Some(BlockReason)` if the domain fails any check, `None` if it passes.
+fn check_dga_heuristics(domain: &str) -> Option<BlockReason> {
     let config = CONFIG.load();
     let intel = &config.security.intelligence;
 
     if !intel.enabled {
-        return false;
+        return None;
     }
 
     // Extract the second-level domain (SLD)
     // "sub.example.com" -> "example"
     let parts: Vec<&str> = domain.split('.').collect();
     if parts.len() < 2 {
-        return false;
+        return None;
     }
 
     let sld = parts[parts.len() - 2];
 
     // Skip short domains to avoid false positives
     if sld.len() < intel.min_word_length {
-        return false;
+        return None;
     }
 
+    // 1. Shannon entropy check
     let entropy = if intel.entropy_fast {
         calculate_entropy_fast(sld)
     } else {
         calculate_entropy(sld)
     };
-    entropy > intel.entropy_threshold
+    if entropy > intel.entropy_threshold {
+        return Some(BlockReason::HighEntropy(entropy));
+    }
+
+    // 2. Consonant clustering check
+    if is_consonant_suspicious(
+        sld,
+        intel.consonant_ratio_threshold,
+        intel.max_consonant_sequence,
+    ) {
+        return Some(BlockReason::LexicalAnalysis);
+    }
+
+    // 3. N-gram language model check (if enabled)
+    if intel.use_ngram_model && intel.ngram_use_embedded {
+        let languages: Vec<NgramLanguage> = intel
+            .ngram_embedded_languages
+            .iter()
+            .filter_map(|s| NgramLanguage::from_str(s))
+            .collect();
+
+        // If domain fails ALL language models, it's suspicious
+        if !languages.is_empty()
+            && !ngram_check_embedded(sld, &languages, intel.ngram_probability_threshold)
+        {
+            return Some(BlockReason::LexicalAnalysis);
+        }
+    }
+
+    None
+}
+
+/// Check if domain is suspicious based on DGA heuristics.
+/// Uses Shannon entropy on the second-level domain (SLD).
+#[allow(dead_code)] // Public API for external callers
+pub fn is_dga_suspicious(domain: &str) -> bool {
+    check_dga_heuristics(domain).is_some()
 }
 
 /// Check if domain contains illegal IDN/Punycode characters.
@@ -324,14 +382,9 @@ pub fn resolve(domain: &str) -> Action {
                 }
             }
             PipelineStep::Heuristics => {
-                if is_dga_suspicious(domain) {
-                    let config = CONFIG.load();
-                    let entropy = if config.security.intelligence.entropy_fast {
-                        calculate_entropy_fast(domain)
-                    } else {
-                        calculate_entropy(domain)
-                    };
-                    return Action::Block(BlockReason::HighEntropy(entropy));
+                // Check all DGA heuristics and return appropriate block reason
+                if let Some(reason) = check_dga_heuristics(domain) {
+                    return Action::Block(reason);
                 }
             }
             PipelineStep::Upstream => {

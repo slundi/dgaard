@@ -65,16 +65,40 @@ entropy_threshold = 4.0
 # Fast mode uses zero heap allocation, ideal for OpenWrt/embedded.
 entropy_fast = true
 min_word_length = 8
-# Consonant ratio (e.g., 0.6 blocks "bcdfgh")
+
+# Consonant clustering detection
+# Ratio threshold (e.g., 0.6 blocks domains with >60% consonants like "bcdfgh")
 consonant_ratio_threshold = 0.6
-# N-Gram analysis for "unnatural" language patterns
+# Max consecutive consonants (normal words rarely exceed 4, e.g., "strength")
+max_consonant_sequence = 5
+
+# -----------------------------------------------------------------------------
+# N-Gram Language Model Analysis
+# -----------------------------------------------------------------------------
+# Detects "unnatural" character sequences by scoring domains against language
+# models. A domain must pass at least ONE language model to be allowed (OR logic).
 use_ngram_model = false
+
+# N-Gram Implementation Mode:
+# - true (default): Use embedded Markov matrices (~2.7 KB/language, zero-alloc)
+#   Best for OpenWrt/embedded. No external files needed.
+# - false: Load full N-gram tables from external .bin files (2-5 MB/language)
+#   Higher accuracy but requires file I/O at startup.
+ngram_use_embedded = true
+
+# Languages for embedded mode (used when ngram_use_embedded = true)
+# Supported: "english", "french", "german", "spanish", "italian"
+ngram_embedded_languages = ["english", "french"]
+
+# External model files (used when ngram_use_embedded = false)
 ngram_models = [
     "/etc/dgaard/models/english.bin",
     "/etc/dgaard/models/french.bin"
 ]
-# if all models are bellow this threshold, it is blocking
-ngram_probability_threshold = 0.05
+
+# Log-probability threshold (domains scoring below this in ALL models are blocked)
+# Typical range: -6.0 (strict) to -3.0 (lenient). Default: -4.0
+ngram_probability_threshold = -4.0
 
 [security.idn]
 # IDN filtering mode: "Off", "Strict" (block everything), "Smart" (european accent only)

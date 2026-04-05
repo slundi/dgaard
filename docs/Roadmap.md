@@ -69,8 +69,8 @@ dgaard/
 * [x] 4.1. **Gatekeeper** (Structure): Implement the `max_subdomain_depth` and `force_lowercase_ascii` checks (✅ was same as 3.2).
 * [x] 4.2. **Shannon Entropy**: Create the `math::entropy` module to calculate randomness (✅ `src/dga.rs - calculate_entropy_fast()`).
 * [x] 4.3. **Consonant Ratio**: Implement the lexical check for "unnatural" letter clustering.
-* [ ] 4.4. **N-Gram Loader**: Implement the binary loader for the `.bin` language models (source? https://www.unb.ca/cic/datasets/dns-2021.html).
-* [ ] 4.5. **Multi-Model N-Gram Logic**: Implement the "OR" logic (if domain passes English or French, it’s allowed).
+* [x] 4.4. **N-Gram Loader**: Implement the binary loader for the `.bin` language models (source? https://www.unb.ca/cic/datasets/dns-2021.html).
+* [x] 4.5. **Multi-Model N-Gram Logic**: Implement the "OR" logic (if domain passes English or French, it’s allowed).
 * [x] 4.6. **Punycode/IDN**: Add `idna` crate integration for the "Smart IDN" mode (✅ `src/resolve.rs - is_illegal_idn()`).
 
 ## Phase 5: Telemetry & Monitoring
