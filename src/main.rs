@@ -18,7 +18,7 @@ use std::{
 use crate::config::Config;
 use crate::stats::{StatsCounters, StatsSender};
 use crate::{
-    filter::{FilterEngine, reload_lists},
+    filter::FilterEngine,
     runtime::{init_global_seed, start_with_single_worker, start_with_workers},
 };
 use arc_swap::ArcSwap;
@@ -56,7 +56,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     CONFIG.store(Arc::clone(&shared_config));
 
     init_global_seed();
-    reload_lists();
 
     println!("Preparing dgaard runtime with {} thread(s)", cpus);
     if cpus == 1 {

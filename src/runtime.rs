@@ -7,8 +7,11 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::{stats::{self, StatsReceiver}, updater::spawn_update_task};
 use crate::{CONFIG, CONFIG_PATH, STATS_SENDER, dns::handle_query, filter::reload_lists};
+use crate::{
+    stats::{self, StatsReceiver},
+    updater::spawn_update_task,
+};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::{
     net::UdpSocket,
@@ -120,12 +123,15 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
         tokio::spawn(watch_for_reloads());
         let guard = ShutdownGuard::new(shutdown_rx.clone());
 
+        // Initial list load (supports both file paths and URLs)
+        println!("Loading filter lists...");
+        reload_lists().await;
+
         tokio::spawn(spawn_update_task());
 
         // Initialize stats channel and spawn collector
         let stats_receiver = init_stats_channel();
         tokio::spawn(stats_collector_task(stats_receiver, shutdown_rx));
-        
 
         let tokio_socket = get_socket(&CONFIG.load().server.listen_addr)?;
         // Buffer for incoming DNS packets (DNS over UDP is typically 512 bytes,
@@ -191,6 +197,10 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let guard = ShutdownGuard::new(shutdown_rx.clone());
         tokio::spawn(watch_for_reloads());
+
+        // Initial list load (supports both file paths and URLs)
+        println!("Loading filter lists...");
+        reload_lists().await;
 
         tokio::spawn(spawn_update_task());
 
@@ -498,10 +508,9 @@ pub async fn watch_for_reloads() {
 
     while stream.recv().await.is_some() {
         println!("SIGHUP received, reloading configuration...");
-        if let Err(e) = reload_config() {
+        if let Err(e) = reload_config().await {
             eprintln!("Reload failed: {}", e);
         }
-        reload_lists();
     }
 }
 
@@ -512,17 +521,17 @@ pub async fn watch_for_reloads() {
 /// filter engine with fresh lists.
 ///
 /// Returns `Ok(())` on success, or an error message on failure.
-pub fn reload_config() -> Result<(), String> {
+pub async fn reload_config() -> Result<(), String> {
     let config_path = CONFIG_PATH
         .get()
         .ok_or("Config path not set. Server was likely not initialized correctly.")?;
 
-    reload_config_from_path(config_path)
+    reload_config_from_path(config_path).await
 }
 
 /// Internal function to reload config from a specific path.
 /// Separated for testability.
-fn reload_config_from_path(config_path: &std::path::Path) -> Result<(), String> {
+async fn reload_config_from_path(config_path: &std::path::Path) -> Result<(), String> {
     if config_path.as_os_str().is_empty() {
         return Err("Config path is empty".to_string());
     }
@@ -530,7 +539,7 @@ fn reload_config_from_path(config_path: &std::path::Path) -> Result<(), String> 
     match crate::config::Config::load(config_path) {
         Ok(new_config) => {
             CONFIG.store(Arc::new(new_config));
-            reload_lists();
+            reload_lists().await;
             println!(
                 "Configuration reloaded successfully from {}",
                 config_path.display()
@@ -679,28 +688,28 @@ mod tests {
     // Hot reload tests
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn reload_config_from_path_fails_with_empty_path() {
+    #[tokio::test]
+    async fn reload_config_from_path_fails_with_empty_path() {
         use std::path::Path;
 
         let empty_path = Path::new("");
-        let result = reload_config_from_path(empty_path);
+        let result = reload_config_from_path(empty_path).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("empty"));
     }
 
-    #[test]
-    fn reload_config_from_path_fails_with_nonexistent_file() {
+    #[tokio::test]
+    async fn reload_config_from_path_fails_with_nonexistent_file() {
         use std::path::Path;
 
         let nonexistent = Path::new("/nonexistent/path/to/config.toml");
-        let result = reload_config_from_path(nonexistent);
+        let result = reload_config_from_path(nonexistent).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Failed to reload config"));
     }
 
-    #[test]
-    fn reload_config_from_path_succeeds_with_valid_config() {
+    #[tokio::test]
+    async fn reload_config_from_path_succeeds_with_valid_config() {
         use std::env;
         use std::fs;
 
@@ -718,7 +727,7 @@ mod tests {
         "#;
         fs::write(&config_path, config_content).expect("Failed to write config");
 
-        let result = reload_config_from_path(&config_path);
+        let result = reload_config_from_path(&config_path).await;
         assert!(result.is_ok(), "Reload should succeed: {:?}", result);
 
         // Verify config was updated
@@ -730,8 +739,8 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
-    #[test]
-    fn reload_config_from_path_fails_with_invalid_toml() {
+    #[tokio::test]
+    async fn reload_config_from_path_fails_with_invalid_toml() {
         use std::env;
         use std::fs;
 
@@ -743,7 +752,7 @@ mod tests {
         let invalid_content = "this is not valid { toml [syntax";
         fs::write(&config_path, invalid_content).expect("Failed to write config");
 
-        let result = reload_config_from_path(&config_path);
+        let result = reload_config_from_path(&config_path).await;
         assert!(result.is_err(), "Reload should fail with invalid TOML");
         assert!(result.unwrap_err().contains("Failed to reload config"));
 
@@ -751,8 +760,8 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
-    #[test]
-    fn reload_config_from_path_updates_global_config() {
+    #[tokio::test]
+    async fn reload_config_from_path_updates_global_config() {
         use std::env;
         use std::fs;
 
@@ -770,7 +779,7 @@ mod tests {
         )
         .expect("Failed to write config");
 
-        let _ = reload_config_from_path(&config_path);
+        let _ = reload_config_from_path(&config_path).await;
         assert_eq!(CONFIG.load().upstream.timeout_ms, 1000);
 
         // Update the config file
@@ -784,7 +793,7 @@ mod tests {
         .expect("Failed to write updated config");
 
         // Reload and verify update
-        let result = reload_config_from_path(&config_path);
+        let result = reload_config_from_path(&config_path).await;
         assert!(result.is_ok());
         assert_eq!(CONFIG.load().upstream.timeout_ms, 5000);
 

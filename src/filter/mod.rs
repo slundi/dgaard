@@ -4,6 +4,9 @@ mod fst;
 
 use core::sync::atomic::Ordering;
 use hickory_resolver::{Name, proto::ProtoError};
+use http_body_util::{BodyExt, Empty};
+use hyper::body::Bytes;
+use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 use regex::Regex;
 use std::{
     collections::HashMap,
@@ -14,14 +17,21 @@ use std::{
     sync::Arc,
 };
 use thiserror::Error;
+use url::Url;
 
 use crate::{
     CONFIG, CURRENT_ENGINE, GLOBAL_SEED,
     model::{DomainEntry, DomainEntryFlags, RawDomainEntry},
+    updater::{Resource, validate_input},
     utils::count_dots,
 };
 
 use abp::parse_abp_line;
+
+type HttpsClient = Client<
+    hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+    Empty<Bytes>,
+>;
 
 /// 2MB chunk size for reading large list files
 const CHUNK_SIZE: usize = 2 * 1024 * 1024;
@@ -441,11 +451,165 @@ pub fn parse_plain_domain(line: &str) -> Result<RawDomainEntry, ListError<'_>> {
     })
 }
 
-pub fn reload_lists() {
-    let mut new_engine = FilterEngine::build_from_files();
+/// Create an HTTPS client with rustls for downloading lists.
+fn build_https_client() -> HttpsClient {
+    let https = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_webpki_roots()
+        .https_or_http()
+        .enable_http1()
+        .build();
+    Client::builder(TokioExecutor::new()).build(https)
+}
+
+/// Download a list from a URL using the provided HTTP client.
+async fn download_list(
+    client: &HttpsClient,
+    url: &Url,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let uri: hyper::Uri = url.as_str().parse()?;
+    let req = hyper::Request::builder()
+        .method(hyper::Method::GET)
+        .uri(&uri)
+        .header("User-Agent", "dgaard/0.1")
+        .body(Empty::<Bytes>::new())?;
+
+    let res = client.request(req).await?;
+    let status = res.status();
+    if !status.is_success() {
+        return Err(format!("HTTP error: {}", status).into());
+    }
+
+    let body = res.collect().await?.to_bytes();
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// Load a list from raw content (e.g., downloaded from URL).
+fn load_list_content(
+    content: &str,
+    base_flags: DomainEntryFlags,
+    fast_map: &mut HashMap<u64, u8>,
+    hierarchical_list: &mut Vec<DomainEntry>,
+    wildcard_patterns: &mut Vec<String>,
+    regex_pool: &mut Vec<Regex>,
+) {
+    for line in content.lines() {
+        process_line(
+            line,
+            base_flags,
+            fast_map,
+            hierarchical_list,
+            wildcard_patterns,
+            regex_pool,
+        );
+    }
+}
+
+/// Load a source (file path or URL) into the filter collections.
+async fn load_source(
+    source: &str,
+    base_flags: DomainEntryFlags,
+    client: &HttpsClient,
+    fast_map: &mut HashMap<u64, u8>,
+    hierarchical_list: &mut Vec<DomainEntry>,
+    wildcard_patterns: &mut Vec<String>,
+    regex_pool: &mut Vec<Regex>,
+) {
+    match validate_input(source) {
+        Ok(Resource::HttpUrl(url)) => match download_list(client, &url).await {
+            Ok(content) => {
+                println!("Downloaded {} ({} bytes)", source, content.len());
+                load_list_content(
+                    &content,
+                    base_flags,
+                    fast_map,
+                    hierarchical_list,
+                    wildcard_patterns,
+                    regex_pool,
+                );
+            }
+            Err(e) => eprintln!("Warning: Failed to download {}: {}", source, e),
+        },
+        Ok(Resource::FilePath(_)) => {
+            if let Err(e) = load_list_file(
+                source,
+                base_flags,
+                fast_map,
+                hierarchical_list,
+                wildcard_patterns,
+                regex_pool,
+            ) {
+                eprintln!("Warning: Failed to load {}: {}", source, e);
+            }
+        }
+        Err(e) => eprintln!("Warning: Invalid source {}: {}", source, e),
+    }
+}
+
+pub async fn reload_lists() {
+    let client = build_https_client();
+    let cfg = CONFIG.load();
+    let sources = &cfg.sources;
+
+    let mut fast_map: HashMap<u64, u8> = HashMap::new();
+    let mut hierarchical_list: Vec<DomainEntry> = Vec::new();
+    let mut regex_pool: Vec<Regex> = Vec::new();
+    let mut wildcard_patterns: Vec<String> = Vec::new();
+
+    // Load blacklists sequentially
+    for source in &sources.blacklists {
+        load_source(
+            source,
+            DomainEntryFlags::NONE,
+            &client,
+            &mut fast_map,
+            &mut hierarchical_list,
+            &mut wildcard_patterns,
+            &mut regex_pool,
+        )
+        .await;
+    }
+
+    // Load whitelists sequentially (with WHITELIST flag)
+    for source in &sources.whitelists {
+        load_source(
+            source,
+            DomainEntryFlags::WHITELIST,
+            &client,
+            &mut fast_map,
+            &mut hierarchical_list,
+            &mut wildcard_patterns,
+            &mut regex_pool,
+        )
+        .await;
+    }
+
+    // Load NRD list if path is set
+    if !sources.nrd_list_path.is_empty() {
+        load_source(
+            &sources.nrd_list_path,
+            DomainEntryFlags::NONE,
+            &client,
+            &mut fast_map,
+            &mut hierarchical_list,
+            &mut wildcard_patterns,
+            &mut regex_pool,
+        )
+        .await;
+    }
+
+    // Build the new engine
+    let mut new_engine = FilterEngine {
+        fast_map,
+        hierarchical_list,
+        regex_pool,
+        wildcard_patterns,
+    };
+
     new_engine.load_tld_filters();
     new_engine.hierarchical_list.sort_by_key(|de| de.hash);
     new_engine.wildcard_patterns.sort();
+    new_engine.hierarchical_list.dedup();
+    new_engine.wildcard_patterns.dedup();
     CURRENT_ENGINE.store(Arc::new(new_engine));
 }
 
@@ -1297,5 +1461,150 @@ mod tests {
             engine.hierarchical_list.is_empty(),
             "Empty exclude list should produce no entries"
         );
+    }
+
+    // --- Tests for load_list_content ---
+
+    #[test]
+    fn test_load_list_content_plain_domains() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        let mut hierarchical_list = Vec::new();
+        let mut wildcard_patterns = Vec::new();
+        let mut regex_pool = Vec::new();
+
+        let content = "example.com\ntest.org\nfoo.bar.net";
+        load_list_content(
+            content,
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+            &mut wildcard_patterns,
+            &mut regex_pool,
+        );
+
+        assert_eq!(fast_map.len(), 3);
+        assert_eq!(hierarchical_list.len(), 3);
+    }
+
+    #[test]
+    fn test_load_list_content_hosts_format() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        let mut hierarchical_list = Vec::new();
+        let mut wildcard_patterns = Vec::new();
+        let mut regex_pool = Vec::new();
+
+        let content =
+            "0.0.0.0 ads.example.com\n127.0.0.1 tracking.site.org\n# comment\n\n:: ipv6.test.com";
+        load_list_content(
+            content,
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+            &mut wildcard_patterns,
+            &mut regex_pool,
+        );
+
+        assert_eq!(fast_map.len(), 3);
+        assert_eq!(hierarchical_list.len(), 3);
+    }
+
+    #[test]
+    fn test_load_list_content_mixed_formats() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        let mut hierarchical_list = Vec::new();
+        let mut wildcard_patterns = Vec::new();
+        let mut regex_pool = Vec::new();
+
+        let content = r#"# Comment line
+plain.domain.com
+0.0.0.0 hosts.format.com
+server=/dnsmasq.format.com/
+||abp.format.com^
+"#;
+        load_list_content(
+            content,
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+            &mut wildcard_patterns,
+            &mut regex_pool,
+        );
+
+        assert_eq!(fast_map.len(), 4);
+        assert_eq!(hierarchical_list.len(), 4);
+    }
+
+    #[test]
+    fn test_load_list_content_with_whitelist_flag() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        let mut hierarchical_list = Vec::new();
+        let mut wildcard_patterns = Vec::new();
+        let mut regex_pool = Vec::new();
+
+        let content = "allowed.com\ntrusted.org";
+        load_list_content(
+            content,
+            DomainEntryFlags::WHITELIST,
+            &mut fast_map,
+            &mut hierarchical_list,
+            &mut wildcard_patterns,
+            &mut regex_pool,
+        );
+
+        assert_eq!(fast_map.len(), 2);
+        for entry in &hierarchical_list {
+            assert!(
+                entry.flags.contains(DomainEntryFlags::WHITELIST),
+                "Entries should have WHITELIST flag"
+            );
+        }
+    }
+
+    #[test]
+    fn test_load_list_content_empty() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        let mut hierarchical_list = Vec::new();
+        let mut wildcard_patterns = Vec::new();
+        let mut regex_pool = Vec::new();
+
+        let content = "";
+        load_list_content(
+            content,
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+            &mut wildcard_patterns,
+            &mut regex_pool,
+        );
+
+        assert!(fast_map.is_empty());
+        assert!(hierarchical_list.is_empty());
+    }
+
+    #[test]
+    fn test_load_list_content_only_comments() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        let mut hierarchical_list = Vec::new();
+        let mut wildcard_patterns = Vec::new();
+        let mut regex_pool = Vec::new();
+
+        let content = "# comment 1\n# comment 2\n! ABP comment\n";
+        load_list_content(
+            content,
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+            &mut wildcard_patterns,
+            &mut regex_pool,
+        );
+
+        assert!(fast_map.is_empty());
+        assert!(hierarchical_list.is_empty());
     }
 }

@@ -3,7 +3,7 @@
 //! This module implements the core domain resolution logic that checks
 //! incoming DNS queries against various filters (whitelist, blocklist,
 //! heuristics, etc.) based on the configured pipeline order.
-//! 
+//!
 //! Pipeline flow:
 //! ```
 //!   Domain → Whitelist → HotCache → StaticBlock → SuffixMatch → Heuristics → Upstream
