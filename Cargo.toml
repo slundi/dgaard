@@ -1,11 +1,11 @@
 [package]
 name = "dgaard"
 authors = ["Sébastien LUNDI"]
-description = "Privacy and security focused DNS proxy with advanced blocking."
+description = "A high-performance, stratified DNS security proxy for OpenWrt and SME networks. Featuring DGA detection, Shannon entropy analysis, multi-language N-Gram models, and zero-copy filtering. Built for speed and privacy."
 readme = "README.md"
 license = "Apache-2.0"
 repository = "https://codeberg.org/slundi/dgaard"
-keywords = ["dns", "openwrt", "dga", "security", "proxy"]
+keywords = ["dns", "proxy", "security", "filter", "heuristics"]
 categories = ["network-programming", "embedded-software", "cryptography"]
 version = "0.1.0"
 edition = "2024"

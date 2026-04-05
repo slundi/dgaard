@@ -28,6 +28,7 @@ Traditional DNS blockers (Pi-hole, AdGuard) have two major limitations:
 ## ⚖️ Comparison with Existing Solutions
 
 | Feature | Pi-hole / AdGuard | Blocky / Unbound | Dgaard |
+|:--------|:------------------|:-----------------|:-------|
 | **Language** | PHP/Go/C | Go / C | **Rust** (Memory Safe & Fast) |
 | **Filtering Method** | Exact Match Lists | Lists + RegEx | **Stratified: Lists + Heuristics + IDN** |
 | **RAM Usage** | Moderate to High | Moderate | **Ultra-Low (Bloom Filters & rkyv)** |
