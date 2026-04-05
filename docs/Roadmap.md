@@ -77,9 +77,9 @@ dgaard/
 
 *Focus: Sharing the internal state with the outside world.*
 
-* [ ] 5.1. **StatEvent Definition**: Define the `StatEvent` struct with BlockReason.
-* [ ] 5.2. **MPSC Channel**: Setup the `tokio::sync::mpsc` channel to pass events from the Resolver to the Stats task.
-* [ ] 5.3. **Unix Domain Socket** (UDS) Server: Implement the listener that streams `Postcard`-encoded events.
+* [x] 5.1. **StatEvent Definition**: Define the `StatEvent` struct with BlockReason.
+* [x] 5.2. **MPSC Channel**: Setup the `tokio::sync::mpsc` channel to pass events from the Resolver to the Stats task.
+* [x] 5.3. **Unix Domain Socket** (UDS) Server: Implement the listener that streams `Postcard`-encoded events.
 * [ ] 5.4. **Basic CLI Logger**: Create a small internal function that prints blocks to `stdout` (for initial debugging).
 
 ## Phase 6: Reliability & Advanced Networking

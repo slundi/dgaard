@@ -183,10 +183,10 @@ pub(crate) async fn handle_query(
     socket.send_to(&response, peer).await?;
 
     // 5. Emit stat event (non-blocking)
-    if let Some(stat_action) = stat_action {
-        if let Some(sender) = STATS_SENDER.get() {
-            sender.send_event(&dns_packet.domain, peer, stat_action);
-        }
+    if let Some(stat_action) = stat_action
+        && let Some(sender) = STATS_SENDER.get()
+    {
+        sender.send_event(&dns_packet.domain, peer, stat_action);
     }
 
     Ok(())

@@ -282,28 +282,74 @@ async fn wait_for_tasks(guard: &ShutdownGuard) {
 /// This task:
 /// 1. Receives StatMessage events from DNS handlers via MPSC channel
 /// 2. Logs block events to stdout (basic CLI logger)
-/// 3. Will stream to Unix socket when connected (future: step 5.3)
+/// 3. Streams events to connected Unix socket clients
 async fn stats_collector_task(mut receiver: StatsReceiver, mut shutdown_rx: watch::Receiver<bool>) {
+    use tokio::net::UnixStream;
+
     // Track domain mappings for logging
     let mut domain_map: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+
+    // Connected socket clients
+    let mut clients: Vec<UnixStream> = Vec::new();
+
+    // Try to bind the Unix socket
+    let socket_path = CONFIG.load().server.stats_socket_path.clone();
+    let listener = match setup_unix_socket(&socket_path) {
+        Ok(l) => {
+            println!("Stats socket listening on {}", socket_path);
+            Some(l)
+        }
+        Err(e) => {
+            eprintln!(
+                "Warning: Failed to create stats socket at {}: {}",
+                socket_path, e
+            );
+            None
+        }
+    };
 
     loop {
         tokio::select! {
             biased;
 
+            // Check for shutdown
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
                     // Drain remaining messages before exit
                     while let Ok(msg) = receiver.try_recv() {
-                        process_stat_message(&msg, &mut domain_map);
+                        process_stat_message(&msg, &mut domain_map, &mut clients).await;
+                    }
+                    // Clean up socket file
+                    if !socket_path.is_empty() {
+                        let _ = std::fs::remove_file(&socket_path);
                     }
                     break;
                 }
             }
 
+            // Accept new Unix socket connections
+            result = async {
+                match &listener {
+                    Some(l) => l.accept().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match result {
+                    Ok((stream, _addr)) => {
+                        println!("Stats client connected ({} total)", clients.len() + 1);
+                        // Send all current domain mappings to the new client
+                        send_domain_mappings_to_client(&mut clients, &domain_map, stream).await;
+                    }
+                    Err(e) => {
+                        eprintln!("Error accepting stats connection: {}", e);
+                    }
+                }
+            }
+
+            // Process stat messages
             msg = receiver.recv() => {
                 match msg {
-                    Some(msg) => process_stat_message(&msg, &mut domain_map),
+                    Some(msg) => process_stat_message(&msg, &mut domain_map, &mut clients).await,
                     None => break, // All senders dropped
                 }
             }
@@ -311,12 +357,63 @@ async fn stats_collector_task(mut receiver: StatsReceiver, mut shutdown_rx: watc
     }
 }
 
-/// Process a single stat message (logging and future socket streaming).
-fn process_stat_message(
+/// Set up the Unix domain socket for stats streaming.
+fn setup_unix_socket(path: &str) -> std::io::Result<tokio::net::UnixListener> {
+    use tokio::net::UnixListener;
+
+    if path.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Stats socket path is empty",
+        ));
+    }
+
+    // Remove existing socket file if it exists
+    let _ = std::fs::remove_file(path);
+
+    // Create parent directory if needed
+    if let Some(parent) = std::path::Path::new(path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    UnixListener::bind(path)
+}
+
+/// Send all current domain mappings to a newly connected client.
+async fn send_domain_mappings_to_client(
+    clients: &mut Vec<tokio::net::UnixStream>,
+    domain_map: &std::collections::HashMap<u64, String>,
+    mut new_client: tokio::net::UnixStream,
+) {
+    use dgaard::StatMessage;
+    use tokio::io::AsyncWriteExt;
+
+    // Send all known domain mappings to the new client
+    for (&hash, domain) in domain_map {
+        let msg = StatMessage::DomainMapping {
+            hash,
+            domain: domain.clone(),
+        };
+        let bytes = msg.serialize();
+        if new_client.write_all(&bytes).await.is_err() {
+            // Client disconnected during handshake, don't add it
+            return;
+        }
+    }
+
+    clients.push(new_client);
+}
+
+/// Process a single stat message: log to stdout and stream to connected clients.
+async fn process_stat_message(
     msg: &dgaard::StatMessage,
     domain_map: &mut std::collections::HashMap<u64, String>,
+    clients: &mut Vec<tokio::net::UnixStream>,
 ) {
     use dgaard::{StatAction, StatBlockReason, StatMessage};
+    use tokio::io::AsyncWriteExt;
 
     match msg {
         StatMessage::DomainMapping { hash, domain } => {
@@ -353,6 +450,21 @@ fn process_stat_message(
                 StatAction::Proxied => {
                     // Only log in verbose/debug mode (currently silent)
                 }
+            }
+        }
+    }
+
+    // Stream to connected Unix socket clients
+    if !clients.is_empty() {
+        let bytes = msg.serialize();
+        let mut i = 0;
+        while i < clients.len() {
+            if clients[i].write_all(&bytes).await.is_err() {
+                // Client disconnected, remove it
+                let _ = clients.swap_remove(i);
+                println!("Stats client disconnected ({} remaining)", clients.len());
+            } else {
+                i += 1;
             }
         }
     }
