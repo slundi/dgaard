@@ -122,6 +122,28 @@ impl FilterEngine {
             wildcard_patterns,
         }
     }
+
+    /// Load TLD exclusion filters from configuration.
+    ///
+    /// TLDs in `cfg.tld.exclude` (e.g., `".xyz"`, `".top"`) are added to the
+    /// hierarchical list with `depth: 0` and `WILDCARD` flag, so any domain
+    /// under that TLD will be blocked by `is_suffix_blocked`.
+    pub fn load_tld_filters(&mut self) {
+        let cfg = CONFIG.load();
+        for tld in &cfg.tld.exclude {
+            // Strip leading dot if present (config stores ".xyz", lookup uses "xyz")
+            let tld_clean = tld.strip_prefix('.').unwrap_or(tld);
+            self.hierarchical_list.push(DomainEntry {
+                hash: twox_hash::XxHash64::oneshot(
+                    GLOBAL_SEED.load(Ordering::Relaxed),
+                    tld_clean.to_ascii_lowercase().as_bytes(),
+                ),
+                depth: 0,
+                data_idx: 0,
+                flags: DomainEntryFlags::WILDCARD,
+            });
+        }
+    }
 }
 
 /// Load a list file by reading 2MB chunks at a time.
@@ -406,6 +428,7 @@ pub fn parse_plain_domain(line: &str) -> Result<RawDomainEntry, ListError<'_>> {
 
 pub fn reload_lists() {
     let mut new_engine = FilterEngine::build_from_files();
+    new_engine.load_tld_filters();
     new_engine.hierarchical_list.sort_by_key(|de| de.hash);
     new_engine.wildcard_patterns.sort();
     CURRENT_ENGINE.store(Arc::new(new_engine));
@@ -1047,6 +1070,102 @@ mod tests {
         assert!(
             fast_map.contains_key(&expected_hash),
             "Should contain hash for samsungads.com"
+        );
+    }
+
+    // --- Tests for load_tld_filters ---
+
+    #[test]
+    fn test_load_tld_filters_adds_entries_with_depth_zero() {
+        init_seed();
+        let mut engine = FilterEngine::empty();
+
+        // Manually set TLD config for test
+        let mut cfg = crate::config::Config::default();
+        cfg.tld.exclude = vec![String::from(".xyz"), String::from(".top")];
+        CONFIG.store(Arc::new(cfg));
+
+        engine.load_tld_filters();
+
+        assert_eq!(engine.hierarchical_list.len(), 2);
+        for entry in &engine.hierarchical_list {
+            assert_eq!(entry.depth, 0, "TLD entries should have depth 0");
+            assert!(
+                entry.flags.contains(DomainEntryFlags::WILDCARD),
+                "TLD entries should have WILDCARD flag"
+            );
+        }
+    }
+
+    #[test]
+    fn test_load_tld_filters_strips_leading_dot() {
+        init_seed();
+        let mut engine = FilterEngine::empty();
+
+        let mut cfg = crate::config::Config::default();
+        cfg.tld.exclude = vec![String::from(".xyz")];
+        CONFIG.store(Arc::new(cfg));
+
+        engine.load_tld_filters();
+
+        // Hash should be for "xyz" not ".xyz"
+        let expected_hash = twox_hash::XxHash64::oneshot(42, "xyz".as_bytes());
+        assert_eq!(engine.hierarchical_list.len(), 1);
+        assert_eq!(
+            engine.hierarchical_list[0].hash, expected_hash,
+            "Hash should be for 'xyz' without leading dot"
+        );
+    }
+
+    #[test]
+    fn test_load_tld_filters_handles_no_leading_dot() {
+        init_seed();
+        let mut engine = FilterEngine::empty();
+
+        let mut cfg = crate::config::Config::default();
+        cfg.tld.exclude = vec![String::from("bid")]; // No leading dot
+        CONFIG.store(Arc::new(cfg));
+
+        engine.load_tld_filters();
+
+        let expected_hash = twox_hash::XxHash64::oneshot(42, "bid".as_bytes());
+        assert_eq!(engine.hierarchical_list[0].hash, expected_hash);
+    }
+
+    #[test]
+    fn test_load_tld_filters_lowercases_tld() {
+        init_seed();
+        let mut engine = FilterEngine::empty();
+
+        let mut cfg = crate::config::Config::default();
+        cfg.tld.exclude = vec![String::from(".XYZ"), String::from(".Top")];
+        CONFIG.store(Arc::new(cfg));
+
+        engine.load_tld_filters();
+
+        // Hashes should be for lowercase versions
+        let hash_xyz = twox_hash::XxHash64::oneshot(42, "xyz".as_bytes());
+        let hash_top = twox_hash::XxHash64::oneshot(42, "top".as_bytes());
+
+        let hashes: Vec<u64> = engine.hierarchical_list.iter().map(|e| e.hash).collect();
+        assert!(hashes.contains(&hash_xyz), "Should contain hash for 'xyz'");
+        assert!(hashes.contains(&hash_top), "Should contain hash for 'top'");
+    }
+
+    #[test]
+    fn test_load_tld_filters_empty_list() {
+        init_seed();
+        let mut engine = FilterEngine::empty();
+
+        let mut cfg = crate::config::Config::default();
+        cfg.tld.exclude = vec![];
+        CONFIG.store(Arc::new(cfg));
+
+        engine.load_tld_filters();
+
+        assert!(
+            engine.hierarchical_list.is_empty(),
+            "Empty exclude list should produce no entries"
         );
     }
 }

@@ -444,4 +444,82 @@ mod tests {
         let action = resolve("xn--pple-43d.com");
         assert!(matches!(action, Action::Block(BlockReason::SuspiciousIdn)));
     }
+
+    // --- Tests for TLD blocking ---
+
+    fn create_engine_with_tld_block(tlds: &[&str]) -> FilterEngine {
+        let mut hierarchical_list = Vec::new();
+        for tld in tlds {
+            // Strip leading dot if present (mimics load_tld_filters behavior)
+            let tld_clean = tld.strip_prefix('.').unwrap_or(tld);
+            let hash = twox_hash::XxHash64::oneshot(42, tld_clean.as_bytes());
+            hierarchical_list.push(crate::model::DomainEntry {
+                hash,
+                flags: DomainEntryFlags::WILDCARD,
+                depth: 0,
+                data_idx: 0,
+            });
+        }
+        hierarchical_list.sort_by_key(|e| e.hash);
+
+        FilterEngine {
+            fast_map: HashMap::new(),
+            hierarchical_list,
+            regex_pool: Vec::new(),
+            wildcard_patterns: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_is_suffix_blocked_by_tld() {
+        init_test_env();
+        let engine = create_engine_with_tld_block(&["xyz"]);
+        CURRENT_ENGINE.store(Arc::new(engine));
+
+        // Any domain under .xyz should be blocked
+        assert!(is_suffix_blocked("malware.xyz"));
+        assert!(is_suffix_blocked("sub.domain.xyz"));
+        assert!(is_suffix_blocked("deep.nested.sub.xyz"));
+
+        // Other TLDs should not be blocked
+        assert!(!is_suffix_blocked("example.com"));
+        assert!(!is_suffix_blocked("safe.org"));
+    }
+
+    #[test]
+    fn test_is_suffix_blocked_by_multiple_tlds() {
+        init_test_env();
+        let engine = create_engine_with_tld_block(&["xyz", "top", "bid"]);
+        CURRENT_ENGINE.store(Arc::new(engine));
+
+        assert!(is_suffix_blocked("spam.xyz"));
+        assert!(is_suffix_blocked("malware.top"));
+        assert!(is_suffix_blocked("phishing.bid"));
+        assert!(!is_suffix_blocked("safe.com"));
+    }
+
+    #[test]
+    fn test_resolve_tld_blocked_domain() {
+        init_test_env();
+        let engine = create_engine_with_tld_block(&["xyz"]);
+        CURRENT_ENGINE.store(Arc::new(engine));
+
+        let action = resolve("malware.xyz");
+        assert!(
+            matches!(action, Action::Block(BlockReason::AbpRule(_))),
+            "Domain under blocked TLD should be blocked, got: {:?}",
+            action
+        );
+    }
+
+    #[test]
+    fn test_tld_block_with_leading_dot_in_config() {
+        init_test_env();
+        // Simulate config format with leading dot
+        let engine = create_engine_with_tld_block(&[".xyz", ".top"]);
+        CURRENT_ENGINE.store(Arc::new(engine));
+
+        assert!(is_suffix_blocked("spam.xyz"));
+        assert!(is_suffix_blocked("malware.top"));
+    }
 }

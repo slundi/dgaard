@@ -58,7 +58,7 @@ dgaard/
 * [x] 3.1. **Pipeline Orchestrator**: Create a `Resolver::resolve(&self, query)` function that loops through a `Vec<FilterStep>` (✅ `src/resolve.rs - resolve()` loops through `config.server.pipeline`).
 * [x] 3.2. **Structure Gatekeeper**: Implement the max_subdomain_depth check using usize (✅ `src/resolve.rs - is_structure_invalid()` checks depth & length).
 * [x] 3.3. **Whitelist Lookup**: Implement the Sorted `Vec<u64>` with binary_search() for the fastest O(logn) memory-efficient lookup or `HashSet<u64>` (using `xxh3_64`) (✅ `src/resolve.rs - is_whitelisted()` uses xxhash + `fast_map`).
-* [ ] 3.4. **TLD Blacklist**: Implement the exclude TLD check.
+* [x] 3.4. **TLD Blacklist**: Implement the exclude TLD check.
 * [x] 3.5. **Static Blacklist Step**: Implement the lookup in the Bloom Filter + `rkyv` archive (✅ `src/resolve.rs - is_blocked()`).
 * [x] 3.6. **Upstream Forwarder**: Implement the `ProxyToUpstream` logic using `trust-dns-proto` to send the UDP packet and wait for a response (✅ `src/dns.rs - forward_to_upstream()`).
 
