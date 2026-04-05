@@ -303,12 +303,27 @@ fn process_line(
                     data_idx: regex_pool.len(),
                 });
             } else if combined_flags.contains(DomainEntryFlags::WILDCARD) {
-                // Wildcard rules: only add to hierarchical list
+                // Extract clean pattern from ABP syntax (remove || prefix and ^ suffix)
+                let clean_pattern = entry.value.trim_start_matches("||").trim_end_matches('^');
+
+                // Check if pattern needs glob matching (has * within a segment, not as standalone)
+                // e.g., "ads*.example.com" needs glob, but "*.example.com" is suffix-only
+                let needs_glob = clean_pattern
+                    .split('.')
+                    .any(|seg| seg.contains('*') && seg != "*");
+
+                let data_idx = if needs_glob {
+                    wildcard_patterns.push(clean_pattern.to_string());
+                    wildcard_patterns.len() // 1-based index
+                } else {
+                    0 // Suffix-only, no glob pattern stored
+                };
+
                 hierarchical_list.push(DomainEntry {
                     hash: entry.hash,
                     flags: combined_flags,
                     depth: entry.depth,
-                    data_idx: 0,
+                    data_idx,
                 });
             } else {
                 // Standard entry: add to fast_map for O(1) lookup and hierarchical list
@@ -948,13 +963,14 @@ mod tests {
     }
 
     #[test]
-    fn test_process_line_abp_wildcard() {
+    fn test_process_line_abp_wildcard_suffix_only() {
         init_seed();
         let mut fast_map = HashMap::new();
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
 
+        // Pattern like *.tracking.com is suffix-only (handled by is_suffix_blocked)
         process_line(
             "||*.tracking.com^",
             DomainEntryFlags::NONE,
@@ -964,7 +980,7 @@ mod tests {
             &mut regex_pool,
         );
 
-        // Wildcard should only go to hierarchical_list, not fast_map
+        // Suffix wildcard should go to hierarchical_list only, NOT wildcard_patterns
         assert_eq!(fast_map.len(), 0);
         assert_eq!(hierarchical_list.len(), 1);
         assert!(
@@ -972,6 +988,120 @@ mod tests {
                 .flags
                 .contains(DomainEntryFlags::WILDCARD)
         );
+        assert_eq!(hierarchical_list[0].data_idx, 0); // No glob pattern stored
+        assert_eq!(wildcard_patterns.len(), 0); // Suffix patterns don't need glob matching
+    }
+
+    #[test]
+    fn test_process_line_wildcard_pattern_stored() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        let mut hierarchical_list = Vec::new();
+        let mut wildcard_patterns = Vec::new();
+        let mut regex_pool = Vec::new();
+
+        // Test pattern like ads*.example.com
+        process_line(
+            "||ads*.example.com^",
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+            &mut wildcard_patterns,
+            &mut regex_pool,
+        );
+
+        assert_eq!(wildcard_patterns.len(), 1);
+        assert_eq!(wildcard_patterns[0], "ads*.example.com");
+        assert_eq!(hierarchical_list[0].data_idx, 1); // 1-based index
+    }
+
+    #[test]
+    fn test_process_line_multiple_wildcard_patterns() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        let mut hierarchical_list = Vec::new();
+        let mut wildcard_patterns = Vec::new();
+        let mut regex_pool = Vec::new();
+
+        // Glob patterns (need wildcard_patterns)
+        process_line(
+            "||ads*.example.com^",
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+            &mut wildcard_patterns,
+            &mut regex_pool,
+        );
+        process_line(
+            "||*tracker.analytics.com^",
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+            &mut wildcard_patterns,
+            &mut regex_pool,
+        );
+        process_line(
+            "||banner*.ad.net^",
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+            &mut wildcard_patterns,
+            &mut regex_pool,
+        );
+
+        assert_eq!(wildcard_patterns.len(), 3);
+        assert_eq!(wildcard_patterns[0], "ads*.example.com");
+        assert_eq!(wildcard_patterns[1], "*tracker.analytics.com");
+        assert_eq!(wildcard_patterns[2], "banner*.ad.net");
+    }
+
+    #[test]
+    fn test_process_line_mixed_wildcard_types() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        let mut hierarchical_list = Vec::new();
+        let mut wildcard_patterns = Vec::new();
+        let mut regex_pool = Vec::new();
+
+        // Suffix-only pattern (standalone * segment)
+        process_line(
+            "||*.tracking.com^",
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+            &mut wildcard_patterns,
+            &mut regex_pool,
+        );
+        // Glob pattern (* within segment)
+        process_line(
+            "||ads*.example.com^",
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+            &mut wildcard_patterns,
+            &mut regex_pool,
+        );
+        // Another suffix-only
+        process_line(
+            "||*.ads.net^",
+            DomainEntryFlags::NONE,
+            &mut fast_map,
+            &mut hierarchical_list,
+            &mut wildcard_patterns,
+            &mut regex_pool,
+        );
+
+        // All go to hierarchical_list
+        assert_eq!(hierarchical_list.len(), 3);
+
+        // Only glob pattern goes to wildcard_patterns
+        assert_eq!(wildcard_patterns.len(), 1);
+        assert_eq!(wildcard_patterns[0], "ads*.example.com");
+
+        // Check data_idx: 0 for suffix-only, non-zero for glob
+        assert_eq!(hierarchical_list[0].data_idx, 0); // *.tracking.com
+        assert_eq!(hierarchical_list[1].data_idx, 1); // ads*.example.com
+        assert_eq!(hierarchical_list[2].data_idx, 0); // *.ads.net
     }
 
     #[test]
