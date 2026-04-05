@@ -7,7 +7,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::stats::{self, StatsReceiver};
+use crate::{stats::{self, StatsReceiver}, updater::spawn_update_task};
 use crate::{CONFIG, CONFIG_PATH, STATS_SENDER, dns::handle_query, filter::reload_lists};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::{
@@ -120,9 +120,12 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
         tokio::spawn(watch_for_reloads());
         let guard = ShutdownGuard::new(shutdown_rx.clone());
 
+        tokio::spawn(spawn_update_task());
+
         // Initialize stats channel and spawn collector
         let stats_receiver = init_stats_channel();
         tokio::spawn(stats_collector_task(stats_receiver, shutdown_rx));
+        
 
         let tokio_socket = get_socket(&CONFIG.load().server.listen_addr)?;
         // Buffer for incoming DNS packets (DNS over UDP is typically 512 bytes,
@@ -188,6 +191,8 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let guard = ShutdownGuard::new(shutdown_rx.clone());
         tokio::spawn(watch_for_reloads());
+
+        tokio::spawn(spawn_update_task());
 
         // Initialize stats channel and spawn collector
         let stats_receiver = init_stats_channel();

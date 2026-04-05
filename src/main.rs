@@ -7,6 +7,7 @@ mod model;
 mod resolve;
 mod runtime;
 mod stats;
+mod updater;
 mod utils;
 
 use std::{
