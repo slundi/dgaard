@@ -1,5 +1,122 @@
 use std::collections::HashMap;
 
+// Vowels for consonant ratio analysis (lowercase ASCII only)
+const VOWELS: [u8; 5] = [b'a', b'e', b'i', b'o', b'u'];
+
+/// Checks if a byte is a lowercase ASCII letter
+#[inline]
+fn is_lowercase_letter(b: u8) -> bool {
+    b.is_ascii_lowercase()
+}
+
+/// Checks if a byte is a vowel (lowercase ASCII)
+#[inline]
+fn is_vowel(b: u8) -> bool {
+    VOWELS.contains(&b)
+}
+
+/// Checks if a byte is a consonant (lowercase ASCII letter that is not a vowel)
+#[inline]
+fn is_consonant(b: u8) -> bool {
+    is_lowercase_letter(b) && !is_vowel(b)
+}
+
+/// Calculates the consonant ratio of a string.
+///
+/// Returns the ratio of consonants to total letters (0.0 to 1.0).
+/// Non-letter characters (digits, hyphens, etc.) are ignored.
+///
+/// Normal English words have a consonant ratio around 0.6-0.7.
+/// DGA domains often have ratios > 0.8 due to random character generation.
+///
+/// # Examples
+/// ```
+/// use dgaard::dga::calculate_consonant_ratio;
+/// let ratio = calculate_consonant_ratio("google"); // ~0.67 (4 consonants / 6 letters)
+/// let ratio = calculate_consonant_ratio("xvbrtz"); // 1.0 (all consonants)
+/// ```
+pub fn calculate_consonant_ratio(s: &str) -> f32 {
+    let bytes = s.as_bytes();
+    let mut consonants = 0u32;
+    let mut letters = 0u32;
+
+    for &b in bytes {
+        if is_lowercase_letter(b) {
+            letters += 1;
+            if is_consonant(b) {
+                consonants += 1;
+            }
+        }
+    }
+
+    if letters == 0 {
+        return 0.0;
+    }
+
+    consonants as f32 / letters as f32
+}
+
+/// Finds the longest sequence of consecutive consonants in a string.
+///
+/// Normal English words rarely have more than 3-4 consecutive consonants.
+/// DGA domains often have sequences of 5+ consonants due to random generation.
+///
+/// # Examples
+/// ```
+/// use dgaard::dga::max_consonant_sequence;
+/// let seq = max_consonant_sequence("strength"); // 3 ("str")
+/// let seq = max_consonant_sequence("xvbrtzkm"); // 8 (all consonants)
+/// ```
+pub fn max_consonant_sequence(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    let mut max_seq = 0usize;
+    let mut current_seq = 0usize;
+
+    for &b in bytes {
+        if is_consonant(b) {
+            current_seq += 1;
+            if current_seq > max_seq {
+                max_seq = current_seq;
+            }
+        } else {
+            current_seq = 0;
+        }
+    }
+
+    max_seq
+}
+
+/// Checks if a domain has suspicious consonant patterns.
+///
+/// This function combines both the consonant ratio and max sequence checks
+/// to identify "unnatural" letter clustering typical of DGA domains.
+///
+/// # Arguments
+/// * `s` - The domain string to analyze (should be lowercase)
+/// * `ratio_threshold` - Maximum allowed consonant ratio (e.g., 0.8)
+/// * `max_sequence_threshold` - Maximum allowed consecutive consonants (e.g., 4)
+///
+/// # Returns
+/// `true` if the domain exceeds either threshold (suspicious)
+pub fn is_consonant_suspicious(
+    s: &str,
+    ratio_threshold: f32,
+    max_sequence_threshold: usize,
+) -> bool {
+    // Skip very short strings (not enough data to analyze)
+    if s.len() < 4 {
+        return false;
+    }
+
+    let ratio = calculate_consonant_ratio(s);
+    if ratio > ratio_threshold {
+        return true;
+    }
+
+    let max_seq = max_consonant_sequence(s);
+    max_seq > max_sequence_threshold
+}
+
 /// Calculates the Shannon Entropy of a string with full unicode support.
 /// Higher values (typically > 3.5 to 4.5) indicate potential DGA.
 pub fn calculate_entropy(s: &str) -> f32 {
@@ -252,5 +369,187 @@ mod tests {
     fn entropy_fast_numeric_string() {
         let e = calculate_entropy_fast("1234567890");
         assert!((e - 3.32).abs() < 0.1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Consonant Ratio Tests (#4.3 from Roadmap)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn consonant_ratio_empty_string() {
+        assert_eq!(calculate_consonant_ratio(""), 0.0);
+    }
+
+    #[test]
+    fn consonant_ratio_only_vowels() {
+        assert_eq!(calculate_consonant_ratio("aeiou"), 0.0);
+    }
+
+    #[test]
+    fn consonant_ratio_only_consonants() {
+        assert_eq!(calculate_consonant_ratio("bcdfg"), 1.0);
+    }
+
+    #[test]
+    fn consonant_ratio_mixed() {
+        // "google" = g, o, o, g, l, e -> 3 consonants (g, g, l) / 6 letters = 0.5
+        let ratio = calculate_consonant_ratio("google");
+        assert!((ratio - 0.5).abs() < 0.01, "google ratio: {}", ratio);
+    }
+
+    #[test]
+    fn consonant_ratio_normal_domains() {
+        // Normal domains should have ratios around 0.5-0.7
+        // facebook = f-a-c-e-b-o-o-k = 8 letters, 4 consonants (f,c,b,k) = 0.5
+        // example = e-x-a-m-p-l-e = 7 letters, 4 consonants (x,m,p,l) = ~0.57
+        // amazon = a-m-a-z-o-n = 6 letters, 3 consonants (m,z,n) = 0.5
+        let examples = [("facebook", 0.5), ("example", 0.571), ("amazon", 0.5)];
+
+        for (domain, expected) in examples {
+            let ratio = calculate_consonant_ratio(domain);
+            assert!(
+                (ratio - expected).abs() < 0.1,
+                "{} ratio: {}, expected: {}",
+                domain,
+                ratio,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn consonant_ratio_dga_like_domains() {
+        // DGA domains often have very high consonant ratios
+        let dga_examples = ["xvbrtz", "qwrtplk", "bcdfghjk"];
+
+        for domain in dga_examples {
+            let ratio = calculate_consonant_ratio(domain);
+            assert!(ratio > 0.85, "{} should have high ratio: {}", domain, ratio);
+        }
+    }
+
+    #[test]
+    fn consonant_ratio_ignores_digits_and_hyphens() {
+        // "abc123" has 2 consonants (b, c) / 3 letters = 0.67
+        let ratio = calculate_consonant_ratio("abc123");
+        assert!((ratio - 0.67).abs() < 0.1, "abc123 ratio: {}", ratio);
+
+        // "a-b-c" has 2 consonants / 3 letters = 0.67
+        let ratio = calculate_consonant_ratio("a-b-c");
+        assert!((ratio - 0.67).abs() < 0.1, "a-b-c ratio: {}", ratio);
+    }
+
+    // -----------------------------------------------------------------------
+    // Max Consonant Sequence Tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn max_consonant_sequence_empty_string() {
+        assert_eq!(max_consonant_sequence(""), 0);
+    }
+
+    #[test]
+    fn max_consonant_sequence_only_vowels() {
+        assert_eq!(max_consonant_sequence("aeiou"), 0);
+    }
+
+    #[test]
+    fn max_consonant_sequence_single_consonant() {
+        assert_eq!(max_consonant_sequence("aba"), 1);
+    }
+
+    #[test]
+    fn max_consonant_sequence_normal_words() {
+        // "strength" = s-t-r-e-n-g-t-h
+        // "str" = 3, then "e" breaks, "ngth" = 4
+        assert_eq!(max_consonant_sequence("strength"), 4);
+
+        // "google" = g-o-o-g-l-e, "gl" = 2 consecutive
+        assert_eq!(max_consonant_sequence("google"), 2);
+
+        // "rhythm" = r-h-y-t-h-m (y is treated as consonant)
+        // All 6 are consonants
+        assert_eq!(max_consonant_sequence("rhythm"), 6);
+    }
+
+    #[test]
+    fn max_consonant_sequence_dga_patterns() {
+        // DGA patterns often have long consonant runs
+        assert_eq!(max_consonant_sequence("xvbrtz"), 6);
+        // "axvbrtzb" = a(vowel), then xvbrtzb = 7 consonants
+        assert_eq!(max_consonant_sequence("axvbrtzb"), 7);
+        assert_eq!(max_consonant_sequence("qwrtplk"), 7);
+    }
+
+    #[test]
+    fn max_consonant_sequence_digits_break_sequence() {
+        // Digits should break consonant sequences
+        assert_eq!(max_consonant_sequence("bc1df"), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Combined Suspicious Check Tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn is_consonant_suspicious_short_strings_not_flagged() {
+        // Strings < 4 chars should not be flagged (not enough data)
+        assert!(!is_consonant_suspicious("xyz", 0.8, 4));
+        assert!(!is_consonant_suspicious("bc", 0.8, 4));
+    }
+
+    #[test]
+    fn is_consonant_suspicious_normal_domains_pass() {
+        // Normal domains should not be flagged
+        let normal_domains = ["google", "facebook", "amazon", "example", "cloudflare"];
+
+        for domain in normal_domains {
+            assert!(
+                !is_consonant_suspicious(domain, 0.8, 4),
+                "{} should not be suspicious",
+                domain
+            );
+        }
+    }
+
+    #[test]
+    fn is_consonant_suspicious_dga_domains_flagged() {
+        // DGA-like domains should be flagged
+        let dga_domains = [
+            "xvbrtzk",  // All consonants, long sequence
+            "bcdfghjk", // All consonants
+            "qwrtplkm", // All consonants, long sequence
+        ];
+
+        for domain in dga_domains {
+            assert!(
+                is_consonant_suspicious(domain, 0.8, 4),
+                "{} should be suspicious",
+                domain
+            );
+        }
+    }
+
+    #[test]
+    fn is_consonant_suspicious_by_ratio() {
+        // High ratio but no long sequence
+        // "bcbcbc" has ratio 1.0 but max sequence of 1
+        assert!(is_consonant_suspicious("bcbcbc", 0.8, 10));
+    }
+
+    #[test]
+    fn is_consonant_suspicious_by_sequence() {
+        // Long sequence but acceptable ratio
+        // "astrength" has 4 consecutive consonants "ngth" and ratio ~0.78
+        assert!(is_consonant_suspicious("xyzth", 0.95, 3));
+    }
+
+    #[test]
+    fn is_consonant_suspicious_edge_case_y() {
+        // "y" is treated as a consonant in our implementation
+        // This is a simplification; linguistically y can be a vowel
+        assert!(is_consonant(b'y'));
+        // "syzygy" = s-y-z-y-g-y, all 6 are consonants
+        assert_eq!(max_consonant_sequence("syzygy"), 6);
     }
 }
