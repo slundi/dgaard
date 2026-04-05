@@ -86,7 +86,7 @@ dgaard/
 
 *Focus: Making the proxy production-ready for SMEs.*
 
-* [ ] 6.1. **IPv6 Support**: Refactor `Action` to use `IpAddr` and update the Upstream forwarder to handle `AAAA` records.
+* [x] 6.1. **IPv6 Support**: Refactor `Action` to use `IpAddr` and update the Upstream forwarder to handle `AAAA` records.
 * [x] 6.2. **Upstream Fallback**: Implement a "Retry" logic if the primary DNS (e.g., `9.9.9.9`) timeouts (✅ `dns.rs`).
 * [x] 6.3. **Graceful Shutdown**: Use `tokio::signal::ctrl_c` to wait for active tasks to finish before exiting (✅ `src/runtime.rs` - `ShutdownGuard` + `TaskGuard` RAII pattern).
 * [x] 6.4. **Hot-Reload**: Implement a `SIGHUP` signal listener to reload the TOML config and lists without stopping the process.

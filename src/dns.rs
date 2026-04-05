@@ -70,8 +70,18 @@ async fn forward_to_upstream(packet: &[u8]) -> std::io::Result<Vec<u8>> {
             Err(_) => continue,
         };
 
+        // Bind to appropriate address family based on upstream server type
+        let bind_addr = if addr.is_ipv6() {
+            "[::]:0"
+        } else {
+            "0.0.0.0:0"
+        };
+
         // Create a new socket for upstream communication
-        let upstream_socket = UdpSocket::bind("0.0.0.0:0").await?;
+        let upstream_socket = match UdpSocket::bind(bind_addr).await {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
 
         // Send the query to upstream
         if upstream_socket.send_to(packet, addr).await.is_err() {
@@ -288,5 +298,79 @@ mod tests {
         let response_msg = Message::from_vec(&response).unwrap();
         assert_eq!(response_msg.message_type(), MessageType::Response);
         assert_eq!(response_msg.response_code(), ResponseCode::ServFail);
+    }
+
+    // --- IPv6 upstream support tests ---
+
+    #[test]
+    fn test_ipv4_upstream_address_parsing() {
+        let addr: SocketAddr = "1.1.1.1:53".parse().unwrap();
+        assert!(!addr.is_ipv6());
+        assert!(addr.is_ipv4());
+    }
+
+    #[test]
+    fn test_ipv6_upstream_address_parsing() {
+        // Cloudflare IPv6 DNS
+        let addr: SocketAddr = "[2606:4700:4700::1111]:53".parse().unwrap();
+        assert!(addr.is_ipv6());
+        assert!(!addr.is_ipv4());
+
+        // Google IPv6 DNS
+        let addr: SocketAddr = "[2001:4860:4860::8888]:53".parse().unwrap();
+        assert!(addr.is_ipv6());
+    }
+
+    #[test]
+    fn test_bind_address_selection_ipv4() {
+        let addr: SocketAddr = "9.9.9.9:53".parse().unwrap();
+        let bind_addr = if addr.is_ipv6() {
+            "[::]:0"
+        } else {
+            "0.0.0.0:0"
+        };
+        assert_eq!(bind_addr, "0.0.0.0:0");
+    }
+
+    #[test]
+    fn test_bind_address_selection_ipv6() {
+        let addr: SocketAddr = "[2606:4700:4700::1111]:53".parse().unwrap();
+        let bind_addr = if addr.is_ipv6() {
+            "[::]:0"
+        } else {
+            "0.0.0.0:0"
+        };
+        assert_eq!(bind_addr, "[::]:0");
+    }
+
+    #[test]
+    fn test_dns_packet_aaaa_query() {
+        // Valid DNS query for "example.com" (type AAAA = 0x001C)
+        let packet = [
+            0x00, 0x02, // Transaction ID
+            0x01, 0x00, // Flags: Standard query
+            0x00, 0x01, // Questions: 1
+            0x00, 0x00, // Answers: 0
+            0x00, 0x00, // Authority: 0
+            0x00, 0x00, // Additional: 0
+            // Question: example.com, type AAAA
+            0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e', // "example"
+            0x03, b'c', b'o', b'm', // "com"
+            0x00, // null terminator
+            0x00, 0x1C, // Type: AAAA (28)
+            0x00, 0x01, // Class: IN
+        ];
+
+        let result = DnsPacket::from_bytes(&packet);
+        assert!(result.is_some());
+        let dns_packet = result.unwrap();
+        assert_eq!(dns_packet.domain, "example.com");
+
+        // Verify the query type is preserved
+        let query = dns_packet.message.queries().first().unwrap();
+        assert_eq!(
+            query.query_type(),
+            hickory_resolver::proto::rr::RecordType::AAAA
+        );
     }
 }
