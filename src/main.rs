@@ -35,7 +35,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = config::Config::load(&config_path)?;
     // Store config path for hot-reload (SIGHUP)
-    CONFIG_PATH.set(config_path.clone()).expect("Path already set");
+    CONFIG_PATH
+        .set(config_path.clone())
+        .expect("Path already set");
 
     let cpus = match config.server.runtime.worker_threads {
         config::WorkerThreads::Auto => num_cpus::get(),

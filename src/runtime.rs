@@ -525,8 +525,7 @@ mod tests {
         use std::env;
         use std::fs;
 
-        let temp_dir =
-            env::temp_dir().join(format!("dgaard_reload_update_{}", std::process::id()));
+        let temp_dir = env::temp_dir().join(format!("dgaard_reload_update_{}", std::process::id()));
         fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
 
         // First config
