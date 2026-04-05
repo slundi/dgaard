@@ -1,19 +1,21 @@
 mod cli;
 mod config;
+mod dga;
 mod dns;
 mod filter;
 mod model;
+mod resolve;
 mod runtime;
 mod utils;
 
 use std::sync::{Arc, atomic::AtomicU64};
 
+use crate::config::Config;
 use crate::{
     filter::{FilterEngine, reload_lists},
     runtime::{init_global_seed, start_with_single_worker, start_with_workers},
 };
 use arc_swap::ArcSwap;
-use crate::config::Config;
 
 pub static GLOBAL_SEED: AtomicU64 = AtomicU64::new(0);
 pub static CURRENT_ENGINE: std::sync::LazyLock<ArcSwap<FilterEngine>> =
