@@ -55,10 +55,10 @@ pub fn is_whitelisted(domain: &str) -> bool {
     while parts.len() > 1 {
         parts.remove(0);
         let parent = parts.join(".");
-        if let Some(flags) = fast_lookup(&parent) {
-            if flags.contains(DomainEntryFlags::WHITELIST | DomainEntryFlags::WILDCARD) {
-                return true;
-            }
+        if let Some(flags) = fast_lookup(&parent)
+            && flags.contains(DomainEntryFlags::WHITELIST | DomainEntryFlags::WILDCARD)
+        {
+            return true;
         }
     }
 
