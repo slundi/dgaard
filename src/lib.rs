@@ -1,8 +1,7 @@
 pub mod blocklist;
 pub mod domain;
 
-use std::net::Ipv4Addr;
-
+use std::net::IpAddr;
 
 #[derive(Debug)]
 pub enum ProxyMessage {
@@ -32,7 +31,7 @@ pub enum ProxyMessage {
 pub enum Action {
     /// The domain is safe and was found in the local cache or whitelist.
     /// Returns the cached IP address.
-    LocalResolve(Ipv4Addr),
+    LocalResolve(IpAddr),
 
     /// The domain passed all filters and must be sent to the upstream provider.
     ProxyToUpstream,
@@ -43,7 +42,7 @@ pub enum Action {
     Block(BlockReason),
 
     /// A specialized internal response (e.g., redirecting to a local landing page).
-    InternalRedirect(Ipv4Addr),
+    InternalRedirect(IpAddr),
 
     /// The query was ignored or dropped (e.g., malformed or from unauthorized ACL).
     Drop,
@@ -53,10 +52,10 @@ pub enum Action {
 
     /// The domain is in our "Hot Cache" or "Favorites".
     /// We can return this IP immediately without asking an upstream server.
-    Respond(Ipv4Addr),
+    Respond(IpAddr),
 
     /// Optional: The query is redirected to a local landing page (e.g., for a "Blocked" UI).
-    Redirect(Ipv4Addr),
+    Redirect(IpAddr),
 }
 
 #[derive(Debug, Clone)]
