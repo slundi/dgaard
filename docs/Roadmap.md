@@ -55,23 +55,23 @@ dgaard/
 
 *Focus: Implementing the `Action` logic step-by-step.*
 
-* [ ] 3.1. **Pipeline Orchestrator**: Create a `Resolver::resolve(&self, query)` function that loops through a `Vec<FilterStep>`.
-* [ ] 3.2. **Structure Gatekeeper**: Implement the max_subdomain_depth check using usize.
-* [ ] 3.3. **Whitelist Lookup**: Implement the Sorted `Vec<u64>` with binary_search() for the fastest O(logn) memory-efficient lookup or `HashSet<u64>` (using `xxh3_64`).
+* [x] 3.1. **Pipeline Orchestrator**: Create a `Resolver::resolve(&self, query)` function that loops through a `Vec<FilterStep>` (✅ `src/resolve.rs - resolve()` loops through `config.server.pipeline`).
+* [x] 3.2. **Structure Gatekeeper**: Implement the max_subdomain_depth check using usize (✅ `src/resolve.rs - is_structure_invalid()` checks depth & length).
+* [x] 3.3. **Whitelist Lookup**: Implement the Sorted `Vec<u64>` with binary_search() for the fastest O(logn) memory-efficient lookup or `HashSet<u64>` (using `xxh3_64`) (✅ `src/resolve.rs - is_whitelisted()` uses xxhash + `fast_map`).
 * [ ] 3.4. **TLD Blacklist**: Implement the exclude TLD check.
-* [ ] 3.5. **Static Blacklist Step**: Implement the lookup in the Bloom Filter + `rkyv` archive.
-* [ ] 3.6. **Upstream Forwarder**: Implement the `ProxyToUpstream` logic using `trust-dns-proto` to send the UDP packet and wait for a response.
+* [x] 3.5. **Static Blacklist Step**: Implement the lookup in the Bloom Filter + `rkyv` archive (✅ `src/resolve.rs - is_blocked()`).
+* [x] 3.6. **Upstream Forwarder**: Implement the `ProxyToUpstream` logic using `trust-dns-proto` to send the UDP packet and wait for a response (✅ `src/dns.rs - forward_to_upstream()`).
 
 ## Phase 4: Intelligence & Heuristics
 
 *Focus: Adding the "Brain" features that differentiate Dgaard from Pi-hole.*
 
-* [ ] 4.1. **Gatekeeper** (Structure): Implement the `max_subdomain_depth` and `force_lowercase_ascii` checks.
-* [ ] 4.2. **Shannon Entropy**: Create the `math::entropy` module to calculate randomness.
+* [x] 4.1. **Gatekeeper** (Structure): Implement the `max_subdomain_depth` and `force_lowercase_ascii` checks (✅ was same as 3.2).
+* [x] 4.2. **Shannon Entropy**: Create the `math::entropy` module to calculate randomness (✅ `src/dga.rs - calculate_entropy_fast()`).
 * [ ] 4.3. **Consonant Ratio**: Implement the lexical check for "unnatural" letter clustering.
 * [ ] 4.4. **N-Gram Loader**: Implement the binary loader for the `.bin` language models.
 * [ ] 4.5. **Multi-Model N-Gram Logic**: Implement the "OR" logic (if domain passes English or French, it’s allowed).
-* [ ] 4.6. **Punycode/IDN**: Add `idna` crate integration for the "Smart IDN" mode.
+* [x] 4.6. **Punycode/IDN**: Add `idna` crate integration for the "Smart IDN" mode (✅ `src/resolve.rs - is_illegal_idn()`).
 
 ## Phase 5: Telemetry & Monitoring
 
@@ -87,7 +87,7 @@ dgaard/
 *Focus: Making the proxy production-ready for SMEs.*
 
 * [ ] 6.1. **IPv6 Support**: Refactor `Action` to use `IpAddr` and update the Upstream forwarder to handle `AAAA` records.
-* [ ] 6.2. **Upstream Fallback**: Implement a "Retry" logic if the primary DNS (e.g., `9.9.9.9`) timeouts.
+* [x] 6.2. **Upstream Fallback**: Implement a "Retry" logic if the primary DNS (e.g., `9.9.9.9`) timeouts (✅ `dns.rs`).
 * [ ] 6.3. **Graceful Shutdown**: Use `tokio::signal::ctrl_c` to wait for active tasks to finish before exiting.
 * [ ] 6.4. **Hot-Reload**: Implement a `SIGHUP` signal listener to reload the TOML config and lists without stopping the process.
 
@@ -124,7 +124,7 @@ pub struct StatEvent {
 
 ## Unsorted
 
-* [ ] **Multi-Thread Spawn**: A loop that spawns a `tokio::spawn` task for every incoming packet.
+* [x] **Multi-Thread Spawn**: A loop that spawns a `tokio::spawn` task for every incoming packet (`src/runtime.rs`).
 * [ ] **Host index**: when building whitelists and blocklist, generate `/var/dgaard/host_mapping.bin` (or `.txt`) so external application can retrieve the domain, the list type from the xxh3_64 hash.
 * [ ] **Browser black/whitelist**: when parsing ABP list put the ignored rule in another text file so the user can use it for its browser since it will mainly be CSS/JS/HTML blocking.
 * [ ] **Terminal colors**: for the few printed message crates are [yansi](https://crates.io/crates/yansi) or [anstyle](https://crates.io/crates/anstyle) or custom implementation. But it will run as the daemon so the log will probably go to syslog or journald so colors chars may make the log unreadable so maybe [tracing](https://crates.io/crates/tracing) or [log](https://crates.io/crates/log) instead.
