@@ -67,9 +67,7 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
     })
 }
 
-pub(crate) fn start_with_workers(
-    cpus: usize,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::Error>> {
     let runtime = Builder::new_multi_thread()
         .enable_all()
         .worker_threads(cpus)
@@ -88,8 +86,7 @@ pub(crate) fn start_with_workers(
             // let cfg = config.clone();
             futures.push(tokio::spawn(async move {
                 let addr = &CONFIG.load().server.listen_addr;
-                let tokio_socket =
-                    get_socket(addr).expect("Failed to bind socket");
+                let tokio_socket = get_socket(addr).expect("Failed to bind socket");
                 let mut buf = [0u8; 4096];
                 loop {
                     match tokio_socket.recv_from(&mut buf).await {
