@@ -8,7 +8,10 @@ mod resolve;
 mod runtime;
 mod utils;
 
-use std::sync::{Arc, atomic::AtomicU64};
+use std::{
+    path::PathBuf,
+    sync::{Arc, atomic::AtomicU64},
+};
 
 use crate::config::Config;
 use crate::{
@@ -22,6 +25,8 @@ pub static CURRENT_ENGINE: std::sync::LazyLock<ArcSwap<FilterEngine>> =
     std::sync::LazyLock::new(|| ArcSwap::from_pointee(FilterEngine::empty()));
 pub static CONFIG: std::sync::LazyLock<ArcSwap<Config>> =
     std::sync::LazyLock::new(|| ArcSwap::from_pointee(Config::default()));
+/// Stores the configuration file path for hot-reload support (SIGHUP).
+pub static CONFIG_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts = cli::parse();
@@ -29,6 +34,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = config::discover_path(opts.config.as_deref()).ok_or("Configuration file not found. Please provide one via --config or place it in /etc/dgaard/config.toml")?;
 
     let config = config::Config::load(&config_path)?;
+    // Store config path for hot-reload (SIGHUP)
+    CONFIG_PATH.set(config_path.clone()).expect("Path already set");
 
     let cpus = match config.server.runtime.worker_threads {
         config::WorkerThreads::Auto => num_cpus::get(),

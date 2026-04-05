@@ -7,9 +7,14 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::{CONFIG, dns::handle_query};
+use crate::{CONFIG, CONFIG_PATH, dns::handle_query, filter::reload_lists};
 use socket2::{Domain, Protocol, Socket, Type};
-use tokio::{net::UdpSocket, runtime::Builder, sync::watch};
+use tokio::{
+    net::UdpSocket,
+    runtime::Builder,
+    signal::{unix::SignalKind, unix::signal},
+    sync::watch,
+};
 
 use crate::GLOBAL_SEED;
 
@@ -102,6 +107,7 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
         .build()?;
     runtime.block_on(async {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        tokio::spawn(watch_for_reloads());
         let guard = ShutdownGuard::new(shutdown_rx);
 
         let tokio_socket = get_socket(&CONFIG.load().server.listen_addr)?;
@@ -167,6 +173,7 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
     runtime.block_on(async {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let guard = ShutdownGuard::new(shutdown_rx.clone());
+        tokio::spawn(watch_for_reloads());
 
         let mut handles = Vec::new();
 
@@ -249,6 +256,57 @@ async fn wait_for_tasks(guard: &ShutdownGuard) {
             break;
         }
         tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+pub async fn watch_for_reloads() {
+    // Create a SIGHUP signal stream
+    let mut stream = signal(SignalKind::hangup()).expect("Failed to bind SIGHUP handler");
+
+    println!("SIGHUP handler initialized (PID: {})", std::process::id());
+
+    while stream.recv().await.is_some() {
+        println!("SIGHUP received, reloading configuration...");
+        if let Err(e) = reload_config() {
+            eprintln!("Reload failed: {}", e);
+        }
+        reload_lists();
+    }
+}
+
+/// Reloads the configuration file and filter lists.
+///
+/// Called in response to a SIGHUP signal. Reads the config file from the
+/// path stored at startup, updates the global CONFIG, and rebuilds the
+/// filter engine with fresh lists.
+///
+/// Returns `Ok(())` on success, or an error message on failure.
+pub fn reload_config() -> Result<(), String> {
+    let config_path = CONFIG_PATH
+        .get()
+        .ok_or("Config path not set. Server was likely not initialized correctly.")?;
+
+    reload_config_from_path(config_path)
+}
+
+/// Internal function to reload config from a specific path.
+/// Separated for testability.
+fn reload_config_from_path(config_path: &std::path::Path) -> Result<(), String> {
+    if config_path.as_os_str().is_empty() {
+        return Err("Config path is empty".to_string());
+    }
+
+    match crate::config::Config::load(config_path) {
+        Ok(new_config) => {
+            CONFIG.store(Arc::new(new_config));
+            reload_lists();
+            println!(
+                "Configuration reloaded successfully from {}",
+                config_path.display()
+            );
+            Ok(())
+        }
+        Err(e) => Err(format!("Failed to reload config: {}", e)),
     }
 }
 
@@ -384,5 +442,123 @@ mod tests {
         wait_for_tasks(&guard).await;
         handle.await.unwrap();
         assert_eq!(guard.active_count(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Hot reload tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn reload_config_from_path_fails_with_empty_path() {
+        use std::path::Path;
+
+        let empty_path = Path::new("");
+        let result = reload_config_from_path(empty_path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn reload_config_from_path_fails_with_nonexistent_file() {
+        use std::path::Path;
+
+        let nonexistent = Path::new("/nonexistent/path/to/config.toml");
+        let result = reload_config_from_path(nonexistent);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Failed to reload config"));
+    }
+
+    #[test]
+    fn reload_config_from_path_succeeds_with_valid_config() {
+        use std::env;
+        use std::fs;
+
+        let temp_dir = env::temp_dir().join(format!("dgaard_reload_valid_{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+
+        let config_path = temp_dir.join("valid_config.toml");
+        let config_content = r#"
+            [server]
+            listen_addr = "127.0.0.1:5454"
+
+            [upstream]
+            servers = ["8.8.8.8:53"]
+            timeout_ms = 3000
+        "#;
+        fs::write(&config_path, config_content).expect("Failed to write config");
+
+        let result = reload_config_from_path(&config_path);
+        assert!(result.is_ok(), "Reload should succeed: {:?}", result);
+
+        // Verify config was updated
+        let loaded_config = CONFIG.load();
+        assert_eq!(loaded_config.server.listen_addr, "127.0.0.1:5454");
+        assert_eq!(loaded_config.upstream.timeout_ms, 3000);
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn reload_config_from_path_fails_with_invalid_toml() {
+        use std::env;
+        use std::fs;
+
+        let temp_dir =
+            env::temp_dir().join(format!("dgaard_reload_invalid_{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+
+        let config_path = temp_dir.join("invalid_config.toml");
+        let invalid_content = "this is not valid { toml [syntax";
+        fs::write(&config_path, invalid_content).expect("Failed to write config");
+
+        let result = reload_config_from_path(&config_path);
+        assert!(result.is_err(), "Reload should fail with invalid TOML");
+        assert!(result.unwrap_err().contains("Failed to reload config"));
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn reload_config_from_path_updates_global_config() {
+        use std::env;
+        use std::fs;
+
+        let temp_dir =
+            env::temp_dir().join(format!("dgaard_reload_update_{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+
+        // First config
+        let config_path = temp_dir.join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+            [upstream]
+            timeout_ms = 1000
+        "#,
+        )
+        .expect("Failed to write config");
+
+        let _ = reload_config_from_path(&config_path);
+        assert_eq!(CONFIG.load().upstream.timeout_ms, 1000);
+
+        // Update the config file
+        fs::write(
+            &config_path,
+            r#"
+            [upstream]
+            timeout_ms = 5000
+        "#,
+        )
+        .expect("Failed to write updated config");
+
+        // Reload and verify update
+        let result = reload_config_from_path(&config_path);
+        assert!(result.is_ok());
+        assert_eq!(CONFIG.load().upstream.timeout_ms, 5000);
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }
