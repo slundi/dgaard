@@ -57,7 +57,7 @@ pub struct ResolverRules {
     pub nrd_filter: Bloom<u64>,
 }
 
-pub fn is_dga_suspicious(domain: &str, threshold: f32, min_len: usize) -> bool {
+pub fn is_dga_suspicious(domain: &str, threshold: f32, min_len: usize, use_fast: bool) -> bool {
     // Only run entropy on the Second Level Domain (SLD)
     // "sub.example.com" -> check "example"
     let parts: Vec<&str> = domain.split('.').collect();
@@ -71,7 +71,11 @@ pub fn is_dga_suspicious(domain: &str, threshold: f32, min_len: usize) -> bool {
         return false;
     }
 
-    let entropy = calculate_entropy_fast(sld);
+    let entropy = if use_fast {
+        calculate_entropy_fast(sld)
+    } else {
+        calculate_entropy(sld)
+    };
     entropy > threshold
 }
 

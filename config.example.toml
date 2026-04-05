@@ -61,6 +61,9 @@ enabled = true
 # Shannon entropy threshold (typically between 3.5 and 4.5)
 # The higher the number, the more tolerant the system is of unusual names.
 entropy_threshold = 4.0
+# Use fast ASCII-only entropy (true) or full Unicode entropy (false)
+# Fast mode uses zero heap allocation, ideal for OpenWrt/embedded.
+entropy_fast = true
 min_word_length = 8
 # Consonant ratio (e.g., 0.6 blocks "bcdfgh")
 consonant_ratio_threshold = 0.6

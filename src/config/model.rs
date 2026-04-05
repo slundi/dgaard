@@ -193,6 +193,13 @@ pub struct IntelligenceConfig {
     /// Typical range: 3.5 (strict) – 4.5 (lenient). Default: 4.0.
     pub entropy_threshold: f32,
 
+    /// Use the fast (ASCII-only, zero-allocation) entropy algorithm.
+    /// When `true`, uses a fixed-size array for byte counting (ideal for
+    /// embedded/OpenWrt targets). When `false`, uses a HashMap-based
+    /// implementation with full Unicode support.
+    /// Default: `true` (optimized for embedded deployment).
+    pub entropy_fast: bool,
+
     /// Minimum SLD length (in bytes) before entropy and N-gram analysis are
     /// applied.  Short labels like `t.co` are skipped to avoid false positives.
     pub min_word_length: usize,
@@ -220,6 +227,7 @@ impl Default for IntelligenceConfig {
         Self {
             enabled: true,
             entropy_threshold: 4.0,
+            entropy_fast: true,
             min_word_length: 8,
             consonant_ratio_threshold: 0.6,
             use_ngram_model: false,
@@ -729,6 +737,7 @@ mod tests {
         let i = IntelligenceConfig::default();
         assert!(i.enabled);
         assert!((i.entropy_threshold - 4.0).abs() < f32::EPSILON);
+        assert!(i.entropy_fast);
         assert_eq!(i.min_word_length, 8);
         assert!((i.consonant_ratio_threshold - 0.6).abs() < f32::EPSILON);
         assert!(!i.use_ngram_model);

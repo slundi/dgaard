@@ -7,7 +7,7 @@
 use core::sync::atomic::Ordering;
 
 use crate::config::PipelineStep;
-use crate::dga::calculate_entropy_fast;
+use crate::dga::{calculate_entropy, calculate_entropy_fast};
 use crate::model::DomainEntryFlags;
 use crate::{CONFIG, CURRENT_ENGINE, GLOBAL_SEED};
 use dgaard::{Action, BlockReason};
@@ -132,7 +132,11 @@ pub fn is_dga_suspicious(domain: &str) -> bool {
         return false;
     }
 
-    let entropy = calculate_entropy_fast(sld);
+    let entropy = if intel.entropy_fast {
+        calculate_entropy_fast(sld)
+    } else {
+        calculate_entropy(sld)
+    };
     entropy > intel.entropy_threshold
 }
 
@@ -226,7 +230,12 @@ pub fn resolve(domain: &str) -> Action {
             }
             PipelineStep::Heuristics => {
                 if is_dga_suspicious(domain) {
-                    let entropy = calculate_entropy_fast(domain);
+                    let config = CONFIG.load();
+                    let entropy = if config.security.intelligence.entropy_fast {
+                        calculate_entropy_fast(domain)
+                    } else {
+                        calculate_entropy(domain)
+                    };
                     return Action::Block(BlockReason::HighEntropy(entropy));
                 }
             }

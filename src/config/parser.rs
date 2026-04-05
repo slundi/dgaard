@@ -322,6 +322,9 @@ fn parse_intelligence(
     if let Some(f) = get_float(table, "entropy_threshold")? {
         cfg.entropy_threshold = f;
     }
+    if let Some(b) = get_bool(table, "entropy_fast")? {
+        cfg.entropy_fast = b;
+    }
     if let Some(n) = get_integer(table, "min_word_length")? {
         cfg.min_word_length = n as usize;
     }
@@ -778,6 +781,7 @@ mod tests {
             [security.intelligence]
             enabled = false
             entropy_threshold = 3.5
+            entropy_fast = false
             min_word_length = 6
             consonant_ratio_threshold = 0.7
             use_ngram_model = true
@@ -787,6 +791,7 @@ mod tests {
         let cfg = Config::parse(toml).unwrap();
         assert!(!cfg.security.intelligence.enabled);
         assert!((cfg.security.intelligence.entropy_threshold - 3.5).abs() < f32::EPSILON);
+        assert!(!cfg.security.intelligence.entropy_fast);
         assert_eq!(cfg.security.intelligence.min_word_length, 6);
         assert!((cfg.security.intelligence.consonant_ratio_threshold - 0.7).abs() < f32::EPSILON);
         assert!(cfg.security.intelligence.use_ngram_model);
@@ -795,6 +800,27 @@ mod tests {
             vec!["/path/to/model.bin"]
         );
         assert!((cfg.security.intelligence.ngram_probability_threshold - 0.1).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn parse_security_intelligence_entropy_fast_default_is_true() {
+        // When entropy_fast is not specified, it should default to true
+        let toml = r#"
+            [security.intelligence]
+            enabled = true
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert!(cfg.security.intelligence.entropy_fast);
+    }
+
+    #[test]
+    fn parse_security_intelligence_entropy_fast_explicit_true() {
+        let toml = r#"
+            [security.intelligence]
+            entropy_fast = true
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert!(cfg.security.intelligence.entropy_fast);
     }
 
     #[test]
