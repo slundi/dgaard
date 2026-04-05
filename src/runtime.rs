@@ -387,7 +387,7 @@ async fn send_domain_mappings_to_client(
     domain_map: &std::collections::HashMap<u64, String>,
     mut new_client: tokio::net::UnixStream,
 ) {
-    use dgaard::StatMessage;
+    use crate::model::StatMessage;
     use tokio::io::AsyncWriteExt;
 
     // Send all known domain mappings to the new client
@@ -408,11 +408,11 @@ async fn send_domain_mappings_to_client(
 
 /// Process a single stat message: log to stdout and stream to connected clients.
 async fn process_stat_message(
-    msg: &dgaard::StatMessage,
+    msg: &crate::model::StatMessage,
     domain_map: &mut std::collections::HashMap<u64, String>,
     clients: &mut Vec<tokio::net::UnixStream>,
 ) {
-    use dgaard::{StatAction, StatBlockReason, StatMessage};
+    use crate::model::{StatAction, StatBlockReason, StatMessage};
     use tokio::io::AsyncWriteExt;
 
     match msg {

@@ -2,11 +2,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dgaard::{Action, StatAction, StatBlockReason};
 use hickory_resolver::proto::op::{Message, MessageType, ResponseCode};
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
+use crate::model::{Action, StatAction, StatBlockReason};
 use crate::resolve::resolve;
 use crate::{CONFIG, STATS_COUNTERS, STATS_SENDER};
 

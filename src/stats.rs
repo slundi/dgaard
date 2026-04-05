@@ -5,10 +5,10 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use dgaard::{StatAction, StatBlockReason, StatEvent, StatMessage};
 use tokio::sync::mpsc;
 
 use crate::GLOBAL_SEED;
+use crate::model::{StatAction, StatBlockReason, StatEvent, StatMessage};
 
 /// Channel capacity for the stats queue.
 /// Bounded to provide backpressure when the collector is slow.

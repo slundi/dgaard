@@ -8,9 +8,8 @@ use core::sync::atomic::Ordering;
 
 use crate::config::PipelineStep;
 use crate::dga::{calculate_entropy, calculate_entropy_fast};
-use crate::model::DomainEntryFlags;
+use crate::model::{Action, BlockReason, DomainEntryFlags};
 use crate::{CONFIG, CURRENT_ENGINE, GLOBAL_SEED};
-use dgaard::{Action, BlockReason};
 
 /// Result of checking a domain against the filter engine.
 #[derive(Debug, Clone, PartialEq)]

@@ -10,16 +10,6 @@ categories = ["network-programming", "embedded-software", "cryptography"]
 version = "0.1.0"
 edition = "2024"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-# [lib]
-# name = "MY_PROJECT"
-# path = "src/lib.rs"
-
-# [[bin]]
-# name = "MY_PROJECT"
-# path = "src/main.rs"
-
 [dependencies]
 thiserror = "2.0.18"
 getrandom = "0.4.2"
