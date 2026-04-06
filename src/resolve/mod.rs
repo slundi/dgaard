@@ -138,7 +138,7 @@ pub fn resolve(domain: &str) -> Action {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::filter::FilterEngine;
+    use crate::filter::engine::FilterEngine;
     use crate::model::DomainEntryFlags;
     use crate::{CURRENT_ENGINE, GLOBAL_SEED};
     use std::collections::{HashMap, HashSet};

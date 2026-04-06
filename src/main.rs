@@ -15,10 +15,9 @@ use std::{
     sync::{Arc, atomic::AtomicU64},
 };
 
-use crate::config::Config;
+use crate::{config::Config, filter::engine::FilterEngine};
 use crate::stats::{StatsCounters, StatsSender};
 use crate::{
-    filter::FilterEngine,
     runtime::{init_global_seed, start_with_single_worker, start_with_workers},
 };
 use arc_swap::ArcSwap;
