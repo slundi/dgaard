@@ -1,7 +1,6 @@
 use core::sync::atomic::Ordering;
 
-use crate::model::DomainEntryFlags;
-use crate::{CURRENT_ENGINE, GLOBAL_SEED};
+use crate::{CURRENT_ENGINE, GLOBAL_SEED, model::DomainEntryFlags};
 
 /// Check if a domain is in the fast lookup map (exact match).
 /// Returns the flags if found.
