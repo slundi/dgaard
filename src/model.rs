@@ -87,6 +87,9 @@ pub enum BlockReason {
     /// Failed lexical analysis (Consonant ratio or N-Gram probability).
     LexicalAnalysis,
 
+    /// Blocked by parental control keyword filter. Carries the matched keyword.
+    BannedKeyword(String),
+
     /// Failed structural checks (Subdomain depth, TXT length, etc.).
     InvalidStructure,
 
@@ -307,14 +310,16 @@ pub enum StatBlockReason {
     HighEntropy = 2,
     /// Failed lexical analysis
     LexicalAnalysis = 3,
+    /// Blocked by parental control keyword
+    BannedKeyword = 4,
     /// Invalid structure (depth, length)
-    InvalidStructure = 4,
+    InvalidStructure = 5,
     /// Suspicious IDN/Punycode
-    SuspiciousIdn = 5,
+    SuspiciousIdn = 6,
     /// Newly Registered Domain
-    NrdList = 6,
+    NrdList = 7,
     /// Excluded TLD
-    TldExcluded = 7,
+    TldExcluded = 8,
 }
 
 impl StatBlockReason {
@@ -325,10 +330,11 @@ impl StatBlockReason {
             1 => Some(StatBlockReason::AbpRule),
             2 => Some(StatBlockReason::HighEntropy),
             3 => Some(StatBlockReason::LexicalAnalysis),
-            4 => Some(StatBlockReason::InvalidStructure),
-            5 => Some(StatBlockReason::SuspiciousIdn),
-            6 => Some(StatBlockReason::NrdList),
-            7 => Some(StatBlockReason::TldExcluded),
+            4 => Some(StatBlockReason::BannedKeyword),
+            5 => Some(StatBlockReason::InvalidStructure),
+            6 => Some(StatBlockReason::SuspiciousIdn),
+            7 => Some(StatBlockReason::NrdList),
+            8 => Some(StatBlockReason::TldExcluded),
             _ => None,
         }
     }
@@ -341,6 +347,7 @@ impl From<&BlockReason> for StatBlockReason {
             BlockReason::AbpRule(_) => StatBlockReason::AbpRule,
             BlockReason::HighEntropy(_) => StatBlockReason::HighEntropy,
             BlockReason::LexicalAnalysis => StatBlockReason::LexicalAnalysis,
+            BlockReason::BannedKeyword(_) => StatBlockReason::BannedKeyword,
             BlockReason::InvalidStructure => StatBlockReason::InvalidStructure,
             BlockReason::SuspiciousIdn => StatBlockReason::SuspiciousIdn,
             BlockReason::NrdList => StatBlockReason::NrdList,

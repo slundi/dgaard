@@ -268,6 +268,67 @@ impl Default for IntelligenceConfig {
 }
 
 // ---------------------------------------------------------------------------
+// [security.lexical]
+// ---------------------------------------------------------------------------
+
+/// Smart keyword filtering for parental control and content blocking.
+///
+/// Unlike traditional blocklists that require millions of domain entries,
+/// this filter uses label-aware keyword matching to block entire categories
+/// of content (adult, gambling, etc.) with minimal memory footprint.
+///
+/// Uses the Aho-Corasick algorithm for efficient multi-pattern matching.
+///
+/// Maps to `[security.lexical]` in the configuration file.
+#[derive(Debug, PartialEq, Clone)]
+pub struct LexicalConfig {
+    /// Master switch — set to `false` to disable keyword filtering entirely.
+    pub enabled: bool,
+
+    /// List of keywords to block.
+    ///
+    /// When `strict_matching` is `true`, keywords only trigger a block if:
+    /// - The keyword is a complete DNS label (e.g., `casino` in `casino.com`)
+    /// - The keyword is separated by a hyphen (e.g., `play-casino.net`)
+    ///
+    /// When `strict_matching` is `false`, a simple substring match is used
+    /// (more aggressive, higher false-positive rate).
+    ///
+    /// Example: `["porno", "casino", "drogue", "bet", "sex", "gambling"]`
+    pub banned_keywords: Vec<String>,
+
+    /// Enable label-aware matching to reduce false positives.
+    ///
+    /// When `true` (recommended): Keywords must match complete labels or
+    /// hyphen-separated segments. This avoids the "Scunthorpe problem" where
+    /// innocent words contain forbidden substrings.
+    ///
+    /// When `false`: Simple `.contains()` matching is used — more aggressive
+    /// but may block legitimate domains.
+    pub strict_keyword_matching: bool,
+
+    /// Conditional blocking: block only if domain contains a banned keyword
+    /// AND uses one of these TLDs.
+    ///
+    /// This is useful for "grey-zone" filtering where common TLDs like `.com`
+    /// might have legitimate uses of certain keywords.
+    ///
+    /// Example: `[".biz", ".top", ".xyz"]`
+    pub suspicious_tlds: Vec<String>,
+}
+
+impl Default for LexicalConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            banned_keywords: Vec::new(),
+            strict_keyword_matching: true,
+            suspicious_tlds: Vec::new(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // [security.idn]
 // ---------------------------------------------------------------------------
 
@@ -364,6 +425,7 @@ pub struct SecurityConfig {
     pub structure: StructureConfig,
     /// Heuristic DGA and lexical analysis.
     pub intelligence: IntelligenceConfig,
+    pub lexical: LexicalConfig,
     /// Internationalized domain name policy.
     pub idn: IdnConfig,
     /// Per-client behavioural anomaly thresholds.
@@ -799,6 +861,31 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // LexicalConfig
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn lexical_config_defaults() {
+        let l = LexicalConfig::default();
+        assert!(l.enabled);
+        assert!(l.banned_keywords.is_empty());
+        assert!(l.strict_keyword_matching);
+        assert!(l.suspicious_tlds.is_empty());
+    }
+
+    #[test]
+    fn lexical_config_custom_keywords() {
+        let l = LexicalConfig {
+            enabled: true,
+            banned_keywords: vec!["casino".to_string(), "porno".to_string()],
+            strict_keyword_matching: true,
+            suspicious_tlds: vec![".biz".to_string()],
+        };
+        assert_eq!(l.banned_keywords.len(), 2);
+        assert_eq!(l.suspicious_tlds.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
     // BehaviorConfig
     // -----------------------------------------------------------------------
 
@@ -820,6 +907,7 @@ mod tests {
         let sec = SecurityConfig::default();
         assert_eq!(sec.structure, StructureConfig::default());
         assert_eq!(sec.intelligence, IntelligenceConfig::default());
+        assert_eq!(sec.lexical, LexicalConfig::default());
         assert_eq!(sec.idn, IdnConfig::default());
         assert_eq!(sec.behavior, BehaviorConfig::default());
     }

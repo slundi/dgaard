@@ -452,6 +452,7 @@ async fn process_stat_message(
                         StatBlockReason::AbpRule => "abp-rule",
                         StatBlockReason::HighEntropy => "dga",
                         StatBlockReason::LexicalAnalysis => "lexical",
+                        StatBlockReason::BannedKeyword => "keyword",
                         StatBlockReason::InvalidStructure => "structure",
                         StatBlockReason::SuspiciousIdn => "idn",
                         StatBlockReason::NrdList => "nrd",

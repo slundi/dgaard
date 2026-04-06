@@ -310,6 +310,24 @@ fn parse_structure(table: &toml_span::value::Table<'_>) -> Result<StructureConfi
     Ok(cfg)
 }
 
+/// Parse `[security.lexical]` section.
+fn parse_lexical(table: &toml_span::value::Table<'_>) -> Result<LexicalConfig, ConfigError> {
+    let mut cfg = LexicalConfig::default();
+    if let Some(b) = get_bool(table, "enabled")? {
+        cfg.enabled = b;
+    }
+    if let Some(b) = get_bool(table, "strict_keyword_matching")? {
+        cfg.strict_keyword_matching = b;
+    }
+    if let Some(arr) = get_string_array(table, "banned_keywords")? {
+        cfg.banned_keywords = arr;
+    }
+    if let Some(arr) = get_string_array(table, "suspicious_tlds")? {
+        cfg.suspicious_tlds = arr;
+    }
+    Ok(cfg)
+}
+
 /// Parse `[security.intelligence]` section.
 fn parse_intelligence(
     table: &toml_span::value::Table<'_>,
@@ -407,6 +425,9 @@ fn parse_security(table: &toml_span::value::Table<'_>) -> Result<SecurityConfig,
     }
     if let Some(t) = get_table(table, "intelligence")? {
         cfg.intelligence = parse_intelligence(t)?;
+    }
+    if let Some(t) = get_table(table, "lexical")? {
+        cfg.lexical = parse_lexical(t)?;
     }
     if let Some(t) = get_table(table, "idn")? {
         cfg.idn = parse_idn(t)?;
@@ -841,6 +862,42 @@ mod tests {
         "#;
         let cfg = Config::parse(toml).unwrap();
         assert!(cfg.security.intelligence.entropy_fast);
+    }
+
+    #[test]
+    fn parse_security_lexical_all_fields() {
+        let toml = r#"
+            [security.lexical]
+            enabled = true
+            banned_keywords = ["porno", "casino", "drogue"]
+            strict_keyword_matching = false
+            suspicious_tlds = [".biz", ".top", ".xyz"]
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert!(cfg.security.lexical.enabled);
+        assert_eq!(
+            cfg.security.lexical.banned_keywords,
+            vec!["porno", "casino", "drogue"]
+        );
+        assert!(!cfg.security.lexical.strict_keyword_matching);
+        assert_eq!(
+            cfg.security.lexical.suspicious_tlds,
+            vec![".biz", ".top", ".xyz"]
+        );
+    }
+
+    #[test]
+    fn parse_security_lexical_defaults() {
+        // With just enabled, other fields should be defaults
+        let toml = r#"
+            [security.lexical]
+            enabled = false
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert!(!cfg.security.lexical.enabled);
+        assert!(cfg.security.lexical.banned_keywords.is_empty());
+        assert!(cfg.security.lexical.strict_keyword_matching); // default is true
+        assert!(cfg.security.lexical.suspicious_tlds.is_empty());
     }
 
     #[test]

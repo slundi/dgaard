@@ -32,6 +32,9 @@ toml-span = "0.7.1"
 # RegexSet is used for the "Complex" rule tier
 regex = { version = "1.12.3", default-features = false, features = ["std", "perf", "unicode-perl"] }
 
+# For lexical analysis
+aho-corasick = "1.1.4"
+
 url = "2.5.8"
 
 # to have an HTTP client availble to download lists
