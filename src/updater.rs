@@ -34,9 +34,10 @@ pub fn validate_input(input: &str) -> Result<Resource, ResourceError> {
         // Check if it's specifically HTTP or HTTPS
         if parsed_url.scheme() == "http" || parsed_url.scheme() == "https" {
             return Ok(Resource::HttpUrl(parsed_url));
+        } else {
+            // It's a valid URL format (like ftp://), but we don't support the scheme
+            return Err(ResourceError::NonHttpScheme);
         }
-        // If it's a URL but not HTTP (e.g., "ftp://"), you can choose to
-        // fall through to path check or return an error.
     }
 
     // 2. Try to treat as a File Path
@@ -44,6 +45,12 @@ pub fn validate_input(input: &str) -> Result<Resource, ResourceError> {
     let path = Path::new(input);
     if path.exists() {
         return Ok(Resource::FilePath(path.to_path_buf()));
+    }
+
+    // Explicitly catch cases that look like paths but don't exist
+    // This uses a simple heuristic: if it contains a slash or backslash
+    if input.contains('/') || input.contains('\\') {
+        return Err(ResourceError::InvalidFilePath(input.to_string()));
     }
 
     // 3. If it looks like a URL (starts with http) but failed parsing
