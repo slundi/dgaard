@@ -78,6 +78,7 @@ dgaard/
     * `strict_keyword_matching = true` to avoid false positive and block the word with a separator: `casinon-les-bains.fr` city website will be blocked with `*casino*` and we dont want to
   * in the `[tld]` section:
     * `suspicious_tlds = [".com", ".net", ".org"]` so we block if suspicious tld and banned keywords matches
+* [ ] 4.8. **Deduplication**: when loaling blocklists we can have TLD blocking and domain blocking doing the same thing. Example: coverage for blocked TLD `.xyz` will bloc domains like `bad-site.xyz` (bigger depth), wildcard `abc*.def.xyz` and regexes like `[some-regex]+\\.xyz`. To reduce RAM usage, it is required.
 
 ## Phase 5: Telemetry & Monitoring
 
