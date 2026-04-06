@@ -142,3 +142,24 @@ const RESET: &str = "\x1b[0m";
 
 println!("{}[OK]{} Dgaard is running", GREEN, RESET);
 ```
+* [ ] **Blacklist domain stats**: from some lists perform some stats:
+  * **Structure stats**
+    * Top TLD that have blocked domains
+    * Top words (for the parental control)
+    * Top words + TLD?
+    * digits at the ends of words
+    * which words are on the same lists (OISD, StevenBlack, etc.). If it is on 5 lists it is safe to block.
+    * **Top Subdomain Depth**: Which domains have the most labels (e.g., `a.b.c.d.e.com`)? This is a strong indicator of DNS tunneling.
+    * **Length Distribution**: Do the blocks primarily involve short domains (phishing) or very long domains (data exfiltration)?
+    * **Vowel/Consonant Ratio**: If your top blocked words contain a lot of `zqx`, `rtp`, this is statistical proof of your DGA engine’s effectiveness.
+  * **Time-Based Statistics** (Response Time)
+    * **Domain Age (NRD)**: If I can have access to the creation date (via NRD lists), extract the “Top blocked domains under 24 hours old.” (key metric for security).
+    * **Blocking Frequency by Client**: Identify which machine on your local network (source IP) is attempting to access the highest number of blocked domains. This helps identify an infected PC that is “bombarding” C2 servers.
+  * **List “Collision” Statistics (Overlap)**
+    * **Source Effectiveness**: Which list (adaway.txt vs. malware.txt) caused the most actual blocks? Usefulness: If a list with 500,000 entries never blocks anything in a month, we can delete it to free up RAM on the router.
+    * **Intersection**: Which domains appear in multiple lists? A domain appearing in 3 different lists has a 100% blocking confidence score.
+  * **Advanced Lexical Analysis**
+    * **Top “Typosquatting”**: Detect domains that resemble well-known brands (e.g., g00gle, paypa1) using the Levenshtein distance.
+    * **Average Entropy of Blocked Domains**: What is the average entropy score of blocked domains? This will help you adjust your entropy_threshold (e.g., if all your blocks are > 4.2, you might want to lower the threshold to 4.0).
+  * **Record Type** (QType)
+    * **Breakdown by A vs. AAAA vs. TXT**: Are the blocks occurring on IPv4 or IPv6 requests? Note: A spike in blocked requests for **TXT** records is almost always a sign of an attempt at data exfiltration (DNS tunneling).
