@@ -220,6 +220,9 @@ fn segment_matches(domain_seg: &str, pattern_seg: &str) -> bool {
 /// This function implements label-aware keyword matching to block domains
 /// containing banned keywords (e.g., adult, gambling content).
 ///
+/// Uses Aho-Corasick automaton for O(n) multi-pattern matching and xxh3
+/// hash lookup for O(1) TLD verification.
+///
 /// Matching modes:
 /// - Strict (default): Keyword must be a complete label or hyphen-separated segment
 /// - Loose: Simple substring match (higher false-positive rate)
@@ -228,57 +231,43 @@ fn segment_matches(domain_seg: &str, pattern_seg: &str) -> bool {
 ///
 /// Returns `Some(BlockReason::BannedKeyword)` if blocked, `None` if allowed.
 fn check_lexical(domain: &str) -> Option<BlockReason> {
-    let config = CONFIG.load();
-    let lexical = &config.security.lexical;
+    let engine = CURRENT_ENGINE.load();
 
-    if !lexical.enabled || lexical.banned_keywords.is_empty() {
+    // Early exit if no automaton or no keywords configured
+    let automaton = engine.keyword_automaton.as_ref()?;
+
+    // Extract TLD and check via O(1) hash lookup
+    let tld = domain.rsplit('.').next()?;
+    if !engine.is_suspicious_tld(tld) {
         return None;
     }
 
-    // Extract the TLD for conditional blocking
-    let tld = domain.rsplit('.').next().map(|t| format!(".{}", t));
+    let domain_lower = domain.to_ascii_lowercase();
 
-    // Check TLD condition if suspicious_tlds is configured
-    let tld_matches = if lexical.suspicious_tlds.is_empty() {
-        true // No TLD restriction
-    } else {
-        tld.as_ref()
-            .is_some_and(|t| lexical.suspicious_tlds.iter().any(|st| st == t))
-    };
+    if engine.lexical_strict {
+        // Strict mode: verify match is at label or hyphen boundary
+        for mat in automaton.find_iter(&domain_lower) {
+            let start = mat.start();
+            let end = mat.end();
 
-    // If TLD doesn't match and we have TLD restrictions, allow the domain
-    if !tld_matches && !lexical.suspicious_tlds.is_empty() {
-        return None;
-    }
+            // Check if match is at valid boundary (start of domain, after '.' or '-')
+            let valid_start =
+                start == 0 || matches!(domain_lower.as_bytes().get(start - 1), Some(b'.' | b'-'));
 
-    // Split domain into labels
-    let labels: Vec<&str> = domain.split('.').collect();
+            // Check if match ends at valid boundary (end of domain, before '.' or '-')
+            let valid_end = end == domain_lower.len()
+                || matches!(domain_lower.as_bytes().get(end), Some(b'.' | b'-'));
 
-    for keyword in &lexical.banned_keywords {
-        let keyword_lower = keyword.to_lowercase();
-
-        if lexical.strict_keyword_matching {
-            // Strict mode: keyword must be a complete label or hyphen-separated segment
-            for label in &labels {
-                let label_lower = label.to_lowercase();
-
-                // Check if keyword is the entire label
-                if label_lower == keyword_lower {
-                    return Some(BlockReason::BannedKeyword(keyword.clone()));
-                }
-
-                // Check hyphen-separated segments within the label
-                for segment in label_lower.split('-') {
-                    if segment == keyword_lower {
-                        return Some(BlockReason::BannedKeyword(keyword.clone()));
-                    }
-                }
-            }
-        } else {
-            // Loose mode: simple substring match across the entire domain
-            if domain.to_lowercase().contains(&keyword_lower) {
+            if valid_start && valid_end {
+                let keyword = &engine.keyword_patterns[mat.pattern().as_usize()];
                 return Some(BlockReason::BannedKeyword(keyword.clone()));
             }
+        }
+    } else {
+        // Loose mode: any substring match
+        if let Some(mat) = automaton.find(&domain_lower) {
+            let keyword = &engine.keyword_patterns[mat.pattern().as_usize()];
+            return Some(BlockReason::BannedKeyword(keyword.clone()));
         }
     }
 
@@ -476,7 +465,7 @@ mod tests {
     use super::*;
     use crate::CURRENT_ENGINE;
     use crate::filter::FilterEngine;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
 
     fn init_test_env() {
@@ -520,6 +509,10 @@ mod tests {
             hierarchical_list,
             regex_pool: Vec::new(),
             wildcard_patterns: Vec::new(),
+            keyword_automaton: None,
+            keyword_patterns: Vec::new(),
+            suspicious_tld_hashes: HashSet::new(),
+            lexical_strict: true,
         }
     }
 
@@ -698,6 +691,10 @@ mod tests {
             hierarchical_list,
             regex_pool: Vec::new(),
             wildcard_patterns: Vec::new(),
+            keyword_automaton: None,
+            keyword_patterns: Vec::new(),
+            suspicious_tld_hashes: HashSet::new(),
+            lexical_strict: true,
         }
     }
 
@@ -762,6 +759,10 @@ mod tests {
             hierarchical_list: Vec::new(),
             regex_pool: Vec::new(),
             wildcard_patterns: patterns.iter().map(|s| s.to_string()).collect(),
+            keyword_automaton: None,
+            keyword_patterns: Vec::new(),
+            suspicious_tld_hashes: HashSet::new(),
+            lexical_strict: true,
         }
     }
 
@@ -953,12 +954,44 @@ mod tests {
         config
     }
 
+    fn create_lexical_engine(
+        keywords: &[&str],
+        strict: bool,
+        suspicious_tlds: &[&str],
+    ) -> FilterEngine {
+        use aho_corasick::AhoCorasick;
+
+        let keyword_patterns: Vec<String> = keywords.iter().map(|k| k.to_lowercase()).collect();
+        let keyword_automaton = if keyword_patterns.is_empty() {
+            None
+        } else {
+            AhoCorasick::new(&keyword_patterns).ok()
+        };
+
+        let suspicious_tld_hashes: HashSet<u64> = suspicious_tlds
+            .iter()
+            .map(|tld| {
+                let tld_clean = tld.strip_prefix('.').unwrap_or(tld).to_ascii_lowercase();
+                twox_hash::XxHash64::oneshot(42, tld_clean.as_bytes())
+            })
+            .collect();
+
+        FilterEngine {
+            fast_map: HashMap::new(),
+            hierarchical_list: Vec::new(),
+            regex_pool: Vec::new(),
+            wildcard_patterns: Vec::new(),
+            keyword_automaton,
+            keyword_patterns,
+            suspicious_tld_hashes,
+            lexical_strict: strict,
+        }
+    }
+
     #[test]
     fn test_check_lexical_strict_exact_label_match() {
         init_test_env();
-        let config = create_lexical_config(&["casino", "porno"], true, &[]);
-        crate::CONFIG.store(Arc::new(config));
-        let engine = create_test_engine(&[], &[], &[]);
+        let engine = create_lexical_engine(&["casino", "porno"], true, &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
         // Exact label match should block
@@ -970,9 +1003,7 @@ mod tests {
     #[test]
     fn test_check_lexical_strict_hyphen_separated() {
         init_test_env();
-        let config = create_lexical_config(&["casino"], true, &[]);
-        crate::CONFIG.store(Arc::new(config));
-        let engine = create_test_engine(&[], &[], &[]);
+        let engine = create_lexical_engine(&["casino"], true, &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
         // Hyphen-separated segment should block
@@ -983,9 +1014,7 @@ mod tests {
     #[test]
     fn test_check_lexical_strict_no_substring_match() {
         init_test_env();
-        let config = create_lexical_config(&["casino"], true, &[]);
-        crate::CONFIG.store(Arc::new(config));
-        let engine = create_test_engine(&[], &[], &[]);
+        let engine = create_lexical_engine(&["casino"], true, &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
         // Substring within a word should NOT block in strict mode (Scunthorpe problem)
@@ -996,9 +1025,7 @@ mod tests {
     #[test]
     fn test_check_lexical_loose_substring_match() {
         init_test_env();
-        let config = create_lexical_config(&["casino"], false, &[]); // strict = false
-        crate::CONFIG.store(Arc::new(config));
-        let engine = create_test_engine(&[], &[], &[]);
+        let engine = create_lexical_engine(&["casino"], false, &[]); // strict = false
         CURRENT_ENGINE.store(Arc::new(engine));
 
         // Loose mode should block on substring
@@ -1009,9 +1036,7 @@ mod tests {
     #[test]
     fn test_check_lexical_case_insensitive() {
         init_test_env();
-        let config = create_lexical_config(&["Casino", "PORNO"], true, &[]);
-        crate::CONFIG.store(Arc::new(config));
-        let engine = create_test_engine(&[], &[], &[]);
+        let engine = create_lexical_engine(&["Casino", "PORNO"], true, &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
         // Should match regardless of case
@@ -1023,9 +1048,7 @@ mod tests {
     #[test]
     fn test_check_lexical_with_suspicious_tlds() {
         init_test_env();
-        let config = create_lexical_config(&["casino"], true, &[".biz", ".top"]);
-        crate::CONFIG.store(Arc::new(config));
-        let engine = create_test_engine(&[], &[], &[]);
+        let engine = create_lexical_engine(&["casino"], true, &[".biz", ".top"]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
         // Should only block if TLD matches
@@ -1040,22 +1063,18 @@ mod tests {
     #[test]
     fn test_check_lexical_disabled() {
         init_test_env();
-        let mut config = create_lexical_config(&["casino"], true, &[]);
-        config.security.lexical.enabled = false;
-        crate::CONFIG.store(Arc::new(config));
+        // Disabled = no automaton built
         let engine = create_test_engine(&[], &[], &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
-        // Should not block when disabled
+        // Should not block when no automaton
         assert!(check_lexical("casino.com").is_none());
     }
 
     #[test]
     fn test_check_lexical_empty_keywords() {
         init_test_env();
-        let config = create_lexical_config(&[], true, &[]);
-        crate::CONFIG.store(Arc::new(config));
-        let engine = create_test_engine(&[], &[], &[]);
+        let engine = create_lexical_engine(&[], true, &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
         // Should not block with no keywords
@@ -1068,7 +1087,7 @@ mod tests {
         init_test_env();
         let config = create_lexical_config(&["porno"], true, &[]);
         crate::CONFIG.store(Arc::new(config));
-        let engine = create_test_engine(&[], &[], &[]);
+        let engine = create_lexical_engine(&["porno"], true, &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
         let action = resolve("porno.com");
@@ -1084,7 +1103,7 @@ mod tests {
         init_test_env();
         let config = create_lexical_config(&["porno"], true, &[]);
         crate::CONFIG.store(Arc::new(config));
-        let engine = create_test_engine(&[], &[], &[]);
+        let engine = create_lexical_engine(&["porno"], true, &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
         let action = resolve("google.com");

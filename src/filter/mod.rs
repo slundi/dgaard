@@ -2,6 +2,7 @@ mod abp;
 mod bloom;
 mod fst;
 
+use aho_corasick::AhoCorasick;
 use core::sync::atomic::Ordering;
 use hickory_resolver::{Name, proto::ProtoError};
 use http_body_util::{BodyExt, Empty};
@@ -9,7 +10,7 @@ use hyper::body::Bytes;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 use regex::Regex;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::File,
     io::{BufReader, Read as _},
     path::Path,
@@ -57,6 +58,16 @@ pub struct FilterEngine {
     // Heavy data
     pub regex_pool: Vec<Regex>, // compiled regex so regex.is_match(domain) to check
     pub wildcard_patterns: Vec<String>, // TODO: transform regex into wildcard when possible
+
+    // Lexical analysis (parental control)
+    // Aho-Corasick automaton for efficient multi-keyword matching
+    pub keyword_automaton: Option<AhoCorasick>,
+    // Original keywords for BlockReason (indexed by automaton pattern_id)
+    pub keyword_patterns: Vec<String>,
+    // xxh3 hashes of suspicious TLDs (without leading dot, lowercase)
+    pub suspicious_tld_hashes: HashSet<u64>,
+    // Strict matching mode (label-aware vs substring)
+    pub lexical_strict: bool,
 }
 impl FilterEngine {
     pub fn empty() -> Self {
@@ -65,6 +76,10 @@ impl FilterEngine {
             hierarchical_list: Vec::with_capacity(0),
             regex_pool: Vec::with_capacity(0),
             wildcard_patterns: Vec::with_capacity(0),
+            keyword_automaton: None,
+            keyword_patterns: Vec::with_capacity(0),
+            suspicious_tld_hashes: HashSet::with_capacity(0),
+            lexical_strict: true,
         }
     }
 
@@ -130,6 +145,10 @@ impl FilterEngine {
             hierarchical_list,
             regex_pool,
             wildcard_patterns,
+            keyword_automaton: None,
+            keyword_patterns: Vec::new(),
+            suspicious_tld_hashes: HashSet::new(),
+            lexical_strict: true,
         }
     }
 
@@ -153,6 +172,56 @@ impl FilterEngine {
                 flags: DomainEntryFlags::WILDCARD,
             });
         }
+    }
+
+    /// Load lexical filters (keyword blocking for parental control).
+    ///
+    /// Builds an Aho-Corasick automaton from `cfg.security.lexical.banned_keywords`
+    /// for efficient multi-pattern matching. Suspicious TLDs are stored as xxh3
+    /// hashes for O(1) lookup.
+    pub fn load_lexical_filters(&mut self) {
+        let cfg = CONFIG.load();
+        let lexical = &cfg.security.lexical;
+
+        if !lexical.enabled || lexical.banned_keywords.is_empty() {
+            return;
+        }
+
+        // Store original keywords (lowercase) for BlockReason
+        self.keyword_patterns = lexical
+            .banned_keywords
+            .iter()
+            .map(|k| k.to_lowercase())
+            .collect();
+
+        // Build Aho-Corasick automaton for efficient multi-pattern matching
+        self.keyword_automaton = AhoCorasick::new(&self.keyword_patterns).ok();
+
+        // Hash suspicious TLDs without leading dot for O(1) lookup
+        let seed = GLOBAL_SEED.load(Ordering::Relaxed);
+        self.suspicious_tld_hashes = lexical
+            .suspicious_tlds
+            .iter()
+            .map(|tld| {
+                let tld_clean = tld.strip_prefix('.').unwrap_or(tld).to_ascii_lowercase();
+                twox_hash::XxHash64::oneshot(seed, tld_clean.as_bytes())
+            })
+            .collect();
+
+        self.lexical_strict = lexical.strict_keyword_matching;
+    }
+
+    /// Check if a TLD hash is in the suspicious set.
+    #[inline]
+    pub fn is_suspicious_tld(&self, tld: &str) -> bool {
+        if self.suspicious_tld_hashes.is_empty() {
+            return true; // No TLD restriction = all TLDs suspicious
+        }
+        let hash = twox_hash::XxHash64::oneshot(
+            GLOBAL_SEED.load(Ordering::Relaxed),
+            tld.to_ascii_lowercase().as_bytes(),
+        );
+        self.suspicious_tld_hashes.contains(&hash)
     }
 }
 
@@ -603,9 +672,14 @@ pub async fn reload_lists() {
         hierarchical_list,
         regex_pool,
         wildcard_patterns,
+        keyword_automaton: None,
+        keyword_patterns: Vec::new(),
+        suspicious_tld_hashes: HashSet::new(),
+        lexical_strict: true,
     };
 
     new_engine.load_tld_filters();
+    new_engine.load_lexical_filters();
     new_engine.hierarchical_list.sort_by_key(|de| de.hash);
     new_engine.wildcard_patterns.sort();
     new_engine.hierarchical_list.dedup();
@@ -1606,5 +1680,126 @@ server=/dnsmasq.format.com/
 
         assert!(fast_map.is_empty());
         assert!(hierarchical_list.is_empty());
+    }
+
+    // --- Tests for load_lexical_filters ---
+
+    #[test]
+    fn test_load_lexical_filters_builds_automaton() {
+        init_seed();
+        let mut cfg = crate::config::Config::default();
+        cfg.security.lexical.enabled = true;
+        cfg.security.lexical.banned_keywords = vec!["casino".into(), "porno".into()];
+        cfg.security.lexical.strict_keyword_matching = true;
+        CONFIG.store(Arc::new(cfg));
+
+        let mut engine = FilterEngine::empty();
+        engine.load_lexical_filters();
+
+        assert!(engine.keyword_automaton.is_some());
+        assert_eq!(engine.keyword_patterns.len(), 2);
+        assert!(engine.keyword_patterns.contains(&"casino".to_string()));
+        assert!(engine.keyword_patterns.contains(&"porno".to_string()));
+        assert!(engine.lexical_strict);
+    }
+
+    #[test]
+    fn test_load_lexical_filters_hashes_suspicious_tlds() {
+        init_seed();
+        let mut cfg = crate::config::Config::default();
+        cfg.security.lexical.enabled = true;
+        cfg.security.lexical.banned_keywords = vec!["test".into()];
+        cfg.security.lexical.suspicious_tlds = vec![".xyz".into(), ".top".into()];
+        CONFIG.store(Arc::new(cfg));
+
+        let mut engine = FilterEngine::empty();
+        engine.load_lexical_filters();
+
+        assert_eq!(engine.suspicious_tld_hashes.len(), 2);
+
+        // Verify TLD hashes are stored without leading dot
+        let xyz_hash = twox_hash::XxHash64::oneshot(42, "xyz".as_bytes());
+        let top_hash = twox_hash::XxHash64::oneshot(42, "top".as_bytes());
+        assert!(engine.suspicious_tld_hashes.contains(&xyz_hash));
+        assert!(engine.suspicious_tld_hashes.contains(&top_hash));
+    }
+
+    #[test]
+    fn test_load_lexical_filters_disabled_noop() {
+        init_seed();
+        let mut cfg = crate::config::Config::default();
+        cfg.security.lexical.enabled = false;
+        cfg.security.lexical.banned_keywords = vec!["casino".into()];
+        CONFIG.store(Arc::new(cfg));
+
+        let mut engine = FilterEngine::empty();
+        engine.load_lexical_filters();
+
+        assert!(engine.keyword_automaton.is_none());
+        assert!(engine.keyword_patterns.is_empty());
+    }
+
+    #[test]
+    fn test_load_lexical_filters_empty_keywords_noop() {
+        init_seed();
+        let mut cfg = crate::config::Config::default();
+        cfg.security.lexical.enabled = true;
+        cfg.security.lexical.banned_keywords = vec![];
+        CONFIG.store(Arc::new(cfg));
+
+        let mut engine = FilterEngine::empty();
+        engine.load_lexical_filters();
+
+        assert!(engine.keyword_automaton.is_none());
+        assert!(engine.keyword_patterns.is_empty());
+    }
+
+    #[test]
+    fn test_is_suspicious_tld_with_empty_set() {
+        init_seed();
+        let engine = FilterEngine::empty();
+
+        // Empty set = all TLDs are suspicious (no restriction)
+        assert!(engine.is_suspicious_tld("com"));
+        assert!(engine.is_suspicious_tld("xyz"));
+    }
+
+    #[test]
+    fn test_is_suspicious_tld_with_configured_set() {
+        init_seed();
+        let mut cfg = crate::config::Config::default();
+        cfg.security.lexical.enabled = true;
+        cfg.security.lexical.banned_keywords = vec!["test".into()];
+        cfg.security.lexical.suspicious_tlds = vec![".xyz".into(), ".top".into()];
+        CONFIG.store(Arc::new(cfg));
+
+        let mut engine = FilterEngine::empty();
+        engine.load_lexical_filters();
+
+        // Configured TLDs should match
+        assert!(engine.is_suspicious_tld("xyz"));
+        assert!(engine.is_suspicious_tld("top"));
+        assert!(engine.is_suspicious_tld("XYZ")); // Case insensitive
+
+        // Non-configured TLDs should not match
+        assert!(!engine.is_suspicious_tld("com"));
+        assert!(!engine.is_suspicious_tld("org"));
+    }
+
+    #[test]
+    fn test_load_lexical_filters_lowercases_keywords() {
+        init_seed();
+        let mut cfg = crate::config::Config::default();
+        cfg.security.lexical.enabled = true;
+        cfg.security.lexical.banned_keywords = vec!["CASINO".into(), "Porno".into()];
+        CONFIG.store(Arc::new(cfg));
+
+        let mut engine = FilterEngine::empty();
+        engine.load_lexical_filters();
+
+        // Keywords should be stored lowercase
+        assert!(engine.keyword_patterns.contains(&"casino".to_string()));
+        assert!(engine.keyword_patterns.contains(&"porno".to_string()));
+        assert!(!engine.keyword_patterns.contains(&"CASINO".to_string()));
     }
 }
