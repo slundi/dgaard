@@ -55,6 +55,21 @@ max_txt_record_length = 128
 # Block if the response contains too many records (suspicious for exfiltration)
 max_answers_per_query = 10
 
+[security.lexical]
+# Block by words in the domain and sub domains. It is useful for parental control
+# since it avoids loading a blacklist of millions of records in RAM.
+enabled = true
+
+# Banned keywords (Full labels or separated by hyphens)
+banned_keywords = ["porno", "casino", "drogue", "bet", "sex"]
+
+# If true, the keyword must be a complete label (safer)
+# If false, a simple .contains() is sufficient (more aggressive)
+strict_keyword_matching = true
+
+# Conditional blocking: blocks if it contains a banned_keyword AND this TLD
+suspicious_tlds = [".biz", ".bible", ".top"]
+
 [security.intelligence]
 # DGA & Lexical Analysis (The "Brain")
 enabled = true

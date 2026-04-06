@@ -7,6 +7,7 @@
 - **Stratified Filtering:** High-speed matching using Bloom Filters and FSTs for millions of rules with minimal RAM.
 - **NRD Integration:** Blocks Newly Registered Domains using daily-updated feeds.
 - **Behavioral Analytics:** Detects NXDOMAIN hunting and DNS exfiltration patterns.
+- **Smart Keyword Sentry**: Proactive [parental control](docs/Parental-control.md) using `Aho-Corasick` label-matching to block categories (Adult, Gambling) with near-zero memory footprint, avoiding common over-blocking issues.
 - **OpenWrt Optimized:** Low memory footprint, zero-copy parsing, and async I/O.
 - **Live Stats:** Stream binary event data over a Unix Domain Socket for real-time monitoring.
 

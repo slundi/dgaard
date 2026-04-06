@@ -72,6 +72,12 @@ dgaard/
 * [x] 4.4. **N-Gram Loader**: Implement the binary loader for the `.bin` language models (source? https://www.unb.ca/cic/datasets/dns-2021.html).
 * [x] 4.5. **Multi-Model N-Gram Logic**: Implement the "OR" logic (if domain passes English or French, it’s allowed).
 * [x] 4.6. **Punycode/IDN**: Add `idna` crate integration for the "Smart IDN" mode (✅ `src/resolve.rs - is_illegal_idn()`).
+* [ ] 4.7. **Forbidden words**: for a parental control, introduce the following fields:
+  * in the TOML section `[security.lexical]`
+    * `banned_keywords = ["porno", "casino", "drogue", "bet", "sex"]` for forbidden keywords. It will avoid a blocklist of 2 millions domains in RAM. Instead we will use `AhoCorasick` that will have few keywords.
+    * `strict_keyword_matching = true` to avoid false positive and block the word with a separator: `casinon-les-bains.fr` city website will be blocked with `*casino*` and we dont want to
+  * in the `[tld]` section:
+    * `suspicious_tlds = [".com", ".net", ".org"]` so we block if suspicious tld and banned keywords matches
 
 ## Phase 5: Telemetry & Monitoring
 
