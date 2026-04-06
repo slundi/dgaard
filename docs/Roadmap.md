@@ -79,6 +79,8 @@ dgaard/
   * in the `[tld]` section:
     * `suspicious_tlds = [".com", ".net", ".org"]` so we block if suspicious tld and banned keywords matches
 * [ ] 4.8. **Deduplication**: when loaling blocklists we can have TLD blocking and domain blocking doing the same thing. Example: coverage for blocked TLD `.xyz` will bloc domains like `bad-site.xyz` (bigger depth), wildcard `abc*.def.xyz` and regexes like `[some-regex]+\\.xyz`. To reduce RAM usage, it is required.
+  * [ ] check before adding a filter
+  * [ ] check if the current filter is better (smaller depth) than an already existing one so we can replace it
 
 ## Phase 5: Telemetry & Monitoring
 

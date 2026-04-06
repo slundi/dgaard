@@ -12,20 +12,16 @@ use hyper_util::client::legacy::Client;
 use regex::Regex;
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{atomic::Ordering, Arc},
 };
 
 use crate::{
-    CONFIG, CURRENT_ENGINE,
-    filter::{
+    CONFIG, CURRENT_ENGINE, GLOBAL_SEED, filter::{
         engine::FilterEngine,
         io::{build_https_client, load_source},
-        parser::{
-            detect_format, parse_dnsmasq_line, parse_host_line, parse_plain_domain,
-        },
+        parser::{detect_format, parse_dnsmasq_line, parse_host_line, parse_plain_domain},
         types::{ListError, ListFormat},
-    },
-    model::{DomainEntry, DomainEntryFlags, RawDomainEntry},
+    }, model::{DomainEntry, DomainEntryFlags, RawDomainEntry}
 };
 
 use abp::parse_abp_line;
@@ -35,6 +31,27 @@ type HttpsClient = Client<
     Empty<Bytes>,
 >;
 
+/// Checks if a domain is already covered by a broader rule (lower depth).
+fn is_redundant(entry: &RawDomainEntry, fast_map: &HashMap<u64, u8>) -> bool {
+    let chunks = if entry.flags.contains(DomainEntryFlags::REGEX) {
+        entry.value.rsplit("\\.")
+    } else {
+        entry.value.rsplit(".")
+    };
+    let mut domain = String::new();
+    for value in chunks {
+        if let Some(d) = format!("{}.{}", value, domain).strip_suffix('.') {
+            let hash = twox_hash::XxHash64::oneshot(GLOBAL_SEED.load(Ordering::Relaxed), domain.as_bytes());
+            if fast_map.contains_key(&hash) {
+                return true;
+            }
+            domain = d.to_string();
+        }
+    }
+    
+    false
+}
+
 /// Process a single line using the appropriate parser based on detected format.
 fn process_line(
     line: &str,
@@ -43,6 +60,7 @@ fn process_line(
     hierarchical_list: &mut Vec<DomainEntry>,
     wildcard_patterns: &mut Vec<String>,
     regex_pool: &mut Vec<Regex>,
+    // stats: &mut LoadStats,
 ) {
     // Use parse_line wrapper for common logic (trim, skip comments)
     let result: Result<RawDomainEntry, ListError<'_>> =
@@ -62,6 +80,22 @@ fn process_line(
         Ok(entry) => {
             // Merge base_flags with entry flags (e.g., WHITELIST from config + WILDCARD from parser)
             let combined_flags = base_flags | entry.flags;
+            let is_whitelist = combined_flags.contains(DomainEntryFlags::WHITELIST);
+
+            // --- REDUNDANCY CHECK ---
+            // If this is a blacklist entry, check if a parent is already in the fast_map.
+            // Example: If 'example.com' (depth 1) is blocked, 'ads.example.com' (depth 2) is redundant.
+            if !is_whitelist && is_redundant(&entry, fast_map) {
+                // stats.redundant += 1;
+                return;
+            }
+
+            // // Increment Whitelist/Blacklist counters
+            // if is_whitelist {
+            //     stats.whitelisted += 1;
+            // } else {
+            //     stats.blacklisted += 1;
+            // }
 
             // Intelligent dispatch based on flags
             // parse_abp_line already extracts clean domains and hashes them appropriately
@@ -167,20 +201,6 @@ pub async fn reload_lists() {
     let mut regex_pool: Vec<Regex> = Vec::new();
     let mut wildcard_patterns: Vec<String> = Vec::new();
 
-    // Load blacklists sequentially
-    for source in &sources.blacklists {
-        load_source(
-            source,
-            DomainEntryFlags::NONE,
-            &client,
-            &mut fast_map,
-            &mut hierarchical_list,
-            &mut wildcard_patterns,
-            &mut regex_pool,
-        )
-        .await;
-    }
-
     // Load whitelists sequentially (with WHITELIST flag)
     for source in &sources.whitelists {
         load_source(
@@ -209,6 +229,29 @@ pub async fn reload_lists() {
         .await;
     }
 
+    // Load blacklists sequentially
+    for source in &sources.blacklists {
+        load_source(
+            source,
+            DomainEntryFlags::NONE,
+            &client,
+            &mut fast_map,
+            &mut hierarchical_list,
+            &mut wildcard_patterns,
+            &mut regex_pool,
+        )
+        .await;
+
+        // println!(
+        //     "{} blacklisted,\t{} whitelisted (skipped\t{} redundant rules) for {}",
+        //     stats.blacklisted, stats.whitelisted, stats.redundant, source
+        // );
+    }
+    // println!(
+    //     "Engine reloaded: {} blacklisted, {} whitelisted (skipped {} redundant rules)",
+    //     stats.blacklisted, stats.whitelisted, stats.redundant
+    // );
+
     // Build the new engine
     let mut new_engine = FilterEngine {
         fast_map,
@@ -232,8 +275,6 @@ pub async fn reload_lists() {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering;
-
     use super::*;
     use crate::{GLOBAL_SEED, filter::types::ListError, model::DomainEntryFlags};
 
