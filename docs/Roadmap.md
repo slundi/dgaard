@@ -142,6 +142,9 @@ const RESET: &str = "\x1b[0m";
 
 println!("{}[OK]{} Dgaard is running", GREEN, RESET);
 ```
+* [ ] TXT filtering:
+  * [ ] max TXT length
+  * [ ] max TXT paquet per second/minute?
 * [ ] **Blacklist domain stats**: from some lists perform some stats:
   * **Structure stats**
     * Top TLD that have blocked domains
