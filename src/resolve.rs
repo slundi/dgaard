@@ -19,8 +19,8 @@ use core::sync::atomic::Ordering;
 
 use crate::config::PipelineStep;
 use crate::dga::{
-    NgramLanguage, calculate_entropy, calculate_entropy_fast, is_consonant_suspicious,
-    ngram_check_embedded,
+    entropy::{calculate_entropy, calculate_entropy_fast, is_consonant_suspicious},
+    ngram::{NgramLanguage, ngram_check_embedded},
 };
 use crate::model::{Action, BlockReason, DomainEntryFlags};
 use crate::{CONFIG, CURRENT_ENGINE, GLOBAL_SEED};
