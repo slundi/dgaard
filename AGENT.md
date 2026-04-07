@@ -19,6 +19,13 @@ You are assisting in the development of **Dgaard**, a Rust-based DNS proxy. Adhe
 - **NRD:** Treat the NRD list as a static Bloom Filter updated via a background thread or SIGHUP.
 - **DNS Wire Format:** Use `trust-dns-proto` for packet manipulation, but prioritize zero-copy where possible.
 
+### 🛡️ Deep Packet Inspection (DPI) Lite
+Dgaard doesn't just look at names; it inspects the payload:
+- **TXT Entropy:** Scans TXT records for high-entropy payloads (Exfiltration/C2).
+- **CNAME Unmasking:** Follows CNAME chains to block hidden trackers.
+- **Rebinding Defense:** Rejects public domain queries resolving to private IP ranges.
+- **Null-Type Blocking:** Drops DNS `NULL` type queries used for data smuggling.
+
 ## 🛠️ Target Environment
 - **OS:** OpenWrt (Linux kernel)
 - **Arch:** MIPS/ARM (Big-endian vs Little-endian awareness is crucial for xxh64 hashes).

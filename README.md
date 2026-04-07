@@ -10,6 +10,10 @@
 - **Smart Keyword Sentry**: Proactive [parental control](docs/Parental-control.md) using `Aho-Corasick` label-matching to block categories (Adult, Gambling) with near-zero memory footprint, avoiding common over-blocking issues.
 - **OpenWrt Optimized:** Low memory footprint, zero-copy parsing, and async I/O.
 - **Live Stats:** Stream binary event data over a Unix Domain Socket for real-time monitoring.
+- **Deep Packet Inspection (DPI Lite)**: Analyzes TXT record entropy and CNAME chains to stop data exfiltration and CNAME cloaking.
+- **DNS Rebinding Protection**: Automatically drops public queries resolving to private local IPs.
+- **Threat Intelligence**: Analyzes blocklist trends to provide users with data-driven suggestions for parental control and TLD blocking.
+- **Smart Keyword Sentry**: Proactive label-matching using `Aho-Corasick` to block categories (Adult, Gambling) with near-zero memory footprint.
 
 ## 🎯 Target Audience
 

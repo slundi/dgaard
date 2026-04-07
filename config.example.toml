@@ -130,6 +130,26 @@ nxdomain_window = 60
 max_subdomains_per_minute = 50
 max_label_length = 60
 
+# --- Response Filtering (Inbound / DPI Lite) ---
+[security.inbound]
+# Enable Deep Packet Inspection on DNS answers
+enabled = true
+
+# Rejects responses where TXT records have high entropy (sign of tunneling)
+# Similar to domain entropy, but applied to the TXT payload.
+max_txt_entropy = 4.5
+
+# Follow CNAME chains and block if the final destination is blacklisted
+unmask_cname_cloaking = true
+
+# Anti-DNS Rebinding: Block public domains resolving to local IPs
+# (127.0.0.1, 192.168.x.x, 10.x.x.x, etc.)
+block_private_ip_in_public_res = true
+
+# Block specific query types often used for tunneling or reconnaissance
+# e.g., ["NULL", "ANY", "HINFO"]
+forbidden_qtypes = ["NULL"]
+
 [upstream]
 # Where the proxy forwards "clean" queries
 # Using DNS-over-HTTPS (DoH) or standard UDP

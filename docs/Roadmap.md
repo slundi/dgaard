@@ -79,7 +79,7 @@ dgaard/
   * in the `[tld]` section:
     * `suspicious_tlds = [".com", ".net", ".org"]` so we block if suspicious tld and banned keywords matches
 * [ ] 4.8. **Deduplication**: when loaling blocklists we can have TLD blocking and domain blocking doing the same thing. Example: coverage for blocked TLD `.xyz` will bloc domains like `bad-site.xyz` (bigger depth), wildcard `abc*.def.xyz` and regexes like `[some-regex]+\\.xyz`. To reduce RAM usage, it is required.
-  * [ ] check before adding a filter
+  * [x] check before adding a filter
   * [ ] check if the current filter is better (smaller depth) than an already existing one so we can replace it
 
 ## Phase 5: Telemetry & Monitoring
@@ -131,6 +131,24 @@ pub struct StatEvent {
 ```
 * [ ] 7.3. **CLI Control**: add (with `gumdrop`) commands (`bypass TIME`, `anonymous TIME`, `incognito TIME` where time is in minutes `30m` or  hours `2h`, or maybe day or week too. We should have a TOML configurable default time) to send control signals.
 
+## Phase 8: Deep Packet Inspection (DPI Lite) & Advanced Filtering
+*Focus: Analysing DNS payloads and response records.*
+
+* [ ] 8.1. **Inbound Record Inspector**: logic to parse and validate answer sections (A, AAAA, TXT).
+* [ ] 8.2. **TXT Entropy Sentry**: calculate entropy on TXT record content to detect data exfiltration/C2 (Google SPF key or website record check may use this field sobase64 or any encrypted data will have a high entropy).
+* [ ] 8.3. **CNAME Unmasking**: recursive check of CNAME targets against blacklists (Cloaking defense) (ie: `track.domain.tld` is referring to `ad-server.net`).
+* [ ] 8.4. **DNS Rebinding Shield**: reject public queries resolving to private IP ranges (RFC 1918). May need geoIP DB or known range for hosted malware. **ASN Filtering** for crypto mining autonomous systems?
+* [ ] 8.5. **QType Warden**: policy-based blocking for suspicious types (NULL almost only used by DNS tunneling, HINFO for system information, ANY, etc.).
+* [ ] 8.6. **Low TTL**: if TTL is very low (like less than 10s but configurable) and not a known CDN (like Akamai) it should increase suspisious score.
+
+## Phase 9: Threat Intelligence & Analytics
+*Focus: Turning raw block data into actionable insights.*
+
+* [ ] 9.1. **Lexical Trend Engine**: extract top TLDs and keywords from current blocklists to suggest parental filters.
+* [ ] 9.2. **Structure Analytics**: calculate top subdomain depth and label length distribution.
+* [ ] 9.3. **DGA Effectiveness Audit**: average entropy and consonant ratio of blocked vs. allowed domains.
+* [ ] 9.4. **List Collision Logic**: identify domains appearing in multiple sources for 100% confidence scoring.
+
 ## Unsorted
 
 * [x] **Multi-Thread Spawn**: A loop that spawns a `tokio::spawn` task for every incoming packet (`src/runtime.rs`).
@@ -144,7 +162,36 @@ const RESET: &str = "\x1b[0m";
 
 println!("{}[OK]{} Dgaard is running", GREEN, RESET);
 ```
-* [ ] TXT filtering:
+* [ ] **Suspicious scoring**: block when a score is greater than 100. Start with light checks in order to avoid running entropy, ngram or other heavy processing if already over 100:
+  * enthropy >4.0: +40
+  * consonant clusturing >4-5 and ration vowels/consonants unbalanced
+  * domain depth >= 5
+  * domain string very long (greater than 60 chars for example)
+  * suspicious TLD: +30
+  * low TTL: +20
+  * IDN Homograph (Punycode): +60
+  * NRD (Domain < 24h): +50
+  * high entropy on TXT is very very very often for bad stuffs
+  * DNS rebinding give the highest score: +100 (immediate blocking)
+  * forbidden words + suspicious TLD: +100 (immediate blocking)
+```rust
+struct SuspicionScore {
+    total: u8,
+    reasons: Vec<BlockReason>,
+}
+
+impl SuspicionScore {
+    fn add(&mut self, points: u8, reason: BlockReason) {
+        self.total = self.total.saturating_add(points);
+        self.reasons.push(reason);
+    }
+
+    fn is_malicious(&self) -> bool {
+        self.total >= 100
+    }
+}
+```
+* [ ] **TXT filtering**:
   * [ ] max TXT length
   * [ ] max TXT paquet per second/minute?
 * [ ] **Blacklist domain stats**: from some lists perform some stats:
