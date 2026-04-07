@@ -12,16 +12,18 @@ use hyper_util::client::legacy::Client;
 use regex::Regex;
 use std::{
     collections::{HashMap, HashSet},
-    sync::{atomic::Ordering, Arc},
+    sync::{Arc, atomic::Ordering},
 };
 
 use crate::{
-    CONFIG, CURRENT_ENGINE, GLOBAL_SEED, filter::{
+    CONFIG, CURRENT_ENGINE, GLOBAL_SEED,
+    filter::{
         engine::FilterEngine,
         io::{build_https_client, load_source},
         parser::{detect_format, parse_dnsmasq_line, parse_host_line, parse_plain_domain},
         types::{ListError, ListFormat},
-    }, model::{DomainEntry, DomainEntryFlags, RawDomainEntry}
+    },
+    model::{DomainEntry, DomainEntryFlags, RawDomainEntry},
 };
 
 use abp::parse_abp_line;
@@ -32,23 +34,38 @@ type HttpsClient = Client<
 >;
 
 /// Checks if a domain is already covered by a broader rule (lower depth).
+/// For "some.long.domain.tld", checks if "long.domain.tld", "domain.tld", or "tld" exist.
 fn is_redundant(entry: &RawDomainEntry, fast_map: &HashMap<u64, u8>) -> bool {
-    let chunks = if entry.flags.contains(DomainEntryFlags::REGEX) {
-        entry.value.rsplit("\\.")
-    } else {
-        entry.value.rsplit(".")
-    };
-    let mut domain = String::new();
-    for value in chunks {
-        if let Some(d) = format!("{}.{}", value, domain).strip_suffix('.') {
-            let hash = twox_hash::XxHash64::oneshot(GLOBAL_SEED.load(Ordering::Relaxed), domain.as_bytes());
+    let domain = &entry.value;
+    let seed = GLOBAL_SEED.load(Ordering::Relaxed);
+
+    if entry.flags.contains(DomainEntryFlags::REGEX) {
+        // For regex, split by "\\." and rebuild with "." to match fast_map keys
+        let parts: Vec<&str> = domain.split("\\.").collect();
+        if parts.len() <= 1 {
+            return false;
+        }
+        // Check parents from TLD upward (excluding full domain)
+        for i in (1..parts.len()).rev() {
+            let parent = parts[i..].join(".");
+            let hash = twox_hash::XxHash64::oneshot(seed, parent.as_bytes());
             if fast_map.contains_key(&hash) {
                 return true;
             }
-            domain = d.to_string();
+        }
+    } else {
+        // Zero-allocation: use string slices for parent domains
+        let mut pos = 0;
+        while let Some(dot_pos) = domain[pos..].find('.') {
+            let parent = &domain[pos + dot_pos + 1..];
+            let hash = twox_hash::XxHash64::oneshot(seed, parent.as_bytes());
+            if fast_map.contains_key(&hash) {
+                return true;
+            }
+            pos += dot_pos + 1;
         }
     }
-    
+
     false
 }
 
@@ -974,5 +991,120 @@ server=/dnsmasq.format.com/
         assert!(engine.keyword_patterns.contains(&"casino".to_string()));
         assert!(engine.keyword_patterns.contains(&"porno".to_string()));
         assert!(!engine.keyword_patterns.contains(&"CASINO".to_string()));
+    }
+
+    // --- Tests for is_redundant ---
+
+    fn make_entry(value: &str, flags: DomainEntryFlags) -> RawDomainEntry {
+        let seed = GLOBAL_SEED.load(Ordering::Relaxed);
+        RawDomainEntry {
+            value: value.to_string(),
+            hash: twox_hash::XxHash64::oneshot(seed, value.as_bytes()),
+            flags,
+            depth: value.matches('.').count() as u8,
+        }
+    }
+
+    fn insert_domain(fast_map: &mut HashMap<u64, u8>, domain: &str) {
+        let seed = GLOBAL_SEED.load(Ordering::Relaxed);
+        let hash = twox_hash::XxHash64::oneshot(seed, domain.as_bytes());
+        fast_map.insert(hash, DomainEntryFlags::NONE.bits());
+    }
+
+    #[test]
+    fn test_is_redundant_parent_blocked() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        insert_domain(&mut fast_map, "example.com");
+
+        // sub.example.com should be redundant since example.com is blocked
+        let entry = make_entry("sub.example.com", DomainEntryFlags::NONE);
+        assert!(is_redundant(&entry, &fast_map));
+    }
+
+    #[test]
+    fn test_is_redundant_grandparent_blocked() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        insert_domain(&mut fast_map, "example.com");
+
+        // deep.sub.example.com should be redundant
+        let entry = make_entry("deep.sub.example.com", DomainEntryFlags::NONE);
+        assert!(is_redundant(&entry, &fast_map));
+    }
+
+    #[test]
+    fn test_is_redundant_tld_blocked() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        insert_domain(&mut fast_map, "com");
+
+        // example.com should be redundant since TLD "com" is blocked
+        let entry = make_entry("example.com", DomainEntryFlags::NONE);
+        assert!(is_redundant(&entry, &fast_map));
+    }
+
+    #[test]
+    fn test_is_redundant_not_redundant() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        insert_domain(&mut fast_map, "other.com");
+
+        // example.com should NOT be redundant
+        let entry = make_entry("example.com", DomainEntryFlags::NONE);
+        assert!(!is_redundant(&entry, &fast_map));
+    }
+
+    #[test]
+    fn test_is_redundant_self_not_redundant() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        insert_domain(&mut fast_map, "example.com");
+
+        // example.com itself should NOT be redundant (only parents are checked)
+        let entry = make_entry("example.com", DomainEntryFlags::NONE);
+        assert!(!is_redundant(&entry, &fast_map));
+    }
+
+    #[test]
+    fn test_is_redundant_tld_only() {
+        init_seed();
+        let fast_map = HashMap::new();
+
+        // Single-label domain has no parents to check
+        let entry = make_entry("com", DomainEntryFlags::NONE);
+        assert!(!is_redundant(&entry, &fast_map));
+    }
+
+    #[test]
+    fn test_is_redundant_sibling_not_redundant() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        insert_domain(&mut fast_map, "other.example.com");
+
+        // sub.example.com should NOT be redundant (sibling, not parent)
+        let entry = make_entry("sub.example.com", DomainEntryFlags::NONE);
+        assert!(!is_redundant(&entry, &fast_map));
+    }
+
+    #[test]
+    fn test_is_redundant_regex_parent_blocked() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        insert_domain(&mut fast_map, "example.com");
+
+        // Regex entry ads\.example\.com should be redundant if example.com is blocked
+        let entry = make_entry(r"ads\.example\.com", DomainEntryFlags::REGEX);
+        assert!(is_redundant(&entry, &fast_map));
+    }
+
+    #[test]
+    fn test_is_redundant_regex_not_redundant() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        insert_domain(&mut fast_map, "other.com");
+
+        let entry = make_entry(r"ads\.example\.com", DomainEntryFlags::REGEX);
+        assert!(!is_redundant(&entry, &fast_map));
     }
 }
