@@ -34,6 +34,9 @@ pub enum BlockReason {
     /// Domain is on a known "Newly Registered Domain" list.
     NrdList,
 
+    /// Suspicious
+    Suspicious,
+
     /// TLD is explicitly excluded in config.
     TldExcluded,
 }
@@ -225,9 +228,52 @@ impl StatEvent {
     }
 }
 
+struct SuspicionScore {
+    total: u8,
+    reasons: Vec<BlockReason>,
+}
+
+impl SuspicionScore {
+    fn add(&mut self, points: u8, reason: BlockReason) {
+        self.total = self.total.saturating_add(points);
+        self.reasons.push(reason);
+    }
+
+    fn is_malicious(&self) -> bool {
+        self.total >= 10
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // SuspicionScore serialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_initial_suspicious_state() {
+        let score = SuspicionScore {
+            total: 0,
+            reasons: Vec::new(),
+        };
+        assert_eq!(score.total, 0);
+        assert!(!score.is_malicious());
+    }
+
+    #[test]
+    fn test_suspicious_total() {
+        let mut score = SuspicionScore {
+            total: 5,
+            reasons: Vec::new(),
+        };
+        assert!(!score.is_malicious());
+        score.total=10;
+        assert!(score.is_malicious());
+        score.total=255;
+        assert!(score.is_malicious());
+    }
 
     // -----------------------------------------------------------------------
     // StatMessage serialization tests
