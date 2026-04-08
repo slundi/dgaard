@@ -1,6 +1,8 @@
 mod packet;
 mod upstream;
 
+pub(crate) use packet::InspectedAnswer;
+
 use std::sync::Arc;
 
 use tokio::net::UdpSocket;
