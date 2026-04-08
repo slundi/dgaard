@@ -228,19 +228,83 @@ impl StatEvent {
     }
 }
 
-struct SuspicionScore {
-    total: u8,
-    reasons: Vec<BlockReason>,
+/// Suspicion score for a domain.
+///
+/// Accumulates points from various heuristic checks. The score ranges from 0 to 255,
+/// where higher scores indicate more suspicious domains.
+///
+/// Scoring thresholds (from roadmap):
+/// - 0-3: Safe
+/// - 4-6: Suspicious (logged)
+/// - 7-9: Highly suspicious
+/// - 10+: Malicious (blocking threshold)
+#[derive(Debug, Clone, Default)]
+pub struct SuspicionScore {
+    /// Total accumulated score (0-255, saturating)
+    pub total: u8,
+    /// List of reasons contributing to the score
+    pub reasons: Vec<BlockReason>,
+}
+
+/// Score points for various heuristic signals.
+pub mod score_points {
+    /// High Shannon entropy (>4.0) - indicates DGA
+    pub const ENTROPY_HIGH: u8 = 4;
+    /// Consonant clustering / unpronounceable pattern
+    pub const CONSONANT_CLUSTER: u8 = 3;
+    /// Deep subdomain structure (>=5 levels)
+    pub const DEEP_SUBDOMAIN: u8 = 3;
+    /// Very long domain string (>60 chars)
+    pub const LONG_DOMAIN: u8 = 3;
+    /// Suspicious TLD (.xyz, .top, .biz, etc.)
+    pub const SUSPICIOUS_TLD: u8 = 3;
+    /// Low TTL in DNS response
+    pub const LOW_TTL: u8 = 2;
+    /// IDN/Punycode homograph attack
+    pub const IDN_HOMOGRAPH: u8 = 6;
+    /// Newly Registered Domain (<24h)
+    pub const NRD: u8 = 5;
+    /// DNS rebinding attempt - immediate block
+    pub const DNS_REBINDING: u8 = 10;
+    /// Forbidden keyword + suspicious TLD combo - immediate block
+    pub const KEYWORD_SUSPICIOUS_TLD: u8 = 10;
 }
 
 impl SuspicionScore {
-    fn add(&mut self, points: u8, reason: BlockReason) {
+    /// Create a new empty score.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add points for a specific reason.
+    pub fn add(&mut self, points: u8, reason: BlockReason) {
         self.total = self.total.saturating_add(points);
         self.reasons.push(reason);
     }
 
-    fn is_malicious(&self) -> bool {
+    /// Add points without a specific reason (for sub-threshold signals).
+    pub fn add_points(&mut self, points: u8) {
+        self.total = self.total.saturating_add(points);
+    }
+
+    /// Check if the domain should be considered malicious (score >= 10).
+    pub fn is_malicious(&self) -> bool {
         self.total >= 10
+    }
+
+    /// Check if the domain is suspicious (score >= 4).
+    pub fn is_suspicious(&self) -> bool {
+        self.total >= 4
+    }
+
+    /// Check if the domain is highly suspicious (score >= 7).
+    pub fn is_highly_suspicious(&self) -> bool {
+        self.total >= 7
+    }
+
+    /// Get the primary block reason (the one with highest individual score contribution).
+    pub fn primary_reason(&self) -> Option<&BlockReason> {
+        self.reasons.first()
     }
 }
 
@@ -249,30 +313,87 @@ mod tests {
     use super::*;
 
     // -----------------------------------------------------------------------
-    // SuspicionScore serialization tests
+    // SuspicionScore tests
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_initial_suspicious_state() {
-        let score = SuspicionScore {
-            total: 0,
-            reasons: Vec::new(),
-        };
+    fn test_suspicion_score_new() {
+        let score = SuspicionScore::new();
         assert_eq!(score.total, 0);
+        assert!(score.reasons.is_empty());
+        assert!(!score.is_suspicious());
+        assert!(!score.is_highly_suspicious());
         assert!(!score.is_malicious());
     }
 
     #[test]
-    fn test_suspicious_total() {
-        let mut score = SuspicionScore {
-            total: 5,
-            reasons: Vec::new(),
-        };
+    fn test_suspicion_score_add() {
+        let mut score = SuspicionScore::new();
+        score.add(4, BlockReason::HighEntropy(4.5));
+        assert_eq!(score.total, 4);
+        assert_eq!(score.reasons.len(), 1);
+        assert!(score.is_suspicious());
         assert!(!score.is_malicious());
-        score.total=10;
+    }
+
+    #[test]
+    fn test_suspicion_score_add_points() {
+        let mut score = SuspicionScore::new();
+        score.add_points(3);
+        assert_eq!(score.total, 3);
+        assert!(score.reasons.is_empty());
+    }
+
+    #[test]
+    fn test_suspicion_score_thresholds() {
+        let mut score = SuspicionScore::new();
+
+        // 0-3: Safe
+        score.add_points(3);
+        assert!(!score.is_suspicious());
+        assert!(!score.is_highly_suspicious());
+        assert!(!score.is_malicious());
+
+        // 4-6: Suspicious
+        score.add_points(1);
+        assert!(score.is_suspicious());
+        assert!(!score.is_highly_suspicious());
+        assert!(!score.is_malicious());
+
+        // 7-9: Highly suspicious
+        score.add_points(3);
+        assert!(score.is_suspicious());
+        assert!(score.is_highly_suspicious());
+        assert!(!score.is_malicious());
+
+        // 10+: Malicious
+        score.add_points(3);
+        assert!(score.is_suspicious());
+        assert!(score.is_highly_suspicious());
         assert!(score.is_malicious());
-        score.total=255;
-        assert!(score.is_malicious());
+    }
+
+    #[test]
+    fn test_suspicion_score_saturating() {
+        let mut score = SuspicionScore::new();
+        score.add_points(200);
+        score.add_points(100); // Would overflow without saturation
+        assert_eq!(score.total, 255);
+    }
+
+    #[test]
+    fn test_suspicion_score_primary_reason() {
+        let mut score = SuspicionScore::new();
+        assert!(score.primary_reason().is_none());
+
+        score.add(4, BlockReason::HighEntropy(4.5));
+        score.add(3, BlockReason::InvalidStructure);
+
+        // Primary reason is the first one added
+        assert!(matches!(
+            score.primary_reason(),
+            Some(BlockReason::HighEntropy(_))
+        ));
     }
 
     // -----------------------------------------------------------------------

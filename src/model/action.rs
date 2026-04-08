@@ -73,6 +73,8 @@ pub enum StatBlockReason {
     NrdList = 7,
     /// Excluded TLD
     TldExcluded = 8,
+    /// Generic suspicious activity (score-based)
+    Suspicious = 9,
 }
 
 impl TryFrom<u8> for StatBlockReason {
@@ -90,6 +92,7 @@ impl TryFrom<u8> for StatBlockReason {
             6 => Ok(StatBlockReason::SuspiciousIdn),
             7 => Ok(StatBlockReason::NrdList),
             8 => Ok(StatBlockReason::TldExcluded),
+            9 => Ok(StatBlockReason::Suspicious),
             _ => Err(()),
         }
     }
@@ -107,6 +110,7 @@ impl From<&BlockReason> for StatBlockReason {
             BlockReason::SuspiciousIdn => StatBlockReason::SuspiciousIdn,
             BlockReason::NrdList => StatBlockReason::NrdList,
             BlockReason::TldExcluded => StatBlockReason::TldExcluded,
+            BlockReason::Suspicious => StatBlockReason::Suspicious,
         }
     }
 }
@@ -148,6 +152,10 @@ mod tests {
         assert_eq!(
             StatBlockReason::from(&BlockReason::TldExcluded),
             StatBlockReason::TldExcluded
+        );
+        assert_eq!(
+            StatBlockReason::from(&BlockReason::Suspicious),
+            StatBlockReason::Suspicious
         );
     }
 }

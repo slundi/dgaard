@@ -170,6 +170,7 @@ pub(crate) async fn process_stat_message(
                         StatBlockReason::SuspiciousIdn => "idn",
                         StatBlockReason::NrdList => "nrd",
                         StatBlockReason::TldExcluded => "tld",
+                        StatBlockReason::Suspicious => "suspicious",
                     };
                     println!("[BLOCK] {} -> {} ({})", client_ip, domain, reason_str);
                 }

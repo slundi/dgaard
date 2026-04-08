@@ -18,10 +18,13 @@
 mod heuristics;
 mod matcher;
 mod patterns;
+mod scoring;
+
+pub use scoring::compute_score;
 
 use crate::CONFIG;
 use crate::config::PipelineStep;
-use crate::model::{Action, BlockReason};
+use crate::model::{Action, BlockReason, SuspicionScore};
 use crate::resolve::heuristics::{check_dga_heuristics, check_lexical, is_illegal_idn};
 use crate::resolve::matcher::{is_blocked, is_suffix_blocked, is_whitelisted};
 use crate::resolve::patterns::{is_regex_blocked, is_wildcard_pattern_blocked};
@@ -64,6 +67,15 @@ pub fn is_structure_invalid(domain: &str) -> bool {
     false
 }
 
+/// Result of domain resolution including the suspicion score.
+#[derive(Debug, Clone)]
+pub struct ResolveResult {
+    /// The action to take for this query
+    pub action: Action,
+    /// Computed suspicion score (for logging/telemetry)
+    pub score: SuspicionScore,
+}
+
 /// Main resolution function that processes a domain through the configured pipeline.
 ///
 /// This function iterates through the pipeline steps defined in the configuration
@@ -75,16 +87,39 @@ pub fn is_structure_invalid(domain: &str) -> bool {
 /// # Returns
 /// An `Action` indicating what should be done with the DNS query.
 pub fn resolve(domain: &str) -> Action {
+    resolve_with_score(domain).action
+}
+
+/// Resolution function that also returns the computed suspicion score.
+///
+/// Use this when you need access to the suspicion score for logging or telemetry.
+/// The score is computed but does NOT currently affect blocking decisions.
+///
+/// # Arguments
+/// * `domain` - The domain name to resolve (lowercase, no trailing dot)
+///
+/// # Returns
+/// A `ResolveResult` containing the action and suspicion score.
+pub fn resolve_with_score(domain: &str) -> ResolveResult {
     let config = CONFIG.load();
+
+    // Compute suspicion score (for logging/telemetry - not blocking yet)
+    let score = compute_score(domain);
 
     // Pre-pipeline: structural sanity checks (gatekeeper)
     if is_structure_invalid(domain) {
-        return Action::Block(BlockReason::InvalidStructure);
+        return ResolveResult {
+            action: Action::Block(BlockReason::InvalidStructure),
+            score,
+        };
     }
 
     // Pre-pipeline: IDN check if enabled
     if is_illegal_idn(domain) {
-        return Action::Block(BlockReason::SuspiciousIdn);
+        return ResolveResult {
+            action: Action::Block(BlockReason::SuspiciousIdn),
+            score,
+        };
     }
 
     // Process each pipeline step in order
@@ -92,7 +127,10 @@ pub fn resolve(domain: &str) -> Action {
         match step {
             PipelineStep::Whitelist => {
                 if is_whitelisted(domain) {
-                    return Action::Allow;
+                    return ResolveResult {
+                        action: Action::Allow,
+                        score,
+                    };
                 }
             }
             PipelineStep::HotCache => {
@@ -101,38 +139,64 @@ pub fn resolve(domain: &str) -> Action {
             }
             PipelineStep::StaticBlock => {
                 if is_blocked(domain) {
-                    return Action::Block(BlockReason::StaticBlacklist(String::from("blocklist")));
+                    return ResolveResult {
+                        action: Action::Block(BlockReason::StaticBlacklist(String::from(
+                            "blocklist",
+                        ))),
+                        score,
+                    };
                 }
             }
             PipelineStep::SuffixMatch => {
                 if is_suffix_blocked(domain) {
-                    return Action::Block(BlockReason::AbpRule(String::from("wildcard")));
+                    return ResolveResult {
+                        action: Action::Block(BlockReason::AbpRule(String::from("wildcard"))),
+                        score,
+                    };
                 }
                 if is_wildcard_pattern_blocked(domain) {
-                    return Action::Block(BlockReason::AbpRule(String::from("glob")));
+                    return ResolveResult {
+                        action: Action::Block(BlockReason::AbpRule(String::from("glob"))),
+                        score,
+                    };
                 }
                 if is_regex_blocked(domain) {
-                    return Action::Block(BlockReason::AbpRule(String::from("regex")));
+                    return ResolveResult {
+                        action: Action::Block(BlockReason::AbpRule(String::from("regex"))),
+                        score,
+                    };
                 }
             }
             PipelineStep::Heuristics => {
                 // Lexical/keyword filtering (parental control)
                 if let Some(reason) = check_lexical(domain) {
-                    return Action::Block(reason);
+                    return ResolveResult {
+                        action: Action::Block(reason),
+                        score,
+                    };
                 }
                 // DGA heuristics (entropy, consonant clustering, n-grams)
                 if let Some(reason) = check_dga_heuristics(domain) {
-                    return Action::Block(reason);
+                    return ResolveResult {
+                        action: Action::Block(reason),
+                        score,
+                    };
                 }
             }
             PipelineStep::Upstream => {
-                return Action::ProxyToUpstream;
+                return ResolveResult {
+                    action: Action::ProxyToUpstream,
+                    score,
+                };
             }
         }
     }
 
     // Safety fallback if pipeline doesn't end with Upstream
-    Action::ProxyToUpstream
+    ResolveResult {
+        action: Action::ProxyToUpstream,
+        score,
+    }
 }
 
 #[cfg(test)]
@@ -433,5 +497,68 @@ pub mod tests {
             "Domain without banned keyword should be proxied, got: {:?}",
             action
         );
+    }
+
+    // --- Tests for resolve_with_score ---
+
+    #[test]
+    fn test_resolve_with_score_normal_domain() {
+        init_test_env();
+        let engine = create_test_engine(&[], &[], &[]);
+        CURRENT_ENGINE.store(Arc::new(engine));
+
+        let result = super::resolve_with_score("google.com");
+        assert!(matches!(result.action, Action::ProxyToUpstream));
+        assert_eq!(result.score.total, 0);
+        assert!(!result.score.is_suspicious());
+    }
+
+    #[test]
+    fn test_resolve_with_score_suspicious_domain() {
+        init_test_env();
+        let engine = create_test_engine(&[], &[], &[]);
+        CURRENT_ENGINE.store(Arc::new(engine));
+
+        // Punycode domain should have non-zero score
+        let result = super::resolve_with_score("xn--pple-43d.com");
+        // Domain is blocked by IDN check in resolve, but score is computed
+        assert!(matches!(
+            result.action,
+            Action::Block(BlockReason::SuspiciousIdn)
+        ));
+        assert!(
+            result.score.total > 0,
+            "Expected non-zero score for IDN domain"
+        );
+    }
+
+    #[test]
+    fn test_resolve_with_score_high_entropy() {
+        init_test_env();
+        let config = crate::config::Config::default();
+        crate::CONFIG.store(Arc::new(config));
+        let engine = create_test_engine(&[], &[], &[]);
+        CURRENT_ENGINE.store(Arc::new(engine));
+
+        // High entropy domain (random-looking SLD)
+        let result = super::resolve_with_score("a1b2c3d4e5f6g7h8i9j0.com");
+        // Score should reflect high entropy
+        assert!(
+            result.score.total >= 4,
+            "Expected entropy score >= 4, got {}",
+            result.score.total
+        );
+    }
+
+    #[test]
+    fn test_resolve_with_score_whitelisted() {
+        init_test_env();
+        let engine = create_test_engine(&[], &["trusted.example.com"], &[]);
+        CURRENT_ENGINE.store(Arc::new(engine));
+
+        let result = super::resolve_with_score("trusted.example.com");
+        assert!(matches!(result.action, Action::Allow));
+        // Score is still computed for whitelisted domains
+        assert_eq!(result.score.total, 0);
     }
 }
