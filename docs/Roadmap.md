@@ -162,18 +162,18 @@ const RESET: &str = "\x1b[0m";
 
 println!("{}[OK]{} Dgaard is running", GREEN, RESET);
 ```
-* [ ] **Suspicious scoring**: block when a score is greater than 100. Start with light checks in order to avoid running entropy, ngram or other heavy processing if already over 100:
-  * enthropy >4.0: +40
+* [ ] **Suspicious scoring**: block when a score is greater than 10. Start with light checks in order to avoid running entropy, ngram or other heavy processing if already over 10:
+  * enthropy >4.0: +4
   * consonant clusturing >4-5 and ration vowels/consonants unbalanced
-  * domain depth >= 5
-  * domain string very long (greater than 60 chars for example)
-  * suspicious TLD: +30
-  * low TTL: +20
-  * IDN Homograph (Punycode): +60
-  * NRD (Domain < 24h): +50
+  * domain depth >= 5: +3
+  * domain string very long (greater than 60 chars for example): +3
+  * suspicious TLD: +3
+  * low TTL: +2
+  * IDN Homograph (Punycode): +6
+  * NRD (Domain < 24h): +5
   * high entropy on TXT is very very very often for bad stuffs
-  * DNS rebinding give the highest score: +100 (immediate blocking)
-  * forbidden words + suspicious TLD: +100 (immediate blocking)
+  * DNS rebinding give the highest score: +10 (immediate blocking)
+  * forbidden words + suspicious TLD: +10 (immediate blocking)
 ```rust
 struct SuspicionScore {
     total: u8,
@@ -187,10 +187,13 @@ impl SuspicionScore {
     }
 
     fn is_malicious(&self) -> bool {
-        self.total >= 100
+        self.total >= 10
     }
 }
 ```
+* [ ] **Scoring engine**: for a scoring from 0 to ten, we can consider: 0-3 is safe, 4-6 is suspicious (so we can have full log), 7-9 is highly suspicious, 10 will block
+  * [ ] `blocking_threshold` so the user can configure it instead of having the hardcoded 10
+  * [ ] `log_suspicion_threshold` log when in the unix socket when the threshold is reaching it
 * [ ] **TXT filtering**:
   * [ ] max TXT length
   * [ ] max TXT paquet per second/minute?
