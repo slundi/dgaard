@@ -365,8 +365,7 @@ pub mod tests {
         config.security.lexical.enabled = true;
         config.security.lexical.banned_keywords = keywords.iter().map(|s| s.to_string()).collect();
         config.security.lexical.strict_keyword_matching = strict;
-        config.security.lexical.suspicious_tlds =
-            suspicious_tlds.iter().map(|s| s.to_string()).collect();
+        config.tld.suspicious_tlds = suspicious_tlds.iter().map(|s| s.to_string()).collect();
         config
     }
 

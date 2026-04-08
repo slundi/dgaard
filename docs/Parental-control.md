@@ -29,6 +29,7 @@ keywords = ["porno", "casino", "bet", "drogue", "sex", "gambling"]
 # If false, matches if the keyword is found anywhere (more aggressive)
 strict_matching = true
 
+[tld]
 # Combined Filter: Block if domain contains a [keyword] AND uses one of these TLDs
 # This is a powerful "Grey-Zone" filter for .com or .net
 suspicious_tlds = [".com", ".net", ".org", ".biz"]

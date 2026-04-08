@@ -899,7 +899,7 @@ server=/dnsmasq.format.com/
         let mut cfg = crate::config::Config::default();
         cfg.security.lexical.enabled = true;
         cfg.security.lexical.banned_keywords = vec!["test".into()];
-        cfg.security.lexical.suspicious_tlds = vec![".xyz".into(), ".top".into()];
+        cfg.tld.suspicious_tlds = vec![".xyz".into(), ".top".into()];
         CONFIG.store(Arc::new(cfg));
 
         let mut engine = FilterEngine::empty();
@@ -960,7 +960,7 @@ server=/dnsmasq.format.com/
         let mut cfg = crate::config::Config::default();
         cfg.security.lexical.enabled = true;
         cfg.security.lexical.banned_keywords = vec!["test".into()];
-        cfg.security.lexical.suspicious_tlds = vec![".xyz".into(), ".top".into()];
+        cfg.tld.suspicious_tlds = vec![".xyz".into(), ".top".into()];
         CONFIG.store(Arc::new(cfg));
 
         let mut engine = FilterEngine::empty();

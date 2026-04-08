@@ -322,9 +322,6 @@ fn parse_lexical(table: &toml_span::value::Table<'_>) -> Result<LexicalConfig, C
     if let Some(arr) = get_string_array(table, "banned_keywords")? {
         cfg.banned_keywords = arr;
     }
-    if let Some(arr) = get_string_array(table, "suspicious_tlds")? {
-        cfg.suspicious_tlds = arr;
-    }
     Ok(cfg)
 }
 
@@ -463,7 +460,9 @@ fn parse_tld(table: &toml_span::value::Table<'_>) -> Result<TldConfig, ConfigErr
     if let Some(arr) = get_string_array(table, "exclude")? {
         cfg.exclude = arr;
     }
-
+    if let Some(arr) = get_string_array(table, "suspicious_tlds")? {
+        cfg.suspicious_tlds = arr;
+    }
     Ok(cfg)
 }
 
@@ -871,6 +870,7 @@ mod tests {
             enabled = true
             banned_keywords = ["porno", "casino", "drogue"]
             strict_keyword_matching = false
+            [tld]
             suspicious_tlds = [".biz", ".top", ".xyz"]
         "#;
         let cfg = Config::parse(toml).unwrap();
@@ -880,10 +880,7 @@ mod tests {
             vec!["porno", "casino", "drogue"]
         );
         assert!(!cfg.security.lexical.strict_keyword_matching);
-        assert_eq!(
-            cfg.security.lexical.suspicious_tlds,
-            vec![".biz", ".top", ".xyz"]
-        );
+        assert_eq!(cfg.tld.suspicious_tlds, vec![".biz", ".top", ".xyz"]);
     }
 
     #[test]
@@ -897,7 +894,7 @@ mod tests {
         assert!(!cfg.security.lexical.enabled);
         assert!(cfg.security.lexical.banned_keywords.is_empty());
         assert!(cfg.security.lexical.strict_keyword_matching); // default is true
-        assert!(cfg.security.lexical.suspicious_tlds.is_empty());
+        assert!(cfg.tld.suspicious_tlds.is_empty());
     }
 
     #[test]

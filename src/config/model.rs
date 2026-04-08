@@ -306,15 +306,6 @@ pub struct LexicalConfig {
     /// When `false`: Simple `.contains()` matching is used — more aggressive
     /// but may block legitimate domains.
     pub strict_keyword_matching: bool,
-
-    /// Conditional blocking: block only if domain contains a banned keyword
-    /// AND uses one of these TLDs.
-    ///
-    /// This is useful for "grey-zone" filtering where common TLDs like `.com`
-    /// might have legitimate uses of certain keywords.
-    ///
-    /// Example: `[".biz", ".top", ".xyz"]`
-    pub suspicious_tlds: Vec<String>,
 }
 
 impl Default for LexicalConfig {
@@ -323,7 +314,6 @@ impl Default for LexicalConfig {
             enabled: true,
             banned_keywords: Vec::new(),
             strict_keyword_matching: true,
-            suspicious_tlds: Vec::new(),
         }
     }
 }
@@ -478,6 +468,15 @@ pub struct TldConfig {
     /// Populated with high-risk TLDs commonly abused by malware and DGA
     /// operators.
     pub exclude: Vec<String>,
+
+    /// Conditional blocking: block only if domain contains a banned keyword
+    /// AND uses one of these TLDs.
+    ///
+    /// This is useful for "grey-zone" filtering where common TLDs like `.com`
+    /// might have legitimate uses of certain keywords.
+    ///
+    /// Example: `[".biz", ".top", ".xyz"]`
+    pub suspicious_tlds: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -870,19 +869,6 @@ mod tests {
         assert!(l.enabled);
         assert!(l.banned_keywords.is_empty());
         assert!(l.strict_keyword_matching);
-        assert!(l.suspicious_tlds.is_empty());
-    }
-
-    #[test]
-    fn lexical_config_custom_keywords() {
-        let l = LexicalConfig {
-            enabled: true,
-            banned_keywords: vec!["casino".to_string(), "porno".to_string()],
-            strict_keyword_matching: true,
-            suspicious_tlds: vec![".biz".to_string()],
-        };
-        assert_eq!(l.banned_keywords.len(), 2);
-        assert_eq!(l.suspicious_tlds.len(), 1);
     }
 
     // -----------------------------------------------------------------------

@@ -161,7 +161,8 @@ impl FilterEngine {
 
         // Hash suspicious TLDs without leading dot for O(1) lookup
         let seed = GLOBAL_SEED.load(Ordering::Relaxed);
-        self.suspicious_tld_hashes = lexical
+        self.suspicious_tld_hashes = cfg
+            .tld
             .suspicious_tlds
             .iter()
             .map(|tld| {

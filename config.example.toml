@@ -67,9 +67,6 @@ banned_keywords = ["porno", "casino", "drogue", "bet", "sex"]
 # If false, a simple .contains() is sufficient (more aggressive)
 strict_keyword_matching = true
 
-# Conditional blocking: blocks if it contains a banned_keyword AND this TLD
-suspicious_tlds = [".biz", ".bible", ".top"]
-
 [security.intelligence]
 # DGA & Lexical Analysis (The "Brain")
 enabled = true
@@ -106,10 +103,7 @@ ngram_use_embedded = true
 ngram_embedded_languages = ["english", "french"]
 
 # External model files (used when ngram_use_embedded = false)
-ngram_models = [
-    "/etc/dgaard/models/english.bin",
-    "/etc/dgaard/models/french.bin"
-]
+ngram_models = ["/etc/dgaard/models/english.bin", "/etc/dgaard/models/french.bin"]
 
 # Log-probability threshold (domains scoring below this in ALL models are blocked)
 # Typical range: -6.0 (strict) to -3.0 (lenient). Default: -4.0
@@ -164,6 +158,9 @@ timeout_ms = 2000
 # allow_only = [".com", ".net", ".org", ".io"]
 # Block high-risk TLDs common in malware/DGA
 exclude = [".top", ".xyz", ".bid", ".country", ".stream", ".gdn"]
+
+# Conditional blocking: blocks if it contains a banned_keyword AND this TLD
+suspicious_tlds = [".biz", ".bible", ".top"]
 
 # -----------------------------------------------------------------------------
 # Behavior Monitoring

@@ -15,11 +15,9 @@ use std::{
     sync::{Arc, atomic::AtomicU64},
 };
 
-use crate::{config::Config, filter::engine::FilterEngine};
+use crate::runtime::{init_global_seed, start_with_single_worker, start_with_workers};
 use crate::stats::{StatsCounters, StatsSender};
-use crate::{
-    runtime::{init_global_seed, start_with_single_worker, start_with_workers},
-};
+use crate::{config::Config, filter::engine::FilterEngine};
 use arc_swap::ArcSwap;
 
 pub static GLOBAL_SEED: AtomicU64 = AtomicU64::new(0);
