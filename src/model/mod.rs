@@ -42,6 +42,10 @@ pub enum BlockReason {
 
     /// CNAME chain contains a known-blacklisted domain (cloaking attack).
     CnameCloaking,
+
+    /// Query type is explicitly forbidden by the QType Warden policy.
+    /// Carries the raw RFC 1035 type code (e.g. 10=NULL, 13=HINFO, 255=ANY).
+    ForbiddenQType(u16),
 }
 
 /// Messages sent over the stats channel to the collector.
@@ -466,6 +470,7 @@ mod tests {
             StatBlockReason::NrdList,
             StatBlockReason::TldExcluded,
             StatBlockReason::CnameCloaking,
+            StatBlockReason::ForbiddenQType,
         ];
 
         for reason in reasons {

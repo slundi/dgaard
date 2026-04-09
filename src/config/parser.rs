@@ -154,6 +154,39 @@ fn get_string_array(
     }
 }
 
+/// Extract an optional array of integers from a table.
+fn get_integer_array(
+    table: &toml_span::value::Table<'_>,
+    key: &str,
+) -> Result<Option<Vec<i64>>, ConfigError> {
+    match table.get(key) {
+        Some(v) => match v.as_ref() {
+            ValueInner::Array(arr) => {
+                let mut result = Vec::with_capacity(arr.len());
+                for item in arr.iter() {
+                    match item.as_ref() {
+                        ValueInner::Integer(n) => result.push(*n),
+                        _ => {
+                            return Err(ConfigError::InvalidType {
+                                key: format!("{}[]", key),
+                                expected: "integer",
+                                span: item.span,
+                            });
+                        }
+                    }
+                }
+                Ok(Some(result))
+            }
+            _ => Err(ConfigError::InvalidType {
+                key: key.to_string(),
+                expected: "array",
+                span: v.span,
+            }),
+        },
+        None => Ok(None),
+    }
+}
+
 /// Extract an optional nested table from a table.
 fn get_table<'a>(
     table: &'a toml_span::value::Table<'a>,
@@ -413,6 +446,22 @@ fn parse_behavior(table: &toml_span::value::Table<'_>) -> Result<BehaviorConfig,
     Ok(cfg)
 }
 
+/// Parse `[security.qtype_warden]` section.
+fn parse_qtype_warden(
+    table: &toml_span::value::Table<'_>,
+) -> Result<QTypeWardenConfig, ConfigError> {
+    let mut cfg = QTypeWardenConfig::default();
+
+    if let Some(b) = get_bool(table, "enabled")? {
+        cfg.enabled = b;
+    }
+    if let Some(arr) = get_integer_array(table, "blocked_types")? {
+        cfg.blocked_types = arr.into_iter().map(|n| n as u16).collect();
+    }
+
+    Ok(cfg)
+}
+
 /// Parse `[security]` section with all sub-sections.
 fn parse_security(table: &toml_span::value::Table<'_>) -> Result<SecurityConfig, ConfigError> {
     let mut cfg = SecurityConfig::default();
@@ -431,6 +480,9 @@ fn parse_security(table: &toml_span::value::Table<'_>) -> Result<SecurityConfig,
     }
     if let Some(t) = get_table(table, "behavior")? {
         cfg.behavior = parse_behavior(t)?;
+    }
+    if let Some(t) = get_table(table, "qtype_warden")? {
+        cfg.qtype_warden = parse_qtype_warden(t)?;
     }
 
     Ok(cfg)

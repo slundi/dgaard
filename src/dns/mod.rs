@@ -10,7 +10,7 @@ use tokio::net::UdpSocket;
 use crate::dns::packet::DnsPacket;
 use crate::dns::upstream::forward_to_upstream;
 use crate::model::{Action, StatAction, StatBlockReason};
-use crate::resolve::resolve;
+use crate::resolve::{check_qtype, resolve};
 use crate::{STATS_COUNTERS, STATS_SENDER};
 
 /// Handle an incoming DNS query by running it through the filter pipeline.
@@ -38,7 +38,20 @@ pub(crate) async fn handle_query(
     // Increment total query counter
     STATS_COUNTERS.increment_total();
 
-    // 2. Run domain through the filter pipeline
+    // 2a. QType Warden: block forbidden query types before domain resolution.
+    //     This is the cheapest check — a u16 lookup — so it runs first.
+    if let Some(reason) = check_qtype(dns_packet.qtype) {
+        STATS_COUNTERS.increment_blocked();
+        let stat_reason = StatBlockReason::from(&reason);
+        let response = DnsPacket::build_nxdomain_response(&dns_packet.message);
+        socket.send_to(&response, peer).await?;
+        if let Some(sender) = STATS_SENDER.get() {
+            sender.send_event(&dns_packet.domain, peer, StatAction::Blocked(stat_reason));
+        }
+        return Ok(());
+    }
+
+    // 2b. Run domain through the filter pipeline
     let action = resolve(&dns_packet.domain);
 
     // 3. Process the action and determine stat action

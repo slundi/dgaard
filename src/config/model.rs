@@ -403,6 +403,46 @@ impl Default for BehaviorConfig {
 }
 
 // ---------------------------------------------------------------------------
+// [security.qtype_warden]
+// ---------------------------------------------------------------------------
+
+/// Query-type (QType) policy enforcement.
+///
+/// Blocks DNS queries whose record type is in the `blocked_types` list before
+/// any domain-level processing occurs. This is the cheapest possible filter —
+/// it requires no string comparison, only a u16 lookup in a short list.
+///
+/// Maps to `[security.qtype_warden]` in the configuration file.
+///
+/// ## Well-known suspicious types
+/// | Type | Code | Threat vector |
+/// |------|------|---------------|
+/// | NULL | 10   | DNS tunneling (iodine, dnscat2) |
+/// | HINFO | 13  | Host info leakage |
+/// | ANY  | 255  | DNS amplification attacks |
+/// | AXFR | 252  | Zone transfer (should never come from clients) |
+#[derive(Debug, PartialEq, Clone)]
+pub struct QTypeWardenConfig {
+    /// Master switch — set to `false` to pass all query types through.
+    pub enabled: bool,
+
+    /// DNS record type numbers (RFC 1035 §3.2.2) to block unconditionally.
+    /// Encoded as raw `u16` values so no hickory-proto dependency leaks into
+    /// the config layer.
+    pub blocked_types: Vec<u16>,
+}
+
+impl Default for QTypeWardenConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            // NULL (10), HINFO (13), ANY (255)
+            blocked_types: vec![10, 13, 255],
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // [security]
 // ---------------------------------------------------------------------------
 
@@ -420,6 +460,8 @@ pub struct SecurityConfig {
     pub idn: IdnConfig,
     /// Per-client behavioural anomaly thresholds.
     pub behavior: BehaviorConfig,
+    /// Query-type (QType) policy enforcement.
+    pub qtype_warden: QTypeWardenConfig,
 }
 
 // ---------------------------------------------------------------------------

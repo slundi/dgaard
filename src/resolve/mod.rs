@@ -18,8 +18,10 @@
 mod heuristics;
 mod matcher;
 mod patterns;
+mod qtype;
 mod scoring;
 
+pub use qtype::check_qtype;
 pub use scoring::{compute_score, score_answer};
 
 use crate::CONFIG;

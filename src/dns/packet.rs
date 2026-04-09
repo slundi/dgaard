@@ -6,6 +6,10 @@ use hickory_resolver::proto::rr::RData;
 pub struct DnsPacket {
     pub message: Message,
     pub domain: String,
+    /// Raw DNS record type code from the query section (RFC 1035, §3.2.2).
+    /// Used by the QType Warden to block forbidden query types before domain
+    /// resolution. Common suspicious values: NULL=10, HINFO=13, ANY=255.
+    pub qtype: u16,
 }
 
 impl DnsPacket {
@@ -19,10 +23,12 @@ impl DnsPacket {
 
         // Remove trailing dot if present (e.g., "example.com." -> "example.com")
         let clean_domain = domain.trim_end_matches('.').to_string();
+        let qtype = u16::from(query.query_type());
 
         Some(DnsPacket {
             message,
             domain: clean_domain,
+            qtype,
         })
     }
 

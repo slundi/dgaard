@@ -77,6 +77,8 @@ pub enum StatBlockReason {
     Suspicious = 9,
     /// CNAME chain resolves to a known-blacklisted domain (cloaking)
     CnameCloaking = 10,
+    /// Query type is blocked by the QType Warden policy
+    ForbiddenQType = 11,
 }
 
 impl TryFrom<u8> for StatBlockReason {
@@ -96,6 +98,7 @@ impl TryFrom<u8> for StatBlockReason {
             8 => Ok(StatBlockReason::TldExcluded),
             9 => Ok(StatBlockReason::Suspicious),
             10 => Ok(StatBlockReason::CnameCloaking),
+            11 => Ok(StatBlockReason::ForbiddenQType),
             _ => Err(()),
         }
     }
@@ -115,6 +118,7 @@ impl From<&BlockReason> for StatBlockReason {
             BlockReason::TldExcluded => StatBlockReason::TldExcluded,
             BlockReason::Suspicious => StatBlockReason::Suspicious,
             BlockReason::CnameCloaking => StatBlockReason::CnameCloaking,
+            BlockReason::ForbiddenQType(_) => StatBlockReason::ForbiddenQType,
         }
     }
 }
@@ -164,6 +168,10 @@ mod tests {
         assert_eq!(
             StatBlockReason::from(&BlockReason::CnameCloaking),
             StatBlockReason::CnameCloaking
+        );
+        assert_eq!(
+            StatBlockReason::from(&BlockReason::ForbiddenQType(255)),
+            StatBlockReason::ForbiddenQType
         );
     }
 }
