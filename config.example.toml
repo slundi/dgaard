@@ -26,7 +26,7 @@ pipeline = [
 [server.runtime]
 # “auto” uses the number of logical CPU cores.
 # An integer (e.g., 2) forces a specific number of threads.
-worker_threads = "1"
+worker_threads = 1
 
 # Stack size per thread (in bytes).
 # On OpenWrt, reducing this to 2MB (2 * 1024 * 1024) saves RAM.
