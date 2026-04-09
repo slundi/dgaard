@@ -75,6 +75,8 @@ pub enum StatBlockReason {
     TldExcluded = 8,
     /// Generic suspicious activity (score-based)
     Suspicious = 9,
+    /// CNAME chain resolves to a known-blacklisted domain (cloaking)
+    CnameCloaking = 10,
 }
 
 impl TryFrom<u8> for StatBlockReason {
@@ -93,6 +95,7 @@ impl TryFrom<u8> for StatBlockReason {
             7 => Ok(StatBlockReason::NrdList),
             8 => Ok(StatBlockReason::TldExcluded),
             9 => Ok(StatBlockReason::Suspicious),
+            10 => Ok(StatBlockReason::CnameCloaking),
             _ => Err(()),
         }
     }
@@ -111,6 +114,7 @@ impl From<&BlockReason> for StatBlockReason {
             BlockReason::NrdList => StatBlockReason::NrdList,
             BlockReason::TldExcluded => StatBlockReason::TldExcluded,
             BlockReason::Suspicious => StatBlockReason::Suspicious,
+            BlockReason::CnameCloaking => StatBlockReason::CnameCloaking,
         }
     }
 }
@@ -156,6 +160,10 @@ mod tests {
         assert_eq!(
             StatBlockReason::from(&BlockReason::Suspicious),
             StatBlockReason::Suspicious
+        );
+        assert_eq!(
+            StatBlockReason::from(&BlockReason::CnameCloaking),
+            StatBlockReason::CnameCloaking
         );
     }
 }

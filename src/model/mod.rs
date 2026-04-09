@@ -39,6 +39,9 @@ pub enum BlockReason {
 
     /// TLD is explicitly excluded in config.
     TldExcluded,
+
+    /// CNAME chain contains a known-blacklisted domain (cloaking attack).
+    CnameCloaking,
 }
 
 /// Messages sent over the stats channel to the collector.
@@ -266,6 +269,8 @@ pub mod score_points {
     pub const TXT_RECORD_TOO_LONG: u8 = 3;
     /// Answer section contains more records than `max_answers_per_query`.
     pub const EXCESSIVE_ANSWERS: u8 = 2;
+    /// CNAME chain resolves to a known-blacklisted domain (cloaking attack).
+    pub const CNAME_CLOAKING: u8 = 10;
     /// Newly Registered Domain (<24h)
     pub const NRD: u8 = 5;
     /// DNS rebinding attempt - immediate block
@@ -460,6 +465,7 @@ mod tests {
             StatBlockReason::SuspiciousIdn,
             StatBlockReason::NrdList,
             StatBlockReason::TldExcluded,
+            StatBlockReason::CnameCloaking,
         ];
 
         for reason in reasons {

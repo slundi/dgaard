@@ -6,6 +6,7 @@
 //! Scoring is designed to be computed early and cheaply, running lightweight checks
 //! first and short-circuiting if the threshold is already exceeded.
 
+use super::matcher::{is_blocked, is_suffix_blocked};
 use crate::dga::entropy::{calculate_entropy, calculate_entropy_fast, is_consonant_suspicious};
 use crate::dns::InspectedAnswer;
 use crate::model::{BlockReason, SuspicionScore, score_points};
@@ -123,8 +124,10 @@ pub fn compute_score(domain: &str) -> SuspicionScore {
 /// - `max_answers_per_query`: flags bloated responses (potential exfiltration)
 /// - `max_txt_record_length`: flags oversized TXT records (DNS tunneling)
 ///
-/// This is the integration point between [`InspectedAnswer`] and [`SuspicionScore`],
-/// providing the foundation for DPI checks.
+/// Also performs **CNAME unmasking**: each CNAME target in the answer
+/// section is checked against the static blocklist and suffix/wildcard matchers.
+/// A CNAME chain leading to a known-bad domain is a definitive cloaking signal
+/// and immediately hits the malicious threshold.
 ///
 /// # Arguments
 /// * `score` - Mutable score to accumulate into
@@ -156,7 +159,20 @@ pub fn score_answer(score: &mut SuspicionScore, answer: &InspectedAnswer) {
                 score_points::TXT_RECORD_TOO_LONG,
                 BlockReason::InvalidStructure,
             );
+            if score.is_malicious() {
+                return;
+            }
             break;
+        }
+    }
+
+    // CNAME unmasking (phase 8.3): check each CNAME target against the blocklist.
+    // A domain that appears clean but resolves via CNAME to a known-bad target
+    // is using CNAME cloaking to evade domain-level filters.
+    for target in &answer.cname_targets {
+        if is_blocked(target) || is_suffix_blocked(target) {
+            score.add(score_points::CNAME_CLOAKING, BlockReason::CnameCloaking);
+            return; // One match is conclusive — cloaking confirmed.
         }
     }
 }
@@ -327,6 +343,17 @@ mod tests {
         }
     }
 
+    /// Build an `InspectedAnswer` with explicit CNAME targets.
+    fn make_answer_with_cnames(cname_targets: &[&str]) -> crate::dns::InspectedAnswer {
+        crate::dns::InspectedAnswer {
+            a_records: vec![],
+            aaaa_records: vec![],
+            cname_targets: cname_targets.iter().map(|s| s.to_string()).collect(),
+            txt_records: vec![],
+            min_ttl: None,
+        }
+    }
+
     #[test]
     fn test_score_answer_clean() {
         setup_test_config();
@@ -403,6 +430,94 @@ mod tests {
             score.total,
             score_points::EXCESSIVE_ANSWERS + score_points::TXT_RECORD_TOO_LONG
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // CNAME unmasking tests (phase 8.3)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_score_answer_cname_clean() {
+        use crate::CURRENT_ENGINE;
+        use std::sync::Arc;
+        setup_test_config();
+        // CNAME target not in blocklist → no score added
+        let engine = crate::resolve::tests::create_test_engine(&[], &[], &[]);
+        CURRENT_ENGINE.store(Arc::new(engine));
+
+        let mut score = SuspicionScore::new();
+        let answer = make_answer_with_cnames(&["cdn.clean.com"]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, 0);
+    }
+
+    #[test]
+    fn test_score_answer_cname_blocked_exact() {
+        use crate::CURRENT_ENGINE;
+        use std::sync::Arc;
+        setup_test_config();
+        // CNAME target is in the exact-match blocklist → cloaking detected
+        let engine = crate::resolve::tests::create_test_engine(&["ad-server.net"], &[], &[]);
+        CURRENT_ENGINE.store(Arc::new(engine));
+
+        let mut score = SuspicionScore::new();
+        let answer = make_answer_with_cnames(&["ad-server.net"]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, score_points::CNAME_CLOAKING);
+        assert!(score.is_malicious());
+        assert!(
+            score
+                .reasons
+                .iter()
+                .any(|r| matches!(r, BlockReason::CnameCloaking))
+        );
+    }
+
+    #[test]
+    fn test_score_answer_cname_blocked_suffix() {
+        use crate::CURRENT_ENGINE;
+        use std::sync::Arc;
+        setup_test_config();
+        // CNAME target matches a wildcard suffix rule → cloaking detected
+        let engine = crate::resolve::tests::create_test_engine(&[], &[], &["tracking.evil.net"]);
+        CURRENT_ENGINE.store(Arc::new(engine));
+
+        let mut score = SuspicionScore::new();
+        let answer = make_answer_with_cnames(&["pixel.tracking.evil.net"]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, score_points::CNAME_CLOAKING);
+        assert!(score.is_malicious());
+    }
+
+    #[test]
+    fn test_score_answer_cname_first_clean_second_blocked() {
+        use crate::CURRENT_ENGINE;
+        use std::sync::Arc;
+        setup_test_config();
+        // Chain: first target is clean, second is blocked — still detected
+        let engine = crate::resolve::tests::create_test_engine(&["malware.io"], &[], &[]);
+        CURRENT_ENGINE.store(Arc::new(engine));
+
+        let mut score = SuspicionScore::new();
+        let answer = make_answer_with_cnames(&["clean-relay.com", "malware.io"]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, score_points::CNAME_CLOAKING);
+        assert!(score.is_malicious());
+    }
+
+    #[test]
+    fn test_score_answer_no_cnames() {
+        use crate::CURRENT_ENGINE;
+        use std::sync::Arc;
+        setup_test_config();
+        let engine = crate::resolve::tests::create_test_engine(&["bad.com"], &[], &[]);
+        CURRENT_ENGINE.store(Arc::new(engine));
+
+        let mut score = SuspicionScore::new();
+        // No CNAME records in answer → no CNAME penalty
+        let answer = make_answer(1, 0, 0, &[]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, 0);
     }
 
     #[test]
