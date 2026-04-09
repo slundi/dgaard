@@ -53,7 +53,6 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
         let guard = ShutdownGuard::new(shutdown_rx.clone());
 
         // Initial list load (supports both file paths and URLs)
-        println!("Loading filter lists...");
         reload_lists().await;
 
         tokio::spawn(spawn_update_task());

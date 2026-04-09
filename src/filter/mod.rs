@@ -209,6 +209,7 @@ fn load_list_content(
 }
 
 pub async fn reload_lists() {
+    println!("Loading filter lists...");
     let client = build_https_client();
     let cfg = CONFIG.load();
     let sources = &cfg.sources;
@@ -220,6 +221,7 @@ pub async fn reload_lists() {
 
     // Load whitelists sequentially (with WHITELIST flag)
     for source in &sources.whitelists {
+        println!("Loading whitelist from {}", source);
         load_source(
             source,
             DomainEntryFlags::WHITELIST,
@@ -234,6 +236,7 @@ pub async fn reload_lists() {
 
     // Load NRD list if path is set
     if !sources.nrd_list_path.is_empty() {
+        println!("Loading NRD list from {}", sources.nrd_list_path);
         load_source(
             &sources.nrd_list_path,
             DomainEntryFlags::NONE,
@@ -248,6 +251,7 @@ pub async fn reload_lists() {
 
     // Load blacklists sequentially
     for source in &sources.blacklists {
+        println!("Loading blacklist from {}", sources.nrd_list_path);
         load_source(
             source,
             DomainEntryFlags::NONE,

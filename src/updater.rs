@@ -36,6 +36,7 @@ pub fn validate_input(input: &str) -> Result<Resource, ResourceError> {
             return Ok(Resource::HttpUrl(parsed_url));
         } else {
             // It's a valid URL format (like ftp://), but we don't support the scheme
+            eprintln!("Invalid protocol URL: {}", input);
             return Err(ResourceError::NonHttpScheme);
         }
     }
@@ -50,11 +51,13 @@ pub fn validate_input(input: &str) -> Result<Resource, ResourceError> {
     // Explicitly catch cases that look like paths but don't exist
     // This uses a simple heuristic: if it contains a slash or backslash
     if input.contains('/') || input.contains('\\') {
+        eprintln!("Invalid file path: {}", input);
         return Err(ResourceError::InvalidFilePath(input.to_string()));
     }
 
     // 3. If it looks like a URL (starts with http) but failed parsing
     if input.starts_with("http") {
+        eprintln!("Invalid URL: {}", input);
         return Err(ResourceError::InvalidUrl(Url::parse(input).unwrap_err()));
     }
 
