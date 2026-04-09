@@ -135,7 +135,7 @@ pub struct StatEvent {
 *Focus: Analysing DNS payloads and response records.*
 
 * [x] 8.1. **Inbound Record Inspector**: logic to parse and validate answer sections (A, AAAA, TXT).
-* [ ] 8.2. **TXT Entropy Sentry**: calculate entropy on TXT record content to detect data exfiltration/C2 (Google SPF key or website record check may use this field sobase64 or any encrypted data will have a high entropy).
+* [x] 8.2. **TXT Entropy Sentry**: calculate entropy on TXT record content to detect data exfiltration/C2 (Google SPF key or website record check may use this field sobase64 or any encrypted data will have a high entropy).
 * [ ] 8.3. **CNAME Unmasking**: recursive check of CNAME targets against blacklists (Cloaking defense) (ie: `track.domain.tld` is referring to `ad-server.net`).
 * [ ] 8.4. **DNS Rebinding Shield**: reject public queries resolving to private IP ranges (RFC 1918). May need geoIP DB or known range for hosted malware. **ASN Filtering** for crypto mining autonomous systems?
 * [ ] 8.5. **QType Warden**: policy-based blocking for suspicious types (NULL almost only used by DNS tunneling, HINFO for system information, ANY, etc.).

@@ -7,6 +7,7 @@
 //! first and short-circuiting if the threshold is already exceeded.
 
 use crate::dga::entropy::{calculate_entropy, calculate_entropy_fast, is_consonant_suspicious};
+use crate::dns::InspectedAnswer;
 use crate::model::{BlockReason, SuspicionScore, score_points};
 use crate::{CONFIG, CURRENT_ENGINE};
 
@@ -113,6 +114,51 @@ pub fn compute_score(domain: &str) -> SuspicionScore {
     }
 
     score
+}
+
+/// Apply suspicion scoring from a parsed DNS answer section.
+///
+/// Validates the upstream response records against structural config limits
+/// defined in `security.structure`:
+/// - `max_answers_per_query`: flags bloated responses (potential exfiltration)
+/// - `max_txt_record_length`: flags oversized TXT records (DNS tunneling)
+///
+/// This is the integration point between [`InspectedAnswer`] and [`SuspicionScore`],
+/// providing the foundation for DPI checks.
+///
+/// # Arguments
+/// * `score` - Mutable score to accumulate into
+/// * `answer` - Parsed answer section from the upstream DNS response
+pub fn score_answer(score: &mut SuspicionScore, answer: &InspectedAnswer) {
+    let config = CONFIG.load();
+    let structure = &config.security.structure;
+
+    // Check total answer record count across all types
+    let total = answer.a_records.len()
+        + answer.aaaa_records.len()
+        + answer.txt_records.len()
+        + answer.cname_targets.len();
+    if total > structure.max_answers_per_query as usize {
+        score.add(
+            score_points::EXCESSIVE_ANSWERS,
+            BlockReason::InvalidStructure,
+        );
+        if score.is_malicious() {
+            return;
+        }
+    }
+
+    // Check TXT record lengths — oversized segments suggest tunnel payloads.
+    // One penalty per response to avoid inflating score for bulk records.
+    for txt in &answer.txt_records {
+        if txt.len() > structure.max_txt_record_length as usize {
+            score.add(
+                score_points::TXT_RECORD_TOO_LONG,
+                BlockReason::InvalidStructure,
+            );
+            break;
+        }
+    }
 }
 
 /// Extract the second-level domain (SLD) from a domain name.
@@ -258,6 +304,105 @@ mod tests {
         // Normal ASCII
         assert!(!is_idn_suspicious("example.com"));
         assert!(!is_idn_suspicious("sub.example.co.uk"));
+    }
+
+    // -----------------------------------------------------------------------
+    // score_answer tests
+    // -----------------------------------------------------------------------
+
+    /// Build an `InspectedAnswer` directly from its public fields for testing.
+    fn make_answer(
+        a_count: usize,
+        aaaa_count: usize,
+        cname_count: usize,
+        txt_payloads: &[&[u8]],
+    ) -> crate::dns::InspectedAnswer {
+        use std::net::{Ipv4Addr, Ipv6Addr};
+        crate::dns::InspectedAnswer {
+            a_records: vec![Ipv4Addr::LOCALHOST; a_count],
+            aaaa_records: vec![Ipv6Addr::LOCALHOST; aaaa_count],
+            cname_targets: vec![String::new(); cname_count],
+            txt_records: txt_payloads.iter().map(|b| b.to_vec()).collect(),
+            min_ttl: None,
+        }
+    }
+
+    #[test]
+    fn test_score_answer_clean() {
+        setup_test_config();
+        let mut score = SuspicionScore::new();
+        // 1 A record, 1 short TXT — well within structural limits
+        let answer = make_answer(1, 0, 0, &[b"v=spf1 include:example.com ~all"]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, 0);
+    }
+
+    #[test]
+    fn test_score_answer_empty() {
+        setup_test_config();
+        let mut score = SuspicionScore::new();
+        let answer = make_answer(0, 0, 0, &[]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, 0);
+    }
+
+    #[test]
+    fn test_score_answer_excessive_answers() {
+        setup_test_config();
+        let mut score = SuspicionScore::new();
+        // Default max_answers_per_query = 10; create 11 A records
+        let answer = make_answer(11, 0, 0, &[]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, score_points::EXCESSIVE_ANSWERS);
+        assert!(
+            score
+                .reasons
+                .iter()
+                .any(|r| matches!(r, BlockReason::InvalidStructure))
+        );
+    }
+
+    #[test]
+    fn test_score_answer_txt_too_long() {
+        setup_test_config();
+        let mut score = SuspicionScore::new();
+        // Default max_txt_record_length = 128; create a 200-byte TXT record
+        let long_payload = vec![b'A'; 200];
+        let answer = make_answer(0, 0, 0, &[long_payload.as_slice()]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, score_points::TXT_RECORD_TOO_LONG);
+        assert!(
+            score
+                .reasons
+                .iter()
+                .any(|r| matches!(r, BlockReason::InvalidStructure))
+        );
+    }
+
+    #[test]
+    fn test_score_answer_txt_too_long_only_one_penalty() {
+        setup_test_config();
+        let mut score = SuspicionScore::new();
+        // Multiple oversized TXT records — only one penalty applied
+        let long_payload = vec![b'X'; 200];
+        let answer = make_answer(0, 0, 0, &[long_payload.as_slice(), long_payload.as_slice()]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, score_points::TXT_RECORD_TOO_LONG);
+    }
+
+    #[test]
+    fn test_score_answer_both_violations() {
+        setup_test_config();
+        let mut score = SuspicionScore::new();
+        // 11 records (exceeds max_answers_per_query=10) + oversized TXT
+        let long_payload = vec![b'B'; 200];
+        let answer = make_answer(10, 0, 0, &[long_payload.as_slice()]);
+        score_answer(&mut score, &answer);
+        // total=11 triggers excessive, TXT triggers txt_too_long
+        assert_eq!(
+            score.total,
+            score_points::EXCESSIVE_ANSWERS + score_points::TXT_RECORD_TOO_LONG
+        );
     }
 
     #[test]

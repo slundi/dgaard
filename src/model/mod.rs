@@ -262,6 +262,10 @@ pub mod score_points {
     pub const LOW_TTL: u8 = 2;
     /// IDN/Punycode homograph attack
     pub const IDN_HOMOGRAPH: u8 = 6;
+    /// TXT record content exceeding `max_txt_record_length` (DNS tunneling indicator).
+    pub const TXT_RECORD_TOO_LONG: u8 = 3;
+    /// Answer section contains more records than `max_answers_per_query`.
+    pub const EXCESSIVE_ANSWERS: u8 = 2;
     /// Newly Registered Domain (<24h)
     pub const NRD: u8 = 5;
     /// DNS rebinding attempt - immediate block

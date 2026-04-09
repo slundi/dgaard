@@ -20,7 +20,7 @@ mod matcher;
 mod patterns;
 mod scoring;
 
-pub use scoring::compute_score;
+pub use scoring::{compute_score, score_answer};
 
 use crate::CONFIG;
 use crate::config::PipelineStep;
