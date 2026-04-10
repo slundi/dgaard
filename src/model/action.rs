@@ -79,6 +79,8 @@ pub enum StatBlockReason {
     CnameCloaking = 10,
     /// Query type is blocked by the QType Warden policy
     ForbiddenQType = 11,
+    /// Upstream response resolves a public domain to a private/reserved IP (DNS rebinding)
+    DnsRebinding = 12,
 }
 
 impl TryFrom<u8> for StatBlockReason {
@@ -99,6 +101,7 @@ impl TryFrom<u8> for StatBlockReason {
             9 => Ok(StatBlockReason::Suspicious),
             10 => Ok(StatBlockReason::CnameCloaking),
             11 => Ok(StatBlockReason::ForbiddenQType),
+            12 => Ok(StatBlockReason::DnsRebinding),
             _ => Err(()),
         }
     }
@@ -119,6 +122,7 @@ impl From<&BlockReason> for StatBlockReason {
             BlockReason::Suspicious => StatBlockReason::Suspicious,
             BlockReason::CnameCloaking => StatBlockReason::CnameCloaking,
             BlockReason::ForbiddenQType(_) => StatBlockReason::ForbiddenQType,
+            BlockReason::DnsRebinding => StatBlockReason::DnsRebinding,
         }
     }
 }
@@ -172,6 +176,10 @@ mod tests {
         assert_eq!(
             StatBlockReason::from(&BlockReason::ForbiddenQType(255)),
             StatBlockReason::ForbiddenQType
+        );
+        assert_eq!(
+            StatBlockReason::from(&BlockReason::DnsRebinding),
+            StatBlockReason::DnsRebinding
         );
     }
 }

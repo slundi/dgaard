@@ -137,9 +137,11 @@ pub struct StatEvent {
 * [x] 8.1. **Inbound Record Inspector**: logic to parse and validate answer sections (A, AAAA, TXT).
 * [x] 8.2. **TXT Entropy Sentry**: calculate entropy on TXT record content to detect data exfiltration/C2 (Google SPF key or website record check may use this field sobase64 or any encrypted data will have a high entropy).
 * [x] 8.3. **CNAME Unmasking**: recursive check of CNAME targets against blacklists (Cloaking defense) (ie: `track.domain.tld` is referring to `ad-server.net`).
-* [ ] 8.4. **DNS Rebinding Shield**: reject public queries resolving to private IP ranges (RFC 1918). May need geoIP DB or known range for hosted malware. **ASN Filtering** for crypto mining autonomous systems?
+* [x] 8.4. **DNS Rebinding Shield**: reject public queries resolving to private IP ranges (RFC 1918).
 * [x] 8.5. **QType Warden**: policy-based blocking for suspicious types (NULL almost only used by DNS tunneling, HINFO for system information, ANY, etc.).
 * [ ] 8.6. **Low TTL**: if TTL is very low (like less than 10s but configurable) and not a known CDN (like Akamai) it should increase suspisious score.
+* [ ] 8.7. **DNS Rebinding Shield (known hosted malware)**: from a list of IPs or using geoIP or known range for hosted malware.
+* [ ] 8.8. **ASN Filtering**: for crypto mining autonomous systems?
 
 ## Phase 9: Threat Intelligence & Analytics
 *Focus: Turning raw block data into actionable insights.*

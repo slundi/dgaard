@@ -46,6 +46,11 @@ pub enum BlockReason {
     /// Query type is explicitly forbidden by the QType Warden policy.
     /// Carries the raw RFC 1035 type code (e.g. 10=NULL, 13=HINFO, 255=ANY).
     ForbiddenQType(u16),
+
+    /// DNS rebinding — upstream response maps a public domain to a private/reserved IP.
+    /// Highest-priority signal: an attacker's domain resolving to a LAN address
+    /// can bypass same-origin policy and reach internal services from a browser tab.
+    DnsRebinding,
 }
 
 /// Messages sent over the stats channel to the collector.
@@ -471,6 +476,7 @@ mod tests {
             StatBlockReason::TldExcluded,
             StatBlockReason::CnameCloaking,
             StatBlockReason::ForbiddenQType,
+            StatBlockReason::DnsRebinding,
         ];
 
         for reason in reasons {

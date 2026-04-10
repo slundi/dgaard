@@ -462,6 +462,19 @@ fn parse_qtype_warden(
     Ok(cfg)
 }
 
+/// Parse `[security.rebinding_shield]` section.
+fn parse_rebinding_shield(
+    table: &toml_span::value::Table<'_>,
+) -> Result<RebindingShieldConfig, ConfigError> {
+    let mut cfg = RebindingShieldConfig::default();
+
+    if let Some(b) = get_bool(table, "enabled")? {
+        cfg.enabled = b;
+    }
+
+    Ok(cfg)
+}
+
 /// Parse `[security]` section with all sub-sections.
 fn parse_security(table: &toml_span::value::Table<'_>) -> Result<SecurityConfig, ConfigError> {
     let mut cfg = SecurityConfig::default();
@@ -483,6 +496,9 @@ fn parse_security(table: &toml_span::value::Table<'_>) -> Result<SecurityConfig,
     }
     if let Some(t) = get_table(table, "qtype_warden")? {
         cfg.qtype_warden = parse_qtype_warden(t)?;
+    }
+    if let Some(t) = get_table(table, "rebinding_shield")? {
+        cfg.rebinding_shield = parse_rebinding_shield(t)?;
     }
 
     Ok(cfg)

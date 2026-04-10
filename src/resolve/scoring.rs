@@ -166,7 +166,26 @@ pub fn score_answer(score: &mut SuspicionScore, answer: &InspectedAnswer) {
         }
     }
 
-    // CNAME unmasking (phase 8.3): check each CNAME target against the blocklist.
+    // DNS Rebinding Shield: reject answers that map a public domain
+    // to a private/reserved IP. An attacker-controlled domain resolving to a LAN
+    // address can bypass same-origin policy and reach internal services via a
+    // browser tab. One private record in the answer is conclusive.
+    if config.security.rebinding_shield.enabled {
+        for ip in &answer.a_records {
+            if is_private_ipv4(*ip) {
+                score.add(score_points::DNS_REBINDING, BlockReason::DnsRebinding);
+                return;
+            }
+        }
+        for ip in &answer.aaaa_records {
+            if is_private_ipv6(*ip) {
+                score.add(score_points::DNS_REBINDING, BlockReason::DnsRebinding);
+                return;
+            }
+        }
+    }
+
+    // CNAME unmasking: check each CNAME target against the blocklist.
     // A domain that appears clean but resolves via CNAME to a known-bad target
     // is using CNAME cloaking to evade domain-level filters.
     for target in &answer.cname_targets {
@@ -175,6 +194,38 @@ pub fn score_answer(score: &mut SuspicionScore, answer: &InspectedAnswer) {
             return; // One match is conclusive — cloaking confirmed.
         }
     }
+}
+
+/// Check if an IPv4 address falls in a private or reserved range.
+///
+/// Covered ranges (RFC 1918 + special-use per RFC 1122 / RFC 3927 / RFC 6598):
+/// - 0.0.0.0/8      — "This" network
+/// - 10.0.0.0/8     — RFC 1918 private
+/// - 100.64.0.0/10  — RFC 6598 Shared Address Space (CGNAT)
+/// - 127.0.0.0/8    — Loopback
+/// - 169.254.0.0/16 — Link-local (APIPA)
+/// - 172.16.0.0/12  — RFC 1918 private
+/// - 192.168.0.0/16 — RFC 1918 private
+fn is_private_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, _, _] = ip.octets();
+    matches!(a, 0 | 10 | 127)
+        || (a == 100 && (64..=127).contains(&b))
+        || (a == 169 && b == 254)
+        || (a == 172 && (16..=31).contains(&b))
+        || (a == 192 && b == 168)
+}
+
+/// Check if an IPv6 address falls in a private or reserved range.
+///
+/// Covered ranges:
+/// - ::1/128    — Loopback (RFC 4291)
+/// - fc00::/7   — Unique local (RFC 4193): covers fc00:: – fdff::
+/// - fe80::/10  — Link-local (RFC 4291)
+fn is_private_ipv6(ip: std::net::Ipv6Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    ip.is_loopback()
+        || (a & 0xFE == 0xFC) // fc00::/7 unique local
+        || (a == 0xFE && (b & 0xC0) == 0x80) // fe80::/10 link-local
 }
 
 /// Extract the second-level domain (SLD) from a domain name.
@@ -334,9 +385,12 @@ mod tests {
         txt_payloads: &[&[u8]],
     ) -> crate::dns::InspectedAnswer {
         use std::net::{Ipv4Addr, Ipv6Addr};
+        // Use a public IP so existing tests don't trigger the rebinding shield.
+        let public_v4 = Ipv4Addr::new(1, 2, 3, 4);
+        let public_v6: Ipv6Addr = "2001:db8::1".parse().unwrap();
         crate::dns::InspectedAnswer {
-            a_records: vec![Ipv4Addr::LOCALHOST; a_count],
-            aaaa_records: vec![Ipv6Addr::LOCALHOST; aaaa_count],
+            a_records: vec![public_v4; a_count],
+            aaaa_records: vec![public_v6; aaaa_count],
             cname_targets: vec![String::new(); cname_count],
             txt_records: txt_payloads.iter().map(|b| b.to_vec()).collect(),
             min_ttl: None,
@@ -518,6 +572,133 @@ mod tests {
         let answer = make_answer(1, 0, 0, &[]);
         score_answer(&mut score, &answer);
         assert_eq!(score.total, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // DNS Rebinding Shield tests
+    // -----------------------------------------------------------------------
+
+    fn make_answer_with_ips(
+        a_addrs: &[std::net::Ipv4Addr],
+        aaaa_addrs: &[std::net::Ipv6Addr],
+    ) -> crate::dns::InspectedAnswer {
+        crate::dns::InspectedAnswer {
+            a_records: a_addrs.to_vec(),
+            aaaa_records: aaaa_addrs.to_vec(),
+            cname_targets: vec![],
+            txt_records: vec![],
+            min_ttl: None,
+        }
+    }
+
+    #[test]
+    fn test_is_private_ipv4_rfc1918() {
+        assert!(is_private_ipv4("10.0.0.1".parse().unwrap()));
+        assert!(is_private_ipv4("172.16.0.1".parse().unwrap()));
+        assert!(is_private_ipv4("172.31.255.255".parse().unwrap()));
+        assert!(is_private_ipv4("192.168.1.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ipv4_special() {
+        assert!(is_private_ipv4("0.0.0.0".parse().unwrap())); // "this" network
+        assert!(is_private_ipv4("127.0.0.1".parse().unwrap())); // loopback
+        assert!(is_private_ipv4("169.254.1.1".parse().unwrap())); // link-local
+        assert!(is_private_ipv4("100.64.0.1".parse().unwrap())); // CGNAT start
+        assert!(is_private_ipv4("100.127.255.255".parse().unwrap())); // CGNAT end
+    }
+
+    #[test]
+    fn test_is_private_ipv4_public() {
+        assert!(!is_private_ipv4("1.1.1.1".parse().unwrap()));
+        assert!(!is_private_ipv4("8.8.8.8".parse().unwrap()));
+        assert!(!is_private_ipv4("93.184.216.34".parse().unwrap()));
+        assert!(!is_private_ipv4("172.15.255.255".parse().unwrap())); // just below private
+        assert!(!is_private_ipv4("172.32.0.0".parse().unwrap())); // just above private
+        assert!(!is_private_ipv4("100.63.255.255".parse().unwrap())); // just below CGNAT
+        assert!(!is_private_ipv4("100.128.0.0".parse().unwrap())); // just above CGNAT
+    }
+
+    #[test]
+    fn test_is_private_ipv6_loopback() {
+        assert!(is_private_ipv6("::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ipv6_unique_local() {
+        assert!(is_private_ipv6("fc00::1".parse().unwrap()));
+        assert!(is_private_ipv6("fd00::1".parse().unwrap()));
+        assert!(is_private_ipv6("fdff:ffff::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ipv6_link_local() {
+        assert!(is_private_ipv6("fe80::1".parse().unwrap()));
+        assert!(is_private_ipv6("fe80::abcd:ef01".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ipv6_public() {
+        assert!(!is_private_ipv6("2001:db8::1".parse().unwrap()));
+        assert!(!is_private_ipv6("2606:4700::1".parse().unwrap()));
+        assert!(!is_private_ipv6("::".parse().unwrap())); // unspecified, not private
+    }
+
+    #[test]
+    fn test_score_answer_rebinding_rfc1918_ipv4() {
+        setup_test_config();
+        let mut score = SuspicionScore::new();
+        let answer = make_answer_with_ips(&["192.168.1.1".parse().unwrap()], &[]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, score_points::DNS_REBINDING);
+        assert!(score.is_malicious());
+        assert!(
+            score
+                .reasons
+                .iter()
+                .any(|r| matches!(r, BlockReason::DnsRebinding))
+        );
+    }
+
+    #[test]
+    fn test_score_answer_rebinding_loopback_ipv4() {
+        setup_test_config();
+        let mut score = SuspicionScore::new();
+        let answer = make_answer_with_ips(&["127.0.0.1".parse().unwrap()], &[]);
+        score_answer(&mut score, &answer);
+        assert!(score.is_malicious());
+    }
+
+    #[test]
+    fn test_score_answer_rebinding_private_ipv6() {
+        setup_test_config();
+        let mut score = SuspicionScore::new();
+        let answer = make_answer_with_ips(&[], &["fd00::1".parse().unwrap()]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, score_points::DNS_REBINDING);
+        assert!(score.is_malicious());
+    }
+
+    #[test]
+    fn test_score_answer_rebinding_public_ip_clean() {
+        setup_test_config();
+        let mut score = SuspicionScore::new();
+        let answer = make_answer_with_ips(&["1.1.1.1".parse().unwrap()], &[]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, 0);
+    }
+
+    #[test]
+    fn test_score_answer_rebinding_disabled() {
+        use std::sync::Arc;
+        let mut config = crate::config::Config::default();
+        config.security.rebinding_shield.enabled = false;
+        crate::CONFIG.store(Arc::new(config));
+
+        let mut score = SuspicionScore::new();
+        let answer = make_answer_with_ips(&["192.168.1.1".parse().unwrap()], &[]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, 0); // Shield disabled — no penalty
     }
 
     #[test]

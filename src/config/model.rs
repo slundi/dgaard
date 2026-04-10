@@ -443,6 +443,43 @@ impl Default for QTypeWardenConfig {
 }
 
 // ---------------------------------------------------------------------------
+// [security.rebinding_shield]
+// ---------------------------------------------------------------------------
+
+/// DNS Rebinding Shield configuration.
+///
+/// Rejects upstream DNS answers that map a public domain to a private or
+/// reserved IP address. This closes the DNS rebinding attack vector where
+/// an attacker's domain briefly resolves to a LAN IP to reach internal hosts.
+///
+/// Maps to `[security.rebinding_shield]` in the configuration file.
+///
+/// ## Covered private ranges
+/// | Range           | Spec       | Threat                              |
+/// |-----------------|------------|-------------------------------------|
+/// | 0.0.0.0/8       | RFC 1122   | "This" network, unroutable          |
+/// | 10.0.0.0/8      | RFC 1918   | Private LAN                         |
+/// | 100.64.0.0/10   | RFC 6598   | Shared address space / CGNAT        |
+/// | 127.0.0.0/8     | RFC 1122   | Loopback                            |
+/// | 169.254.0.0/16  | RFC 3927   | Link-local / APIPA                  |
+/// | 172.16.0.0/12   | RFC 1918   | Private LAN                         |
+/// | 192.168.0.0/16  | RFC 1918   | Private LAN                         |
+/// | ::1/128         | RFC 4291   | IPv6 loopback                       |
+/// | fc00::/7        | RFC 4193   | IPv6 unique local                   |
+/// | fe80::/10       | RFC 4291   | IPv6 link-local                     |
+#[derive(Debug, PartialEq, Clone)]
+pub struct RebindingShieldConfig {
+    /// Master switch — set to `false` to allow private-IP answers through.
+    pub enabled: bool,
+}
+
+impl Default for RebindingShieldConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // [security]
 // ---------------------------------------------------------------------------
 
@@ -462,6 +499,8 @@ pub struct SecurityConfig {
     pub behavior: BehaviorConfig,
     /// Query-type (QType) policy enforcement.
     pub qtype_warden: QTypeWardenConfig,
+    /// DNS Rebinding Shield: reject answers resolving to private/reserved IPs.
+    pub rebinding_shield: RebindingShieldConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -938,6 +977,7 @@ mod tests {
         assert_eq!(sec.lexical, LexicalConfig::default());
         assert_eq!(sec.idn, IdnConfig::default());
         assert_eq!(sec.behavior, BehaviorConfig::default());
+        assert_eq!(sec.rebinding_shield, RebindingShieldConfig::default());
     }
 
     // -----------------------------------------------------------------------

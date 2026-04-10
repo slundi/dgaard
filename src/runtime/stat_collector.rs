@@ -173,6 +173,7 @@ pub(crate) async fn process_stat_message(
                         StatBlockReason::Suspicious => "suspicious",
                         StatBlockReason::CnameCloaking => "cname-cloaking",
                         StatBlockReason::ForbiddenQType => "forbidden-qtype",
+                        StatBlockReason::DnsRebinding => "dns-rebinding",
                     };
                     println!("[BLOCK] {} -> {} ({})", client_ip, domain, reason_str);
                 }
