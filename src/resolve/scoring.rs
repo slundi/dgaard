@@ -6,7 +6,8 @@
 //! Scoring is designed to be computed early and cheaply, running lightweight checks
 //! first and short-circuiting if the threshold is already exceeded.
 
-use super::matcher::{is_blocked, is_suffix_blocked};
+use super::heuristics::check_lexical;
+use super::matcher::{is_blocked, is_nrd, is_suffix_blocked};
 use crate::dga::entropy::{calculate_entropy, calculate_entropy_fast, is_consonant_suspicious};
 use crate::dns::InspectedAnswer;
 use crate::model::{BlockReason, SuspicionScore, score_points};
@@ -62,7 +63,13 @@ pub fn compute_score(domain: &str) -> SuspicionScore {
         && let Some(tld) = domain.rsplit('.').next()
         && engine.is_suspicious_tld(tld)
     {
-        score.add(score_points::SUSPICIOUS_TLD, BlockReason::TldExcluded);
+        // Keyword + suspicious TLD is a stronger combined signal.
+        // check_lexical returns Some only when both keyword and TLD conditions are met.
+        if let Some(keyword_reason) = check_lexical(domain) {
+            score.add(score_points::KEYWORD_SUSPICIOUS_TLD, keyword_reason);
+        } else {
+            score.add(score_points::SUSPICIOUS_TLD, BlockReason::TldExcluded);
+        }
         if score.is_malicious() {
             return score;
         }
@@ -76,7 +83,15 @@ pub fn compute_score(domain: &str) -> SuspicionScore {
         }
     }
 
-    // 5. Entropy and consonant clustering (need to extract SLD)
+    // 5. NRD check: newly registered domains are inherently more suspicious
+    if is_nrd(domain) {
+        score.add(score_points::NRD, BlockReason::NrdList);
+        if score.is_malicious() {
+            return score;
+        }
+    }
+
+    // 6. Entropy and consonant clustering (need to extract SLD)
     let intel = &config.security.intelligence;
     if intel.enabled
         && let Some(sld) = extract_sld(domain)

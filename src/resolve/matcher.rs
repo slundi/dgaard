@@ -44,6 +44,13 @@ pub fn is_blocked(domain: &str) -> bool {
     false
 }
 
+/// Check if domain is on the Newly Registered Domain list.
+pub fn is_nrd(domain: &str) -> bool {
+    fast_lookup(domain)
+        .map(|flags| flags.contains(DomainEntryFlags::NRD))
+        .unwrap_or(false)
+}
+
 /// Check if domain matches any suffix/wildcard pattern.
 /// Checks parent domains for wildcard matches.
 pub fn is_suffix_blocked(domain: &str) -> bool {
