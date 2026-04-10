@@ -151,6 +151,20 @@ pub fn score_answer(score: &mut SuspicionScore, answer: &InspectedAnswer) {
         }
     }
 
+    // Low-TTL check: short TTLs are characteristic of fast-flux
+    // malware infrastructure. Legitimate CDNs occasionally use short TTLs too,
+    // so this adds suspicion points rather than blocking outright.
+    let low_ttl_cfg = &config.security.low_ttl;
+    if low_ttl_cfg.enabled
+        && let Some(ttl) = answer.min_ttl
+        && ttl < low_ttl_cfg.threshold_secs
+    {
+        score.add(score_points::LOW_TTL, BlockReason::LowTtl(ttl));
+        if score.is_malicious() {
+            return;
+        }
+    }
+
     // Check TXT record lengths — oversized segments suggest tunnel payloads.
     // One penalty per response to avoid inflating score for bulk records.
     for txt in &answer.txt_records {
@@ -699,6 +713,101 @@ mod tests {
         let answer = make_answer_with_ips(&["192.168.1.1".parse().unwrap()], &[]);
         score_answer(&mut score, &answer);
         assert_eq!(score.total, 0); // Shield disabled — no penalty
+    }
+
+    // -----------------------------------------------------------------------
+    // Low-TTL scoring tests
+    // -----------------------------------------------------------------------
+
+    fn make_answer_with_ttl(ttl: u32) -> crate::dns::InspectedAnswer {
+        crate::dns::InspectedAnswer {
+            a_records: vec!["1.2.3.4".parse().unwrap()],
+            aaaa_records: vec![],
+            cname_targets: vec![],
+            txt_records: vec![],
+            min_ttl: Some(ttl),
+        }
+    }
+
+    #[test]
+    fn test_score_answer_low_ttl_below_threshold() {
+        setup_test_config();
+        let mut score = SuspicionScore::new();
+        // Default threshold is 10s — TTL of 5 should trigger
+        let answer = make_answer_with_ttl(5);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, score_points::LOW_TTL);
+        assert!(
+            score
+                .reasons
+                .iter()
+                .any(|r| matches!(r, BlockReason::LowTtl(5)))
+        );
+    }
+
+    #[test]
+    fn test_score_answer_low_ttl_at_threshold_not_triggered() {
+        setup_test_config();
+        let mut score = SuspicionScore::new();
+        // TTL exactly at the threshold (10s) — not strictly less, no penalty
+        let answer = make_answer_with_ttl(10);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, 0);
+    }
+
+    #[test]
+    fn test_score_answer_low_ttl_above_threshold_clean() {
+        setup_test_config();
+        let mut score = SuspicionScore::new();
+        let answer = make_answer_with_ttl(300);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, 0);
+    }
+
+    #[test]
+    fn test_score_answer_low_ttl_zero() {
+        setup_test_config();
+        let mut score = SuspicionScore::new();
+        let answer = make_answer_with_ttl(0);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, score_points::LOW_TTL);
+    }
+
+    #[test]
+    fn test_score_answer_low_ttl_no_min_ttl_skipped() {
+        setup_test_config();
+        let mut score = SuspicionScore::new();
+        // No TTL in answer (empty response) — no penalty
+        let answer = make_answer(0, 0, 0, &[]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, 0);
+    }
+
+    #[test]
+    fn test_score_answer_low_ttl_disabled() {
+        use std::sync::Arc;
+        let mut config = crate::config::Config::default();
+        config.security.low_ttl.enabled = false;
+        crate::CONFIG.store(Arc::new(config));
+
+        let mut score = SuspicionScore::new();
+        let answer = make_answer_with_ttl(1);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, 0); // Disabled — no penalty
+    }
+
+    #[test]
+    fn test_score_answer_low_ttl_custom_threshold() {
+        use std::sync::Arc;
+        let mut config = crate::config::Config::default();
+        config.security.low_ttl.threshold_secs = 60;
+        crate::CONFIG.store(Arc::new(config));
+
+        let mut score = SuspicionScore::new();
+        // TTL=30 is below custom threshold of 60
+        let answer = make_answer_with_ttl(30);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, score_points::LOW_TTL);
     }
 
     #[test]

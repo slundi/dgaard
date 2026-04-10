@@ -81,6 +81,8 @@ pub enum StatBlockReason {
     ForbiddenQType = 11,
     /// Upstream response resolves a public domain to a private/reserved IP (DNS rebinding)
     DnsRebinding = 12,
+    /// Abnormally low TTL — fast-flux or short-lived malware infrastructure
+    LowTtl = 13,
 }
 
 impl TryFrom<u8> for StatBlockReason {
@@ -102,6 +104,7 @@ impl TryFrom<u8> for StatBlockReason {
             10 => Ok(StatBlockReason::CnameCloaking),
             11 => Ok(StatBlockReason::ForbiddenQType),
             12 => Ok(StatBlockReason::DnsRebinding),
+            13 => Ok(StatBlockReason::LowTtl),
             _ => Err(()),
         }
     }
@@ -123,6 +126,7 @@ impl From<&BlockReason> for StatBlockReason {
             BlockReason::CnameCloaking => StatBlockReason::CnameCloaking,
             BlockReason::ForbiddenQType(_) => StatBlockReason::ForbiddenQType,
             BlockReason::DnsRebinding => StatBlockReason::DnsRebinding,
+            BlockReason::LowTtl(_) => StatBlockReason::LowTtl,
         }
     }
 }
@@ -180,6 +184,10 @@ mod tests {
         assert_eq!(
             StatBlockReason::from(&BlockReason::DnsRebinding),
             StatBlockReason::DnsRebinding
+        );
+        assert_eq!(
+            StatBlockReason::from(&BlockReason::LowTtl(5)),
+            StatBlockReason::LowTtl
         );
     }
 }

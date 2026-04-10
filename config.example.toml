@@ -184,6 +184,18 @@ suspicious_tlds = [".biz", ".bible", ".top"]
 [security.rebinding_shield]
 enabled = true
 
+# Low-TTL suspicion scoring configuration.
+#
+# DNS responses with a very short TTL are characteristic of fast-flux malware
+# infrastructure, where IP addresses rotate rapidly to evade static blocklists.
+# Legitimate CDNs can also use short TTLs, so this check adds suspicion points
+# rather than blocking outright — it contributes to the cumulative score.
+[security.low_ttl]
+enabled = true
+# TTL threshold in seconds. Responses with `min_ttl < threshold_secs`
+# add `LOW_TTL` suspicion points (default: 10 s).
+threshold_secs = 10
+
 # -----------------------------------------------------------------------------
 # Behavior Monitoring
 # -----------------------------------------------------------------------------

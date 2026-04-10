@@ -51,6 +51,11 @@ pub enum BlockReason {
     /// Highest-priority signal: an attacker's domain resolving to a LAN address
     /// can bypass same-origin policy and reach internal services from a browser tab.
     DnsRebinding,
+
+    /// Abnormally low DNS response TTL — characteristic of fast-flux malware
+    /// infrastructure where IPs rotate rapidly to evade blocklists.
+    /// Carries the observed TTL value (in seconds).
+    LowTtl(u32),
 }
 
 /// Messages sent over the stats channel to the collector.
@@ -477,6 +482,7 @@ mod tests {
             StatBlockReason::CnameCloaking,
             StatBlockReason::ForbiddenQType,
             StatBlockReason::DnsRebinding,
+            StatBlockReason::LowTtl,
         ];
 
         for reason in reasons {

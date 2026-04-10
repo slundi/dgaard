@@ -443,6 +443,36 @@ impl Default for QTypeWardenConfig {
 }
 
 // ---------------------------------------------------------------------------
+// [security.low_ttl]
+// ---------------------------------------------------------------------------
+
+/// Low-TTL suspicion scoring configuration.
+///
+/// DNS responses with a very short TTL are characteristic of fast-flux malware
+/// infrastructure, where IP addresses rotate rapidly to evade static blocklists.
+/// Legitimate CDNs can also use short TTLs, so this check adds suspicion points
+/// rather than blocking outright — it contributes to the cumulative score.
+///
+/// Maps to `[security.low_ttl]` in the configuration file.
+#[derive(Debug, PartialEq, Clone)]
+pub struct LowTtlConfig {
+    /// Master switch — set to `false` to skip TTL-based scoring.
+    pub enabled: bool,
+    /// TTL threshold in seconds. Responses with `min_ttl < threshold_secs`
+    /// add `LOW_TTL` suspicion points (default: 10 s).
+    pub threshold_secs: u32,
+}
+
+impl Default for LowTtlConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            threshold_secs: 10,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // [security.rebinding_shield]
 // ---------------------------------------------------------------------------
 
@@ -501,6 +531,8 @@ pub struct SecurityConfig {
     pub qtype_warden: QTypeWardenConfig,
     /// DNS Rebinding Shield: reject answers resolving to private/reserved IPs.
     pub rebinding_shield: RebindingShieldConfig,
+    /// Low-TTL suspicion scoring.
+    pub low_ttl: LowTtlConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -978,6 +1010,7 @@ mod tests {
         assert_eq!(sec.idn, IdnConfig::default());
         assert_eq!(sec.behavior, BehaviorConfig::default());
         assert_eq!(sec.rebinding_shield, RebindingShieldConfig::default());
+        assert_eq!(sec.low_ttl, LowTtlConfig::default());
     }
 
     // -----------------------------------------------------------------------

@@ -462,6 +462,20 @@ fn parse_qtype_warden(
     Ok(cfg)
 }
 
+/// Parse `[security.low_ttl]` section.
+fn parse_low_ttl(table: &toml_span::value::Table<'_>) -> Result<LowTtlConfig, ConfigError> {
+    let mut cfg = LowTtlConfig::default();
+
+    if let Some(b) = get_bool(table, "enabled")? {
+        cfg.enabled = b;
+    }
+    if let Some(n) = get_integer(table, "threshold_secs")? {
+        cfg.threshold_secs = n as u32;
+    }
+
+    Ok(cfg)
+}
+
 /// Parse `[security.rebinding_shield]` section.
 fn parse_rebinding_shield(
     table: &toml_span::value::Table<'_>,
@@ -499,6 +513,9 @@ fn parse_security(table: &toml_span::value::Table<'_>) -> Result<SecurityConfig,
     }
     if let Some(t) = get_table(table, "rebinding_shield")? {
         cfg.rebinding_shield = parse_rebinding_shield(t)?;
+    }
+    if let Some(t) = get_table(table, "low_ttl")? {
+        cfg.low_ttl = parse_low_ttl(t)?;
     }
 
     Ok(cfg)
