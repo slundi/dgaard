@@ -56,6 +56,11 @@ pub enum BlockReason {
     /// infrastructure where IPs rotate rapidly to evade blocklists.
     /// Carries the observed TTL value (in seconds).
     LowTtl(u32),
+
+    /// Upstream response resolves to an IP within a user-configured blocked
+    /// ASN (Autonomous System) range — typically a known crypto mining pool,
+    /// bulletproof hosting provider, or malware C2 network.
+    AsnBlocked,
 }
 
 /// Messages sent over the stats channel to the collector.
@@ -291,6 +296,8 @@ pub mod score_points {
     pub const DNS_REBINDING: u8 = 10;
     /// Forbidden keyword + suspicious TLD combo - immediate block
     pub const KEYWORD_SUSPICIOUS_TLD: u8 = 10;
+    /// IP resolved into a user-configured blocked ASN range — immediate block
+    pub const ASN_BLOCKED: u8 = 10;
 }
 
 impl SuspicionScore {
@@ -483,6 +490,7 @@ mod tests {
             StatBlockReason::ForbiddenQType,
             StatBlockReason::DnsRebinding,
             StatBlockReason::LowTtl,
+            StatBlockReason::AsnBlocked,
         ];
 
         for reason in reasons {

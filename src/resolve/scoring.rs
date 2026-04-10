@@ -199,6 +199,28 @@ pub fn score_answer(score: &mut SuspicionScore, answer: &InspectedAnswer) {
         }
     }
 
+    // ASN filtering: block responses resolving into user-configured CIDR ranges
+    // known to belong to malicious autonomous systems (crypto mining pools,
+    // bulletproof hosting, C2 infrastructure, etc.).
+    // Ranges are pre-parsed at engine build time — check cost is O(answers × ranges).
+    let engine = CURRENT_ENGINE.load();
+    if config.security.asn_filter.enabled
+        && (!engine.blocked_asn_v4.is_empty() || !engine.blocked_asn_v6.is_empty())
+    {
+        for ip in &answer.a_records {
+            if engine.is_asn_blocked_v4(*ip) {
+                score.add(score_points::ASN_BLOCKED, BlockReason::AsnBlocked);
+                return;
+            }
+        }
+        for ip in &answer.aaaa_records {
+            if engine.is_asn_blocked_v6(*ip) {
+                score.add(score_points::ASN_BLOCKED, BlockReason::AsnBlocked);
+                return;
+            }
+        }
+    }
+
     // CNAME unmasking: check each CNAME target against the blocklist.
     // A domain that appears clean but resolves via CNAME to a known-bad target
     // is using CNAME cloaking to evade domain-level filters.
@@ -808,6 +830,154 @@ mod tests {
         let answer = make_answer_with_ttl(30);
         score_answer(&mut score, &answer);
         assert_eq!(score.total, score_points::LOW_TTL);
+    }
+
+    // -----------------------------------------------------------------------
+    // ASN filtering tests
+    // -----------------------------------------------------------------------
+
+    fn make_engine_with_asn(
+        v4_cidrs: &[&str],
+        v6_cidrs: &[&str],
+    ) -> crate::filter::engine::FilterEngine {
+        use crate::filter::engine::FilterEngine;
+        let mut engine = FilterEngine::empty();
+
+        // Manually parse and load CIDR ranges to avoid depending on CONFIG
+        // in tests that test the scoring logic directly.
+        for cidr in v4_cidrs {
+            let mut cfg = crate::config::Config::default();
+            cfg.security.asn_filter.enabled = true;
+            cfg.security.asn_filter.blocked_ranges = vec![cidr.to_string()];
+            crate::CONFIG.store(std::sync::Arc::new(cfg));
+            engine.load_asn_filters();
+        }
+        for cidr in v6_cidrs {
+            let mut cfg = crate::config::Config::default();
+            cfg.security.asn_filter.enabled = true;
+            cfg.security.asn_filter.blocked_ranges = vec![cidr.to_string()];
+            crate::CONFIG.store(std::sync::Arc::new(cfg));
+            engine.load_asn_filters();
+        }
+        engine
+    }
+
+    #[test]
+    fn test_score_answer_asn_blocked_ipv4() {
+        use std::sync::Arc;
+        setup_test_config();
+        let mut cfg = crate::config::Config::default();
+        cfg.security.asn_filter.enabled = true;
+        cfg.security.asn_filter.blocked_ranges = vec![String::from("203.0.113.0/24")];
+        crate::CONFIG.store(Arc::new(cfg));
+
+        let engine = make_engine_with_asn(&["203.0.113.0/24"], &[]);
+        crate::CURRENT_ENGINE.store(Arc::new(engine));
+
+        let mut score = SuspicionScore::new();
+        let answer = make_answer_with_ips(&["203.0.113.42".parse().unwrap()], &[]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, score_points::ASN_BLOCKED);
+        assert!(score.is_malicious());
+        assert!(
+            score
+                .reasons
+                .iter()
+                .any(|r| matches!(r, BlockReason::AsnBlocked))
+        );
+    }
+
+    #[test]
+    fn test_score_answer_asn_blocked_ipv6() {
+        use std::sync::Arc;
+        let mut cfg = crate::config::Config::default();
+        cfg.security.asn_filter.enabled = true;
+        cfg.security.asn_filter.blocked_ranges = vec![String::from("2001:db8::/32")];
+        crate::CONFIG.store(Arc::new(cfg));
+
+        let engine = make_engine_with_asn(&[], &["2001:db8::/32"]);
+        crate::CURRENT_ENGINE.store(Arc::new(engine));
+
+        let mut score = SuspicionScore::new();
+        let answer = make_answer_with_ips(&[], &["2001:db8::cafe".parse().unwrap()]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, score_points::ASN_BLOCKED);
+        assert!(score.is_malicious());
+    }
+
+    #[test]
+    fn test_score_answer_asn_not_blocked_outside_range() {
+        use std::sync::Arc;
+        let mut cfg = crate::config::Config::default();
+        cfg.security.asn_filter.enabled = true;
+        cfg.security.asn_filter.blocked_ranges = vec![String::from("203.0.113.0/24")];
+        crate::CONFIG.store(Arc::new(cfg));
+
+        let engine = make_engine_with_asn(&["203.0.113.0/24"], &[]);
+        crate::CURRENT_ENGINE.store(Arc::new(engine));
+
+        let mut score = SuspicionScore::new();
+        // 1.2.3.4 is NOT in 203.0.113.0/24
+        let answer = make_answer_with_ips(&["1.2.3.4".parse().unwrap()], &[]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, 0);
+    }
+
+    #[test]
+    fn test_score_answer_asn_disabled() {
+        use std::sync::Arc;
+        // Build the engine first (make_engine_with_asn temporarily sets enabled=true in CONFIG)
+        let engine = make_engine_with_asn(&["203.0.113.0/24"], &[]);
+        crate::CURRENT_ENGINE.store(Arc::new(engine));
+
+        // Now override CONFIG with asn_filter disabled — this is what score_answer reads
+        let mut cfg = crate::config::Config::default();
+        cfg.security.asn_filter.enabled = false;
+        crate::CONFIG.store(Arc::new(cfg));
+
+        let mut score = SuspicionScore::new();
+        let answer = make_answer_with_ips(&["203.0.113.42".parse().unwrap()], &[]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, 0); // Disabled — no penalty
+    }
+
+    #[test]
+    fn test_score_answer_asn_empty_ranges() {
+        use std::sync::Arc;
+        let mut cfg = crate::config::Config::default();
+        cfg.security.asn_filter.enabled = true;
+        cfg.security.asn_filter.blocked_ranges = vec![];
+        crate::CONFIG.store(Arc::new(cfg));
+
+        let engine = crate::filter::engine::FilterEngine::empty();
+        crate::CURRENT_ENGINE.store(Arc::new(engine));
+
+        let mut score = SuspicionScore::new();
+        let answer = make_answer_with_ips(&["203.0.113.42".parse().unwrap()], &[]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, 0); // No ranges configured
+    }
+
+    #[test]
+    fn test_score_answer_asn_multiple_ranges_first_match() {
+        use std::sync::Arc;
+        let mut cfg = crate::config::Config::default();
+        cfg.security.asn_filter.enabled = true;
+        cfg.security.asn_filter.blocked_ranges = vec![
+            String::from("198.51.100.0/24"),
+            String::from("203.0.113.0/24"),
+        ];
+        crate::CONFIG.store(Arc::new(cfg));
+
+        let engine = make_engine_with_asn(&["198.51.100.0/24", "203.0.113.0/24"], &[]);
+        crate::CURRENT_ENGINE.store(Arc::new(engine));
+
+        let mut score = SuspicionScore::new();
+        // Matches second range
+        let answer = make_answer_with_ips(&["203.0.113.1".parse().unwrap()], &[]);
+        score_answer(&mut score, &answer);
+        assert_eq!(score.total, score_points::ASN_BLOCKED);
+        assert!(score.is_malicious());
     }
 
     #[test]

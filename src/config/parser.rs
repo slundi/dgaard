@@ -476,6 +476,21 @@ fn parse_low_ttl(table: &toml_span::value::Table<'_>) -> Result<LowTtlConfig, Co
     Ok(cfg)
 }
 
+/// Parse `[security.asn_filter]` section.
+fn parse_asn_filter(table: &toml_span::value::Table<'_>) -> Result<AsnFilterConfig, ConfigError> {
+    let mut cfg = AsnFilterConfig::default();
+
+    if let Some(b) = get_bool(table, "enabled")? {
+        cfg.enabled = b;
+    }
+    if let Some(arr) = get_string_array(table, "blocked_ranges")? {
+        // checks are done later
+        cfg.blocked_ranges = arr;
+    }
+
+    Ok(cfg)
+}
+
 /// Parse `[security.rebinding_shield]` section.
 fn parse_rebinding_shield(
     table: &toml_span::value::Table<'_>,
@@ -516,6 +531,9 @@ fn parse_security(table: &toml_span::value::Table<'_>) -> Result<SecurityConfig,
     }
     if let Some(t) = get_table(table, "low_ttl")? {
         cfg.low_ttl = parse_low_ttl(t)?;
+    }
+    if let Some(t) = get_table(table, "asn_filter")? {
+        cfg.asn_filter = parse_asn_filter(t)?;
     }
 
     Ok(cfg)
@@ -1025,6 +1043,43 @@ mod tests {
         assert_eq!(cfg.security.behavior.nxdomain_window, 120);
         assert_eq!(cfg.security.behavior.max_subdomains_per_minute, 100);
         assert_eq!(cfg.security.behavior.max_label_length, 40);
+    }
+
+    // -----------------------------------------------------------------------
+    // ASN filter section
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_security_asn_filter_all_fields() {
+        let toml = r#"
+            [security.asn_filter]
+            enabled = true
+            blocked_ranges = ["203.0.113.0/24", "198.51.100.0/24", "2001:db8::/32"]
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert!(cfg.security.asn_filter.enabled);
+        assert_eq!(
+            cfg.security.asn_filter.blocked_ranges,
+            vec!["203.0.113.0/24", "198.51.100.0/24", "2001:db8::/32"]
+        );
+    }
+
+    #[test]
+    fn parse_security_asn_filter_defaults() {
+        let cfg = Config::parse("").unwrap();
+        assert!(!cfg.security.asn_filter.enabled);
+        assert!(cfg.security.asn_filter.blocked_ranges.is_empty());
+    }
+
+    #[test]
+    fn parse_security_asn_filter_disabled_empty_ranges() {
+        let toml = r#"
+            [security.asn_filter]
+            enabled = false
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert!(!cfg.security.asn_filter.enabled);
+        assert!(cfg.security.asn_filter.blocked_ranges.is_empty());
     }
 
     // -----------------------------------------------------------------------

@@ -510,6 +510,47 @@ impl Default for RebindingShieldConfig {
 }
 
 // ---------------------------------------------------------------------------
+// [security.asn_filter]
+// ---------------------------------------------------------------------------
+
+/// ASN (Autonomous System Number) IP-range filtering.
+///
+/// Blocks DNS responses that resolve to IP addresses within user-configured
+/// CIDR ranges. Intended to block known-malicious autonomous systems such as
+/// crypto mining pools, bulletproof hosting providers, or C2 infrastructure.
+///
+/// Unlike real-time ASN lookups (which require external databases), this filter
+/// uses a pre-configured list of CIDR ranges that the operator derives from
+/// threat intelligence feeds.
+///
+/// Maps to `[security.asn_filter]` in the configuration file.
+#[derive(Debug, PartialEq, Clone)]
+pub struct AsnFilterConfig {
+    /// Master switch — set to `false` to disable ASN range filtering entirely.
+    pub enabled: bool,
+
+    /// IPv4 and IPv6 CIDR ranges to block.
+    ///
+    /// Both address families are supported in the same list:
+    /// - IPv4: `"203.0.113.0/24"`
+    /// - IPv6: `"2001:db8::/32"`
+    ///
+    /// Ranges are parsed once at engine build time for zero-allocation hot-path
+    /// matching. Invalid entries are skipped with a warning.
+    pub blocked_ranges: Vec<String>,
+}
+
+impl Default for AsnFilterConfig {
+    fn default() -> Self {
+        // Disabled by default: requires explicit operator configuration.
+        Self {
+            enabled: false,
+            blocked_ranges: Vec::new(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // [security]
 // ---------------------------------------------------------------------------
 
@@ -533,6 +574,8 @@ pub struct SecurityConfig {
     pub rebinding_shield: RebindingShieldConfig,
     /// Low-TTL suspicion scoring.
     pub low_ttl: LowTtlConfig,
+    /// ASN IP-range filtering: block responses resolving into known-bad CIDR ranges.
+    pub asn_filter: AsnFilterConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -1011,6 +1054,7 @@ mod tests {
         assert_eq!(sec.behavior, BehaviorConfig::default());
         assert_eq!(sec.rebinding_shield, RebindingShieldConfig::default());
         assert_eq!(sec.low_ttl, LowTtlConfig::default());
+        assert_eq!(sec.asn_filter, AsnFilterConfig::default());
     }
 
     // -----------------------------------------------------------------------

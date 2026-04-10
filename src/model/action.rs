@@ -83,6 +83,8 @@ pub enum StatBlockReason {
     DnsRebinding = 12,
     /// Abnormally low TTL — fast-flux or short-lived malware infrastructure
     LowTtl = 13,
+    /// Response resolves to an IP in a user-configured blocked ASN range
+    AsnBlocked = 14,
 }
 
 impl TryFrom<u8> for StatBlockReason {
@@ -105,6 +107,7 @@ impl TryFrom<u8> for StatBlockReason {
             11 => Ok(StatBlockReason::ForbiddenQType),
             12 => Ok(StatBlockReason::DnsRebinding),
             13 => Ok(StatBlockReason::LowTtl),
+            14 => Ok(StatBlockReason::AsnBlocked),
             _ => Err(()),
         }
     }
@@ -127,6 +130,7 @@ impl From<&BlockReason> for StatBlockReason {
             BlockReason::ForbiddenQType(_) => StatBlockReason::ForbiddenQType,
             BlockReason::DnsRebinding => StatBlockReason::DnsRebinding,
             BlockReason::LowTtl(_) => StatBlockReason::LowTtl,
+            BlockReason::AsnBlocked => StatBlockReason::AsnBlocked,
         }
     }
 }
@@ -188,6 +192,10 @@ mod tests {
         assert_eq!(
             StatBlockReason::from(&BlockReason::LowTtl(5)),
             StatBlockReason::LowTtl
+        );
+        assert_eq!(
+            StatBlockReason::from(&BlockReason::AsnBlocked),
+            StatBlockReason::AsnBlocked
         );
     }
 }

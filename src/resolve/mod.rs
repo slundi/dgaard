@@ -256,6 +256,8 @@ pub mod tests {
             keyword_patterns: Vec::new(),
             suspicious_tld_hashes: HashSet::new(),
             lexical_strict: true,
+            blocked_asn_v4: Vec::new(),
+            blocked_asn_v6: Vec::new(),
         }
     }
 
@@ -360,6 +362,8 @@ pub mod tests {
             keyword_patterns: Vec::new(),
             suspicious_tld_hashes: HashSet::new(),
             lexical_strict: true,
+            blocked_asn_v4: Vec::new(),
+            blocked_asn_v6: Vec::new(),
         }
     }
 
@@ -389,6 +393,8 @@ pub mod tests {
             keyword_patterns: Vec::new(),
             suspicious_tld_hashes: HashSet::new(),
             lexical_strict: true,
+            blocked_asn_v4: Vec::new(),
+            blocked_asn_v6: Vec::new(),
         }
     }
 
@@ -466,6 +472,8 @@ pub mod tests {
             keyword_patterns,
             suspicious_tld_hashes,
             lexical_strict: strict,
+            blocked_asn_v4: Vec::new(),
+            blocked_asn_v6: Vec::new(),
         }
     }
 

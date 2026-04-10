@@ -175,6 +175,7 @@ pub(crate) async fn process_stat_message(
                         StatBlockReason::ForbiddenQType => "forbidden-qtype",
                         StatBlockReason::DnsRebinding => "dns-rebinding",
                         StatBlockReason::LowTtl => "low-ttl",
+                        StatBlockReason::AsnBlocked => "asn-blocked",
                     };
                     println!("[BLOCK] {} -> {} ({})", client_ip, domain, reason_str);
                 }

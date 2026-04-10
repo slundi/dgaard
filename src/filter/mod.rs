@@ -283,10 +283,14 @@ pub async fn reload_lists() {
         keyword_patterns: Vec::new(),
         suspicious_tld_hashes: HashSet::new(),
         lexical_strict: true,
+        blocked_asn_v4: Vec::new(),
+        blocked_asn_v6: Vec::new(),
     };
 
+    // TODO: load only if enabled
     new_engine.load_tld_filters();
     new_engine.load_lexical_filters();
+    new_engine.load_asn_filters();
     new_engine.hierarchical_list.sort_by_key(|de| de.hash);
     new_engine.wildcard_patterns.sort();
     new_engine.hierarchical_list.dedup();

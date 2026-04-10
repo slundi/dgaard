@@ -141,7 +141,7 @@ pub struct StatEvent {
 * [x] 8.5. **QType Warden**: policy-based blocking for suspicious types (NULL almost only used by DNS tunneling, HINFO for system information, ANY, etc.).
 * [x] 8.6. **Low TTL**: if TTL is very low (like less than 10s but configurable) and not a known CDN (like Akamai) it should increase suspisious score.
 * [ ] 8.7. **DNS Rebinding Shield (known hosted malware)**: from a list of IPs or using geoIP or known range for hosted malware.
-* [ ] 8.8. **ASN Filtering**: for crypto mining autonomous systems?
+* [x] 8.8. **ASN Filtering**: for crypto mining autonomous systems?
 
 ## Phase 9: Threat Intelligence & Analytics
 *Focus: Turning raw block data into actionable insights.*

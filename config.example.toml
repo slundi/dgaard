@@ -196,6 +196,35 @@ enabled = true
 # add `LOW_TTL` suspicion points (default: 10 s).
 threshold_secs = 10
 
+# ASN (Autonomous System Number) IP-range filtering.
+#
+# Blocks DNS responses that resolve to IP addresses within the configured CIDR
+# ranges. Intended for blocking known-malicious autonomous systems such as:
+#   - Crypto mining pool infrastructure
+#   - Bulletproof hosting providers
+#   - Known C2 (command-and-control) server networks
+#
+# Unlike blocklists that enumerate domains, this filter targets IP space,
+# catching fast-flux campaigns that rotate through many domains but use a
+# stable set of hosting ranges.
+#
+# CIDR ranges are pre-parsed once at startup — hot-path matching is O(1) per IP.
+# Disabled by default: requires explicit operator configuration derived from
+# threat intelligence feeds (e.g., Spamhaus ASN DROP list, abuse.ch, etc.).
+#
+# ## Address families
+# Both IPv4 and IPv6 CIDR notation are supported in the same list.
+#
+# ## Examples
+# RFC 5737 documentation ranges used here — replace with real threat intel data.
+[security.asn_filter]
+enabled = false
+# blocked_ranges = [
+#   "203.0.113.0/24",   # IPv4 documentation range (RFC 5737)
+#   "198.51.100.0/24",  # IPv4 documentation range (RFC 5737)
+#   "2001:db8::/32",    # IPv6 documentation range (RFC 3849)
+# ]
+
 # -----------------------------------------------------------------------------
 # Behavior Monitoring
 # -----------------------------------------------------------------------------
