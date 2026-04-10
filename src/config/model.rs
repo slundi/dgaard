@@ -746,6 +746,16 @@ pub struct SourcesConfig {
 
     /// How long (in minutes) to wait before retrying after a failed download.
     pub retry_delay_mins: u32,
+
+    /// Output path for the host index binary file.
+    ///
+    /// When set, dgaard writes a compact binary index mapping every xxh3_64
+    /// hash to its source domain string after loading lists.  External tools
+    /// (dashboard, scripts) can use this file to resolve a hash back to a
+    /// human-readable domain without loading the full blocklist.
+    ///
+    /// Set to an empty string `""` to disable index generation.
+    pub host_index_path: String,
 }
 
 impl Default for SourcesConfig {
@@ -762,6 +772,7 @@ impl Default for SourcesConfig {
             ],
             update_interval_hours: 24,
             retry_delay_mins: 30,
+            host_index_path: String::from("/var/dgaard/host_mapping.bin"),
         }
     }
 }
@@ -1121,6 +1132,7 @@ mod tests {
         assert_eq!(s.whitelists.len(), 2);
         assert_eq!(s.update_interval_hours, 24);
         assert_eq!(s.retry_delay_mins, 30);
+        assert_eq!(s.host_index_path, "/var/dgaard/host_mapping.bin");
     }
 
     // -----------------------------------------------------------------------

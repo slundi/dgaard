@@ -262,6 +262,12 @@ update_interval_hours = 24
 # If the download fails, how long to wait before retrying
 retry_delay_mins = 30
 
+# Binary index mapping each xxh3_64 hash to its source domain string.
+# External tools (dashboard, scripts) can use this file to resolve a hash
+# back to a human-readable domain without loading the full blocklist.
+# Set to "" to disable.
+host_index_path = "/var/dgaard/host_mapping.bin"
+
 [abp]
 # Since many ABP rules are COSMETIC (CSS), we only extract Network/Domain rules.
 extract_domain_only = true

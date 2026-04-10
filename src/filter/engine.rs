@@ -109,6 +109,7 @@ impl FilterEngine {
         let mut hierarchical_list: Vec<DomainEntry> = Vec::new();
         let mut regex_pool: Vec<Regex> = Vec::new();
         let mut wildcard_patterns: Vec<String> = Vec::new();
+        let mut host_index: HashMap<u64, String> = HashMap::new();
 
         // Load blacklists
         for path in &sources.blacklists {
@@ -119,6 +120,7 @@ impl FilterEngine {
                 &mut hierarchical_list,
                 &mut wildcard_patterns,
                 &mut regex_pool,
+                &mut host_index,
             ) {
                 eprintln!("Warning: Failed to load blacklist {}: {}", path, e);
             }
@@ -133,6 +135,7 @@ impl FilterEngine {
                 &mut hierarchical_list,
                 &mut wildcard_patterns,
                 &mut regex_pool,
+                &mut host_index,
             ) {
                 eprintln!("Warning: Failed to load whitelist {}: {}", path, e);
             }
@@ -147,6 +150,7 @@ impl FilterEngine {
                 &mut hierarchical_list,
                 &mut wildcard_patterns,
                 &mut regex_pool,
+                &mut host_index,
             )
         {
             eprintln!(

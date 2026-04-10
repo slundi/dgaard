@@ -639,6 +639,9 @@ fn parse_sources(table: &toml_span::value::Table<'_>) -> Result<SourcesConfig, C
     if let Some(n) = get_integer(table, "retry_delay_mins")? {
         cfg.retry_delay_mins = n as u32;
     }
+    if let Some(s) = get_str(table, "host_index_path")? {
+        cfg.host_index_path = s.to_string();
+    }
 
     Ok(cfg)
 }
@@ -1185,6 +1188,7 @@ mod tests {
             whitelists = ["/whitelist.txt"]
             update_interval_hours = 12
             retry_delay_mins = 15
+            host_index_path = "/tmp/my_index.bin"
         "#;
         let cfg = Config::parse(toml).unwrap();
         assert_eq!(cfg.sources.nrd_list_path, "/custom/nrd.txt");
@@ -1195,6 +1199,17 @@ mod tests {
         assert_eq!(cfg.sources.whitelists, vec!["/whitelist.txt"]);
         assert_eq!(cfg.sources.update_interval_hours, 12);
         assert_eq!(cfg.sources.retry_delay_mins, 15);
+        assert_eq!(cfg.sources.host_index_path, "/tmp/my_index.bin");
+    }
+
+    #[test]
+    fn parse_sources_host_index_disabled() {
+        let toml = r#"
+            [sources]
+            host_index_path = ""
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert_eq!(cfg.sources.host_index_path, "");
     }
 
     // -----------------------------------------------------------------------

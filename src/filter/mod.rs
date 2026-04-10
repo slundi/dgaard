@@ -2,6 +2,7 @@ mod abp;
 mod bloom;
 pub mod engine;
 mod fst;
+pub mod host_index;
 mod io;
 mod parser;
 pub mod types;
@@ -77,7 +78,7 @@ fn process_line(
     hierarchical_list: &mut Vec<DomainEntry>,
     wildcard_patterns: &mut Vec<String>,
     regex_pool: &mut Vec<Regex>,
-    // stats: &mut LoadStats,
+    host_index: &mut HashMap<u64, String>,
 ) {
     // Use parse_line wrapper for common logic (trim, skip comments)
     let result: Result<RawDomainEntry, ListError<'_>> =
@@ -151,6 +152,7 @@ fn process_line(
             } else {
                 // Standard entry: add to fast_map for O(1) lookup and hierarchical list
                 fast_map.insert(entry.hash, combined_flags.bits());
+                host_index.insert(entry.hash, entry.value.clone());
 
                 hierarchical_list.push(DomainEntry {
                     hash: entry.hash,
@@ -195,6 +197,7 @@ fn load_list_content(
     hierarchical_list: &mut Vec<DomainEntry>,
     wildcard_patterns: &mut Vec<String>,
     regex_pool: &mut Vec<Regex>,
+    host_index: &mut HashMap<u64, String>,
 ) {
     for line in content.lines() {
         process_line(
@@ -204,6 +207,7 @@ fn load_list_content(
             hierarchical_list,
             wildcard_patterns,
             regex_pool,
+            host_index,
         );
     }
 }
@@ -218,6 +222,7 @@ pub async fn reload_lists() {
     let mut hierarchical_list: Vec<DomainEntry> = Vec::new();
     let mut regex_pool: Vec<Regex> = Vec::new();
     let mut wildcard_patterns: Vec<String> = Vec::new();
+    let mut host_index: HashMap<u64, String> = HashMap::new();
 
     // Load whitelists sequentially (with WHITELIST flag)
     for source in &sources.whitelists {
@@ -230,6 +235,7 @@ pub async fn reload_lists() {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut host_index,
         )
         .await;
     }
@@ -245,6 +251,7 @@ pub async fn reload_lists() {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut host_index,
         )
         .await;
     }
@@ -260,6 +267,7 @@ pub async fn reload_lists() {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut host_index,
         )
         .await;
 
@@ -296,6 +304,13 @@ pub async fn reload_lists() {
     new_engine.hierarchical_list.dedup();
     new_engine.wildcard_patterns.dedup();
     CURRENT_ENGINE.store(Arc::new(new_engine));
+
+    // Write host index if configured
+    if !cfg.sources.host_index_path.is_empty() {
+        if let Err(e) = host_index::write_host_index(&cfg.sources.host_index_path, &host_index) {
+            eprintln!("Warning: Failed to write host index: {}", e);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -339,6 +354,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         process_line(
             "0.0.0.0 test.example.com",
@@ -347,6 +363,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         assert_eq!(fast_map.len(), 1);
@@ -361,6 +378,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         process_line(
             "server=/doubleclick.net/",
@@ -369,6 +387,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         assert_eq!(fast_map.len(), 1);
@@ -383,6 +402,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         process_line(
             "ads.example.org",
@@ -391,6 +411,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         assert_eq!(fast_map.len(), 1);
@@ -405,6 +426,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         process_line(
             "# This is a comment",
@@ -413,6 +435,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         assert!(fast_map.is_empty());
@@ -426,6 +449,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         process_line(
             "",
@@ -434,6 +458,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
         process_line(
             "   ",
@@ -442,6 +467,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         assert!(fast_map.is_empty());
@@ -455,6 +481,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         process_line(
             "allowed.example.com",
@@ -463,6 +490,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         assert_eq!(fast_map.len(), 1);
@@ -482,6 +510,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         process_line(
             "||ads.example.com^",
@@ -490,6 +519,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         // Should extract clean domain and add to fast_map
@@ -509,6 +539,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         process_line(
             "@@||trusted.example.com^",
@@ -517,6 +548,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         assert_eq!(fast_map.len(), 1);
@@ -535,6 +567,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         // Pattern like *.tracking.com is suffix-only (handled by is_suffix_blocked)
         process_line(
@@ -544,6 +577,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         // Suffix wildcard should go to hierarchical_list only, NOT wildcard_patterns
@@ -565,6 +599,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         // Test pattern like ads*.example.com
         process_line(
@@ -574,6 +609,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         assert_eq!(wildcard_patterns.len(), 1);
@@ -588,6 +624,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         // Glob patterns (need wildcard_patterns)
         process_line(
@@ -597,6 +634,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
         process_line(
             "||*tracker.analytics.com^",
@@ -605,6 +643,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
         process_line(
             "||banner*.ad.net^",
@@ -613,6 +652,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         assert_eq!(wildcard_patterns.len(), 3);
@@ -628,6 +668,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         // Suffix-only pattern (standalone * segment)
         process_line(
@@ -637,6 +678,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
         // Glob pattern (* within segment)
         process_line(
@@ -646,6 +688,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
         // Another suffix-only
         process_line(
@@ -655,6 +698,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         // All go to hierarchical_list
@@ -677,6 +721,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         process_line(
             "/ads[0-9]+\\.example\\.com/",
@@ -685,6 +730,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         // Regex should only go to hierarchical_list, not fast_map
@@ -700,6 +746,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         process_line(
             "! This is an ABP comment",
@@ -708,6 +755,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         assert!(fast_map.is_empty());
@@ -721,6 +769,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         process_line(
             "example.com##.ad-banner",
@@ -729,6 +778,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         assert!(fast_map.is_empty());
@@ -744,6 +794,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         let content = "example.com\ntest.org\nfoo.bar.net";
         load_list_content(
@@ -753,6 +804,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         assert_eq!(fast_map.len(), 3);
@@ -766,6 +818,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         let content =
             "0.0.0.0 ads.example.com\n127.0.0.1 tracking.site.org\n# comment\n\n:: ipv6.test.com";
@@ -776,6 +829,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         assert_eq!(fast_map.len(), 3);
@@ -789,6 +843,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         let content = r#"# Comment line
 plain.domain.com
@@ -803,6 +858,7 @@ server=/dnsmasq.format.com/
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         assert_eq!(fast_map.len(), 4);
@@ -816,6 +872,7 @@ server=/dnsmasq.format.com/
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         let content = "allowed.com\ntrusted.org";
         load_list_content(
@@ -825,6 +882,7 @@ server=/dnsmasq.format.com/
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         assert_eq!(fast_map.len(), 2);
@@ -843,6 +901,7 @@ server=/dnsmasq.format.com/
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         let content = "";
         load_list_content(
@@ -852,6 +911,7 @@ server=/dnsmasq.format.com/
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         assert!(fast_map.is_empty());
@@ -865,6 +925,7 @@ server=/dnsmasq.format.com/
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
 
         let content = "# comment 1\n# comment 2\n! ABP comment\n";
         load_list_content(
@@ -874,6 +935,7 @@ server=/dnsmasq.format.com/
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut idx,
         );
 
         assert!(fast_map.is_empty());

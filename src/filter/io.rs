@@ -28,6 +28,7 @@ pub(crate) fn load_list_file(
     hierarchical_list: &mut Vec<DomainEntry>,
     wildcard_patterns: &mut Vec<String>,
     regex_pool: &mut Vec<Regex>,
+    host_index: &mut HashMap<u64, String>,
 ) -> std::io::Result<()> {
     let path = Path::new(path);
     if !path.exists() {
@@ -59,6 +60,7 @@ pub(crate) fn load_list_file(
                     hierarchical_list,
                     wildcard_patterns,
                     regex_pool,
+                    host_index,
                 );
             }
             break;
@@ -96,6 +98,7 @@ pub(crate) fn load_list_file(
                 hierarchical_list,
                 wildcard_patterns,
                 regex_pool,
+                host_index,
             );
         }
 
@@ -138,6 +141,7 @@ async fn download_list(
 }
 
 /// Load a source (file path or URL) into the filter collections.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn load_source(
     source: &str,
     base_flags: DomainEntryFlags,
@@ -146,6 +150,7 @@ pub(crate) async fn load_source(
     hierarchical_list: &mut Vec<DomainEntry>,
     wildcard_patterns: &mut Vec<String>,
     regex_pool: &mut Vec<Regex>,
+    host_index: &mut HashMap<u64, String>,
 ) {
     match validate_input(source) {
         Ok(Resource::HttpUrl(url)) => match download_list(client, &url).await {
@@ -158,6 +163,7 @@ pub(crate) async fn load_source(
                     hierarchical_list,
                     wildcard_patterns,
                     regex_pool,
+                    host_index,
                 );
             }
             Err(e) => eprintln!("Warning: Failed to download {}: {}", source, e),
@@ -170,6 +176,7 @@ pub(crate) async fn load_source(
                 hierarchical_list,
                 wildcard_patterns,
                 regex_pool,
+                host_index,
             ) {
                 eprintln!("Warning: Failed to load {}: {}", source, e);
             }
@@ -192,6 +199,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut host_index = HashMap::new();
 
         let result = load_list_file(
             "tests/list_host.txt",
@@ -200,6 +208,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut host_index,
         );
 
         assert!(result.is_ok(), "Failed to load hosts file: {:?}", result);
@@ -210,6 +219,7 @@ mod tests {
             fast_map.len()
         );
         assert_eq!(fast_map.len(), hierarchical_list.len());
+        assert_eq!(fast_map.len(), host_index.len());
     }
 
     #[test]
@@ -219,6 +229,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut host_index = HashMap::new();
 
         let result = load_list_file(
             "tests/list_dnsmasq.txt",
@@ -227,6 +238,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut host_index,
         );
 
         assert!(result.is_ok(), "Failed to load dnsmasq file: {:?}", result);
@@ -245,6 +257,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut host_index = HashMap::new();
 
         let result = load_list_file(
             "nonexistent_file.txt",
@@ -253,6 +266,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut host_index,
         );
 
         assert!(result.is_err());
@@ -266,6 +280,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut host_index = HashMap::new();
 
         let result = load_list_file(
             "tests/list_host.txt",
@@ -274,6 +289,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut host_index,
         );
 
         assert!(result.is_ok());
@@ -293,6 +309,7 @@ mod tests {
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
+        let mut host_index = HashMap::new();
 
         let result = load_list_file(
             "tests/list_abp.txt",
@@ -301,6 +318,7 @@ mod tests {
             &mut hierarchical_list,
             &mut wildcard_patterns,
             &mut regex_pool,
+            &mut host_index,
         );
 
         assert!(result.is_ok(), "Failed to load ABP file: {:?}", result);
