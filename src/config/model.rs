@@ -756,6 +756,15 @@ pub struct SourcesConfig {
     ///
     /// Set to an empty string `""` to disable index generation.
     pub host_index_path: String,
+
+    /// Output path for the browser rules plain text file.
+    ///
+    /// When set, dgaard collects ABP cosmetic/element-hiding/scriptlet rules
+    /// that are not applicable to DNS filtering and writes them here so they
+    /// can be imported directly into a browser extension (e.g. uBlock Origin).
+    ///
+    /// Set to an empty string `""` to disable.
+    pub browser_rules_path: String,
 }
 
 impl Default for SourcesConfig {
@@ -773,6 +782,7 @@ impl Default for SourcesConfig {
             update_interval_hours: 24,
             retry_delay_mins: 30,
             host_index_path: String::from("/var/dgaard/host_mapping.bin"),
+            browser_rules_path: String::from("/var/dgaard/browser_rules.txt"),
         }
     }
 }
@@ -1133,6 +1143,7 @@ mod tests {
         assert_eq!(s.update_interval_hours, 24);
         assert_eq!(s.retry_delay_mins, 30);
         assert_eq!(s.host_index_path, "/var/dgaard/host_mapping.bin");
+        assert_eq!(s.browser_rules_path, "/var/dgaard/browser_rules.txt");
     }
 
     // -----------------------------------------------------------------------

@@ -21,6 +21,7 @@ const CHUNK_SIZE: usize = 2 * 1024 * 1024;
 
 /// Load a list file by reading 2MB chunks at a time.
 /// Detects format (hosts, dnsmasq, or plain domain) and parses accordingly.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn load_list_file(
     path: &str,
     base_flags: DomainEntryFlags,
@@ -29,6 +30,7 @@ pub(crate) fn load_list_file(
     wildcard_patterns: &mut Vec<String>,
     regex_pool: &mut Vec<Regex>,
     host_index: &mut HashMap<u64, String>,
+    browser_rules: &mut Vec<String>,
 ) -> std::io::Result<()> {
     let path = Path::new(path);
     if !path.exists() {
@@ -61,6 +63,7 @@ pub(crate) fn load_list_file(
                     wildcard_patterns,
                     regex_pool,
                     host_index,
+                    browser_rules,
                 );
             }
             break;
@@ -99,6 +102,7 @@ pub(crate) fn load_list_file(
                 wildcard_patterns,
                 regex_pool,
                 host_index,
+                browser_rules,
             );
         }
 
@@ -151,6 +155,7 @@ pub(crate) async fn load_source(
     wildcard_patterns: &mut Vec<String>,
     regex_pool: &mut Vec<Regex>,
     host_index: &mut HashMap<u64, String>,
+    browser_rules: &mut Vec<String>,
 ) {
     match validate_input(source) {
         Ok(Resource::HttpUrl(url)) => match download_list(client, &url).await {
@@ -164,6 +169,7 @@ pub(crate) async fn load_source(
                     wildcard_patterns,
                     regex_pool,
                     host_index,
+                    browser_rules,
                 );
             }
             Err(e) => eprintln!("Warning: Failed to download {}: {}", source, e),
@@ -177,6 +183,7 @@ pub(crate) async fn load_source(
                 wildcard_patterns,
                 regex_pool,
                 host_index,
+                browser_rules,
             ) {
                 eprintln!("Warning: Failed to load {}: {}", source, e);
             }
@@ -200,6 +207,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut host_index = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         let result = load_list_file(
             "tests/list_host.txt",
@@ -209,6 +217,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut host_index,
+            &mut browser_rules,
         );
 
         assert!(result.is_ok(), "Failed to load hosts file: {:?}", result);
@@ -230,6 +239,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut host_index = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         let result = load_list_file(
             "tests/list_dnsmasq.txt",
@@ -239,6 +249,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut host_index,
+            &mut browser_rules,
         );
 
         assert!(result.is_ok(), "Failed to load dnsmasq file: {:?}", result);
@@ -258,6 +269,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut host_index = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         let result = load_list_file(
             "nonexistent_file.txt",
@@ -267,6 +279,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut host_index,
+            &mut browser_rules,
         );
 
         assert!(result.is_err());
@@ -281,6 +294,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut host_index = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         let result = load_list_file(
             "tests/list_host.txt",
@@ -290,6 +304,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut host_index,
+            &mut browser_rules,
         );
 
         assert!(result.is_ok());
@@ -310,6 +325,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut host_index = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         let result = load_list_file(
             "tests/list_abp.txt",
@@ -319,6 +335,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut host_index,
+            &mut browser_rules,
         );
 
         assert!(result.is_ok(), "Failed to load ABP file: {:?}", result);

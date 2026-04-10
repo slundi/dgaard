@@ -268,6 +268,12 @@ retry_delay_mins = 30
 # Set to "" to disable.
 host_index_path = "/var/dgaard/host_mapping.bin"
 
+# Plain text file collecting ABP cosmetic/element-hiding/scriptlet rules
+# that are ignored by the DNS filter. Import this file into a browser
+# extension (e.g. uBlock Origin) to get full ad/tracker blocking.
+# Set to "" to disable.
+browser_rules_path = "/var/dgaard/browser_rules.txt"
+
 [abp]
 # Since many ABP rules are COSMETIC (CSS), we only extract Network/Domain rules.
 extract_domain_only = true

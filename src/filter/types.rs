@@ -9,6 +9,8 @@ pub enum ListError<'a> {
     ParseError(#[source] std::io::Error, &'a str, &'a str),
     #[error("Line skipped (empty or comment)")]
     Skip,
+    #[error("Browser-only rule (cosmetic/scriptlet): {0}")]
+    BrowserRule(&'a str),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -155,7 +155,7 @@ pub struct StatEvent {
 
 * [x] **Multi-Thread Spawn**: A loop that spawns a `tokio::spawn` task for every incoming packet (`src/runtime.rs`).
 * [x] **Host index**: when building whitelists and blocklist, generate `/var/dgaard/host_mapping.bin` (or `.txt`) so external application can retrieve the domain, the list type from the xxh3_64 hash.
-* [ ] **Browser black/whitelist**: when parsing ABP list put the ignored rule in another text file so the user can use it for its browser since it will mainly be CSS/JS/HTML blocking.
+* [x] **Browser black/whitelist**: when parsing ABP list only put the ignored rule in another text file so the user can use it for its browser since it will mainly be CSS/JS/HTML blocking.
 * [ ] **Terminal colors**: for the few printed message crates are [yansi](https://crates.io/crates/yansi) or [anstyle](https://crates.io/crates/anstyle) or custom implementation. But it will run as the daemon so the log will probably go to syslog or journald so colors chars may make the log unreadable so maybe [tracing](https://crates.io/crates/tracing) or [log](https://crates.io/crates/log) instead.
 ```rust
 const GREEN: &str = "\x1b[32m";

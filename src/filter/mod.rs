@@ -71,6 +71,7 @@ fn is_redundant(entry: &RawDomainEntry, fast_map: &HashMap<u64, u8>) -> bool {
 }
 
 /// Process a single line using the appropriate parser based on detected format.
+#[allow(clippy::too_many_arguments)]
 fn process_line(
     line: &str,
     base_flags: DomainEntryFlags,
@@ -79,6 +80,7 @@ fn process_line(
     wildcard_patterns: &mut Vec<String>,
     regex_pool: &mut Vec<Regex>,
     host_index: &mut HashMap<u64, String>,
+    browser_rules: &mut Vec<String>,
 ) {
     // Use parse_line wrapper for common logic (trim, skip comments)
     let result: Result<RawDomainEntry, ListError<'_>> =
@@ -165,6 +167,10 @@ fn process_line(
         Err(ListError::Skip) => {
             // Empty line or comment, silently skip
         }
+        Err(ListError::BrowserRule(rule)) => {
+            // Cosmetic/scriptlet ABP rule — not a DNS filter, collect for browser export
+            browser_rules.push(rule.to_string());
+        }
         Err(_) => {
             // Parse error, silently skip (could log in debug mode)
         }
@@ -181,15 +187,18 @@ where
     if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
         return Err(ListError::Skip);
     }
-    // Skip ABP cosmetic rules (contain ##)
-    if trimmed.contains("##") {
-        return Err(ListError::Skip);
+    // Identify ABP browser-only rules (cosmetic, element-hiding, scriptlet).
+    // These are not applicable to DNS filtering but are useful for browser extensions.
+    const BROWSER_MARKERS: &[&str] = &["##", "#@#", "#$#", "#%#", "#^#", "#?#"];
+    if BROWSER_MARKERS.iter().any(|m| trimmed.contains(m)) {
+        return Err(ListError::BrowserRule(trimmed));
     }
 
     parser(trimmed)
 }
 
 /// Load a list from raw content (e.g., downloaded from URL).
+#[allow(clippy::too_many_arguments)]
 fn load_list_content(
     content: &str,
     base_flags: DomainEntryFlags,
@@ -198,6 +207,7 @@ fn load_list_content(
     wildcard_patterns: &mut Vec<String>,
     regex_pool: &mut Vec<Regex>,
     host_index: &mut HashMap<u64, String>,
+    browser_rules: &mut Vec<String>,
 ) {
     for line in content.lines() {
         process_line(
@@ -208,8 +218,32 @@ fn load_list_content(
             wildcard_patterns,
             regex_pool,
             host_index,
+            browser_rules,
         );
     }
+}
+
+/// Write browser-only ABP rules (cosmetic, element-hiding, scriptlet) to a plain text file.
+///
+/// Returns immediately if `path` is empty or `rules` is empty.
+fn write_browser_rules(path: &str, rules: &[String]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    if path.is_empty() || rules.is_empty() {
+        return Ok(());
+    }
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let file = std::fs::File::create(path)?;
+    let mut w = std::io::BufWriter::new(file);
+    for rule in rules {
+        writeln!(w, "{}", rule)?;
+    }
+    w.flush()?;
+    println!("Browser rules written to {} ({} rules)", path, rules.len());
+    Ok(())
 }
 
 pub async fn reload_lists() {
@@ -223,6 +257,7 @@ pub async fn reload_lists() {
     let mut regex_pool: Vec<Regex> = Vec::new();
     let mut wildcard_patterns: Vec<String> = Vec::new();
     let mut host_index: HashMap<u64, String> = HashMap::new();
+    let mut browser_rules: Vec<String> = Vec::new();
 
     // Load whitelists sequentially (with WHITELIST flag)
     for source in &sources.whitelists {
@@ -236,6 +271,7 @@ pub async fn reload_lists() {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut host_index,
+            &mut browser_rules,
         )
         .await;
     }
@@ -252,6 +288,7 @@ pub async fn reload_lists() {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut host_index,
+            &mut browser_rules,
         )
         .await;
     }
@@ -268,6 +305,7 @@ pub async fn reload_lists() {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut host_index,
+            &mut browser_rules,
         )
         .await;
 
@@ -309,6 +347,13 @@ pub async fn reload_lists() {
     if !cfg.sources.host_index_path.is_empty() {
         if let Err(e) = host_index::write_host_index(&cfg.sources.host_index_path, &host_index) {
             eprintln!("Warning: Failed to write host index: {}", e);
+        }
+    }
+
+    // Write browser rules if configured
+    if !cfg.sources.browser_rules_path.is_empty() {
+        if let Err(e) = write_browser_rules(&cfg.sources.browser_rules_path, &browser_rules) {
+            eprintln!("Warning: Failed to write browser rules: {}", e);
         }
     }
 }
@@ -355,6 +400,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         process_line(
             "0.0.0.0 test.example.com",
@@ -364,6 +410,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         assert_eq!(fast_map.len(), 1);
@@ -379,6 +426,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         process_line(
             "server=/doubleclick.net/",
@@ -388,6 +436,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         assert_eq!(fast_map.len(), 1);
@@ -403,6 +452,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         process_line(
             "ads.example.org",
@@ -412,6 +462,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         assert_eq!(fast_map.len(), 1);
@@ -427,6 +478,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         process_line(
             "# This is a comment",
@@ -436,6 +488,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         assert!(fast_map.is_empty());
@@ -450,6 +503,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         process_line(
             "",
@@ -459,6 +513,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
         process_line(
             "   ",
@@ -468,6 +523,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         assert!(fast_map.is_empty());
@@ -482,6 +538,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         process_line(
             "allowed.example.com",
@@ -491,6 +548,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         assert_eq!(fast_map.len(), 1);
@@ -511,6 +569,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         process_line(
             "||ads.example.com^",
@@ -520,6 +579,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         // Should extract clean domain and add to fast_map
@@ -540,6 +600,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         process_line(
             "@@||trusted.example.com^",
@@ -549,6 +610,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         assert_eq!(fast_map.len(), 1);
@@ -568,6 +630,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         // Pattern like *.tracking.com is suffix-only (handled by is_suffix_blocked)
         process_line(
@@ -578,6 +641,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         // Suffix wildcard should go to hierarchical_list only, NOT wildcard_patterns
@@ -600,6 +664,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         // Test pattern like ads*.example.com
         process_line(
@@ -610,6 +675,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         assert_eq!(wildcard_patterns.len(), 1);
@@ -625,6 +691,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         // Glob patterns (need wildcard_patterns)
         process_line(
@@ -635,6 +702,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
         process_line(
             "||*tracker.analytics.com^",
@@ -644,6 +712,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
         process_line(
             "||banner*.ad.net^",
@@ -653,6 +722,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         assert_eq!(wildcard_patterns.len(), 3);
@@ -669,6 +739,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         // Suffix-only pattern (standalone * segment)
         process_line(
@@ -679,6 +750,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
         // Glob pattern (* within segment)
         process_line(
@@ -689,6 +761,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
         // Another suffix-only
         process_line(
@@ -699,6 +772,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         // All go to hierarchical_list
@@ -722,6 +796,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         process_line(
             "/ads[0-9]+\\.example\\.com/",
@@ -731,6 +806,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         // Regex should only go to hierarchical_list, not fast_map
@@ -747,6 +823,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         process_line(
             "! This is an ABP comment",
@@ -756,6 +833,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         assert!(fast_map.is_empty());
@@ -763,13 +841,14 @@ mod tests {
     }
 
     #[test]
-    fn test_process_line_abp_cosmetic_rule_skipped() {
+    fn test_process_line_abp_cosmetic_rule_collected() {
         init_seed();
         let mut fast_map = HashMap::new();
         let mut hierarchical_list = Vec::new();
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         process_line(
             "example.com##.ad-banner",
@@ -779,10 +858,60 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
+        // Not a DNS rule — must not affect filter maps
         assert!(fast_map.is_empty());
         assert!(hierarchical_list.is_empty());
+        // Must be collected for browser export
+        assert_eq!(browser_rules.len(), 1);
+        assert_eq!(browser_rules[0], "example.com##.ad-banner");
+    }
+
+    #[test]
+    fn test_process_line_abp_all_browser_rule_types_collected() {
+        init_seed();
+        let mut fast_map = HashMap::new();
+        let mut hierarchical_list = Vec::new();
+        let mut wildcard_patterns = Vec::new();
+        let mut regex_pool = Vec::new();
+        let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
+
+        let lines = [
+            "example.com##.ad-class",
+            "example.com#@#.ad-class",
+            "example.com#$#.ad-class { display: none }",
+            "example.com#%#//scriptlet('log')",
+            "example.com#^#script:has-text(ad)",
+            "example.com#?#.ad:-abp-has(span)",
+        ];
+        for line in &lines {
+            process_line(
+                line,
+                DomainEntryFlags::NONE,
+                &mut fast_map,
+                &mut hierarchical_list,
+                &mut wildcard_patterns,
+                &mut regex_pool,
+                &mut idx,
+                &mut browser_rules,
+            );
+        }
+
+        assert!(fast_map.is_empty());
+        assert_eq!(browser_rules.len(), lines.len());
+    }
+
+    #[test]
+    fn test_parse_line_returns_browser_rule() {
+        init_seed();
+        let result = parse_line("example.com##.ads", parse_plain_domain);
+        assert!(matches!(result, Err(ListError::BrowserRule(_))));
+        if let Err(ListError::BrowserRule(rule)) = result {
+            assert_eq!(rule, "example.com##.ads");
+        }
     }
 
     // --- Tests for load_list_content ---
@@ -795,6 +924,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         let content = "example.com\ntest.org\nfoo.bar.net";
         load_list_content(
@@ -805,6 +935,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         assert_eq!(fast_map.len(), 3);
@@ -819,6 +950,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         let content =
             "0.0.0.0 ads.example.com\n127.0.0.1 tracking.site.org\n# comment\n\n:: ipv6.test.com";
@@ -830,6 +962,7 @@ mod tests {
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         assert_eq!(fast_map.len(), 3);
@@ -844,6 +977,7 @@ mod tests {
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         let content = r#"# Comment line
 plain.domain.com
@@ -859,6 +993,7 @@ server=/dnsmasq.format.com/
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         assert_eq!(fast_map.len(), 4);
@@ -873,6 +1008,7 @@ server=/dnsmasq.format.com/
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         let content = "allowed.com\ntrusted.org";
         load_list_content(
@@ -883,6 +1019,7 @@ server=/dnsmasq.format.com/
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         assert_eq!(fast_map.len(), 2);
@@ -902,6 +1039,7 @@ server=/dnsmasq.format.com/
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         let content = "";
         load_list_content(
@@ -912,6 +1050,7 @@ server=/dnsmasq.format.com/
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         assert!(fast_map.is_empty());
@@ -926,6 +1065,7 @@ server=/dnsmasq.format.com/
         let mut wildcard_patterns = Vec::new();
         let mut regex_pool = Vec::new();
         let mut idx: HashMap<u64, String> = HashMap::new();
+        let mut browser_rules: Vec<String> = Vec::new();
 
         let content = "# comment 1\n# comment 2\n! ABP comment\n";
         load_list_content(
@@ -936,6 +1076,7 @@ server=/dnsmasq.format.com/
             &mut wildcard_patterns,
             &mut regex_pool,
             &mut idx,
+            &mut browser_rules,
         );
 
         assert!(fast_map.is_empty());
