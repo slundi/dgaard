@@ -300,3 +300,32 @@ cache_size = 5000
 use_bloom_filter = true
 # Estimated entries for Bloom Filter (influences RAM usage)
 expected_total_domains = 1000000
+
+# Suspicion score thresholds and logging policy.
+
+# Controls at what score level domains are blocked, flagged as highly
+# suspicious, or flagged as suspicious. Logging for the two lower tiers
+# can be independently enabled to stream telemetry to the Unix socket
+# without affecting blocking behaviour.
+[security.scoring]
+# Score at or above which a domain is considered malicious and blocked.
+# Default: 10.
+# blocking_threshold = 10 
+
+# Score at or above which a domain is considered highly suspicious.
+# Queries above this threshold but below `blocking_threshold` are
+# forwarded but always emitted as `HighlySuspicious` events on the
+# stats socket.
+# Default: 7.
+# highly_suspicious_threshold = 7
+
+# Score at or above which a domain is considered suspicious.
+# Only emitted as a `Suspicious` stats event when `log_suspicious`
+# is `true`.
+# Default: 4.
+# suspicious_threshold = 4
+
+# Emit `Suspicious` stats events for domains that reach
+# `suspicious_threshold` but not `highly_suspicious_threshold`.
+# Default: `false`.
+# log_suspicious = false

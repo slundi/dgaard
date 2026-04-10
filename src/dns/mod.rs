@@ -7,11 +7,39 @@ use std::sync::Arc;
 
 use tokio::net::UdpSocket;
 
+use crate::config::ScoringConfig;
 use crate::dns::packet::DnsPacket;
 use crate::dns::upstream::forward_to_upstream;
-use crate::model::{Action, StatAction, StatBlockReason};
+use crate::model::{Action, StatAction, StatBlockReason, SuspicionScore};
 use crate::resolve::{check_qtype, resolve_with_score, score_answer};
-use crate::{STATS_COUNTERS, STATS_SENDER};
+use crate::{CONFIG, STATS_COUNTERS, STATS_SENDER};
+
+/// Map a suspicion score to a stat action using the configured thresholds.
+///
+/// Returns `(is_blocked, stat_action)`. When `is_blocked` is `true` the caller
+/// should return an NXDOMAIN response; otherwise the upstream bytes are
+/// forwarded as-is.
+fn classify_score(
+    score: &SuspicionScore,
+    scoring: &ScoringConfig,
+    pass_action: StatAction,
+) -> (bool, StatAction) {
+    let reason = || {
+        score
+            .primary_reason()
+            .map(StatBlockReason::from)
+            .unwrap_or(StatBlockReason::Suspicious)
+    };
+    if score.total >= scoring.blocking_threshold {
+        (true, StatAction::Blocked(reason()))
+    } else if score.total >= scoring.highly_suspicious_threshold {
+        (false, StatAction::HighlySuspicious(reason()))
+    } else if scoring.log_suspicious && score.total >= scoring.suspicious_threshold {
+        (false, StatAction::Suspicious(reason()))
+    } else {
+        (false, pass_action)
+    }
+}
 
 /// Handle an incoming DNS query by running it through the filter pipeline.
 ///
@@ -57,27 +85,27 @@ pub(crate) async fn handle_query(
     let mut score = resolve_result.score;
 
     // 3. Process the action and determine stat action
+    let scoring = &CONFIG.load();
+    let scoring = &scoring.security.scoring;
     let (response, stat_action) = match &action {
         Action::Allow => {
             match forward_to_upstream(&packet).await {
                 Ok(upstream_bytes) => {
-                    // DPI: score the upstream answer; block if it crosses the malicious threshold
+                    // DPI: score the upstream answer; block if it crosses the configured threshold
                     if let Some(answer) = InspectedAnswer::from_response(&upstream_bytes) {
                         score_answer(&mut score, &answer);
                     }
-                    if score.is_malicious() {
+                    let (is_blocked, stat_action) =
+                        classify_score(&score, scoring, StatAction::Allowed);
+                    if is_blocked {
                         STATS_COUNTERS.increment_blocked();
-                        let stat_reason = score
-                            .primary_reason()
-                            .map(StatBlockReason::from)
-                            .unwrap_or(StatBlockReason::Suspicious);
                         (
                             DnsPacket::build_nxdomain_response(&dns_packet.message),
-                            Some(StatAction::Blocked(stat_reason)),
+                            Some(stat_action),
                         )
                     } else {
                         STATS_COUNTERS.increment_allowed();
-                        (upstream_bytes, Some(StatAction::Allowed))
+                        (upstream_bytes, Some(stat_action))
                     }
                 }
                 Err(_) => {
@@ -92,23 +120,21 @@ pub(crate) async fn handle_query(
         Action::ProxyToUpstream => {
             match forward_to_upstream(&packet).await {
                 Ok(upstream_bytes) => {
-                    // DPI: score the upstream answer; block if it crosses the malicious threshold
+                    // DPI: score the upstream answer; block if it crosses the configured threshold
                     if let Some(answer) = InspectedAnswer::from_response(&upstream_bytes) {
                         score_answer(&mut score, &answer);
                     }
-                    if score.is_malicious() {
+                    let (is_blocked, stat_action) =
+                        classify_score(&score, scoring, StatAction::Proxied);
+                    if is_blocked {
                         STATS_COUNTERS.increment_blocked();
-                        let stat_reason = score
-                            .primary_reason()
-                            .map(StatBlockReason::from)
-                            .unwrap_or(StatBlockReason::Suspicious);
                         (
                             DnsPacket::build_nxdomain_response(&dns_packet.message),
-                            Some(StatAction::Blocked(stat_reason)),
+                            Some(stat_action),
                         )
                     } else {
                         STATS_COUNTERS.increment_proxied();
-                        (upstream_bytes, Some(StatAction::Proxied))
+                        (upstream_bytes, Some(stat_action))
                     }
                 }
                 Err(_) => {

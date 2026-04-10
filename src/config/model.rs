@@ -541,6 +541,54 @@ pub struct AsnFilterConfig {
 }
 
 // ---------------------------------------------------------------------------
+// [security.scoring]
+// ---------------------------------------------------------------------------
+
+/// Suspicion score thresholds and logging policy.
+///
+/// Controls at what score level domains are blocked, flagged as highly
+/// suspicious, or flagged as suspicious. Logging for the two lower tiers
+/// can be independently enabled to stream telemetry to the Unix socket
+/// without affecting blocking behaviour.
+///
+/// Maps to `[security.scoring]` in the configuration file.
+#[derive(Debug, PartialEq, Clone)]
+pub struct ScoringConfig {
+    /// Score at or above which a domain is considered malicious and blocked.
+    /// Default: 10.
+    pub blocking_threshold: u8,
+
+    /// Score at or above which a domain is considered highly suspicious.
+    /// Queries above this threshold but below `blocking_threshold` are
+    /// forwarded but always emitted as `HighlySuspicious` events on the
+    /// stats socket.
+    /// Default: 7.
+    pub highly_suspicious_threshold: u8,
+
+    /// Score at or above which a domain is considered suspicious.
+    /// Only emitted as a `Suspicious` stats event when `log_suspicious`
+    /// is `true`.
+    /// Default: 4.
+    pub suspicious_threshold: u8,
+
+    /// Emit `Suspicious` stats events for domains that reach
+    /// `suspicious_threshold` but not `highly_suspicious_threshold`.
+    /// Default: `false`.
+    pub log_suspicious: bool,
+}
+
+impl Default for ScoringConfig {
+    fn default() -> Self {
+        Self {
+            blocking_threshold: 10,
+            highly_suspicious_threshold: 7,
+            suspicious_threshold: 4,
+            log_suspicious: false,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // [security]
 // ---------------------------------------------------------------------------
 
@@ -566,6 +614,8 @@ pub struct SecurityConfig {
     pub low_ttl: LowTtlConfig,
     /// ASN IP-range filtering: block responses resolving into known-bad CIDR ranges.
     pub asn_filter: AsnFilterConfig,
+    /// Suspicion score thresholds and logging policy.
+    pub scoring: ScoringConfig,
 }
 
 // ---------------------------------------------------------------------------

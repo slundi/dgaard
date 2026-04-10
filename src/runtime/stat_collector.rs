@@ -1,4 +1,5 @@
 use crate::CONFIG;
+use crate::model::StatBlockReason;
 use crate::stats::StatsReceiver;
 use tokio::sync::watch;
 
@@ -140,7 +141,7 @@ pub(crate) async fn process_stat_message(
     domain_map: &mut std::collections::HashMap<u64, String>,
     clients: &mut Vec<tokio::net::UnixStream>,
 ) {
-    use crate::model::{StatAction, StatBlockReason, StatMessage};
+    use crate::model::{StatAction, StatMessage};
     use tokio::io::AsyncWriteExt;
 
     match msg {
@@ -160,24 +161,23 @@ pub(crate) async fn process_stat_message(
             // Log based on action
             match &event.action {
                 StatAction::Blocked(reason) => {
-                    let reason_str = match reason {
-                        StatBlockReason::StaticBlacklist => "blocklist",
-                        StatBlockReason::AbpRule => "abp-rule",
-                        StatBlockReason::HighEntropy => "dga",
-                        StatBlockReason::LexicalAnalysis => "lexical",
-                        StatBlockReason::BannedKeyword => "keyword",
-                        StatBlockReason::InvalidStructure => "structure",
-                        StatBlockReason::SuspiciousIdn => "idn",
-                        StatBlockReason::NrdList => "nrd",
-                        StatBlockReason::TldExcluded => "tld",
-                        StatBlockReason::Suspicious => "suspicious",
-                        StatBlockReason::CnameCloaking => "cname-cloaking",
-                        StatBlockReason::ForbiddenQType => "forbidden-qtype",
-                        StatBlockReason::DnsRebinding => "dns-rebinding",
-                        StatBlockReason::LowTtl => "low-ttl",
-                        StatBlockReason::AsnBlocked => "asn-blocked",
-                    };
-                    println!("[BLOCK] {} -> {} ({})", client_ip, domain, reason_str);
+                    println!(
+                        "[BLOCK] {} -> {} ({})",
+                        client_ip,
+                        domain,
+                        stat_block_reason_str(reason)
+                    );
+                }
+                StatAction::HighlySuspicious(reason) => {
+                    let reason_str = stat_block_reason_str(reason);
+                    println!(
+                        "[SUSPICIOUS:HIGH] {} -> {} ({})",
+                        client_ip, domain, reason_str
+                    );
+                }
+                StatAction::Suspicious(reason) => {
+                    let reason_str = stat_block_reason_str(reason);
+                    println!("[SUSPICIOUS] {} -> {} ({})", client_ip, domain, reason_str);
                 }
                 StatAction::Allowed => {
                     // Only log in verbose/debug mode (currently silent)
@@ -202,6 +202,27 @@ pub(crate) async fn process_stat_message(
                 i += 1;
             }
         }
+    }
+}
+
+/// Map a `StatBlockReason` to a short human-readable label for log output.
+fn stat_block_reason_str(reason: &StatBlockReason) -> &'static str {
+    match reason {
+        StatBlockReason::StaticBlacklist => "blocklist",
+        StatBlockReason::AbpRule => "abp-rule",
+        StatBlockReason::HighEntropy => "dga",
+        StatBlockReason::LexicalAnalysis => "lexical",
+        StatBlockReason::BannedKeyword => "keyword",
+        StatBlockReason::InvalidStructure => "structure",
+        StatBlockReason::SuspiciousIdn => "idn",
+        StatBlockReason::NrdList => "nrd",
+        StatBlockReason::TldExcluded => "tld",
+        StatBlockReason::Suspicious => "suspicious",
+        StatBlockReason::CnameCloaking => "cname-cloaking",
+        StatBlockReason::ForbiddenQType => "forbidden-qtype",
+        StatBlockReason::DnsRebinding => "dns-rebinding",
+        StatBlockReason::LowTtl => "low-ttl",
+        StatBlockReason::AsnBlocked => "asn-blocked",
     }
 }
 

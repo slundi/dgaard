@@ -504,6 +504,26 @@ fn parse_rebinding_shield(
     Ok(cfg)
 }
 
+/// Parse `[security.scoring]` section.
+fn parse_scoring(table: &toml_span::value::Table<'_>) -> Result<ScoringConfig, ConfigError> {
+    let mut cfg = ScoringConfig::default();
+
+    if let Some(n) = get_integer(table, "blocking_threshold")? {
+        cfg.blocking_threshold = n as u8;
+    }
+    if let Some(n) = get_integer(table, "highly_suspicious_threshold")? {
+        cfg.highly_suspicious_threshold = n as u8;
+    }
+    if let Some(n) = get_integer(table, "suspicious_threshold")? {
+        cfg.suspicious_threshold = n as u8;
+    }
+    if let Some(b) = get_bool(table, "log_suspicious")? {
+        cfg.log_suspicious = b;
+    }
+
+    Ok(cfg)
+}
+
 /// Parse `[security]` section with all sub-sections.
 fn parse_security(table: &toml_span::value::Table<'_>) -> Result<SecurityConfig, ConfigError> {
     let mut cfg = SecurityConfig::default();
@@ -534,6 +554,9 @@ fn parse_security(table: &toml_span::value::Table<'_>) -> Result<SecurityConfig,
     }
     if let Some(t) = get_table(table, "asn_filter")? {
         cfg.asn_filter = parse_asn_filter(t)?;
+    }
+    if let Some(t) = get_table(table, "scoring")? {
+        cfg.scoring = parse_scoring(t)?;
     }
 
     Ok(cfg)

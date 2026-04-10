@@ -48,6 +48,12 @@ pub enum StatAction {
     Proxied,
     /// Query was blocked with a specific reason
     Blocked(StatBlockReason),
+    /// Query was forwarded but scored above the suspicious threshold.
+    /// Carries the primary contributing reason for telemetry.
+    Suspicious(StatBlockReason),
+    /// Query was forwarded but scored above the highly-suspicious threshold.
+    /// Carries the primary contributing reason for telemetry.
+    HighlySuspicious(StatBlockReason),
 }
 
 /// Compact block reason for telemetry (uses u8 discriminants).

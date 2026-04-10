@@ -132,6 +132,14 @@ impl StatMessage {
                         buf.push(2);
                         buf.push(reason as u8);
                     }
+                    StatAction::Suspicious(reason) => {
+                        buf.push(3);
+                        buf.push(reason as u8);
+                    }
+                    StatAction::HighlySuspicious(reason) => {
+                        buf.push(4);
+                        buf.push(reason as u8);
+                    }
                 }
             }
         }
@@ -189,6 +197,30 @@ impl StatMessage {
                         }
                         match StatBlockReason::try_from(payload[33]) {
                             Ok(reason) => StatAction::Blocked(reason),
+                            Err(e) => {
+                                eprintln!("Unknown reason: {:?}", e);
+                                return None;
+                            }
+                        }
+                    }
+                    3 => {
+                        if payload.len() < 34 {
+                            return None;
+                        }
+                        match StatBlockReason::try_from(payload[33]) {
+                            Ok(reason) => StatAction::Suspicious(reason),
+                            Err(e) => {
+                                eprintln!("Unknown reason: {:?}", e);
+                                return None;
+                            }
+                        }
+                    }
+                    4 => {
+                        if payload.len() < 34 {
+                            return None;
+                        }
+                        match StatBlockReason::try_from(payload[33]) {
+                            Ok(reason) => StatAction::HighlySuspicious(reason),
                             Err(e) => {
                                 eprintln!("Unknown reason: {:?}", e);
                                 return None;

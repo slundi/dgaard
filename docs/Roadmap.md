@@ -176,26 +176,9 @@ println!("{}[OK]{} Dgaard is running", GREEN, RESET);
   * high entropy on TXT is very very very often for bad stuffs
   * DNS rebinding give the highest score: +10 (immediate blocking)
   * forbidden words + suspicious TLD: +10 (immediate blocking)
-```rust
-struct SuspicionScore {
-    total: u8,
-    reasons: Vec<BlockReason>,
-}
-
-impl SuspicionScore {
-    fn add(&mut self, points: u8, reason: BlockReason) {
-        self.total = self.total.saturating_add(points);
-        self.reasons.push(reason);
-    }
-
-    fn is_malicious(&self) -> bool {
-        self.total >= 10
-    }
-}
-```
-* [ ] **Scoring engine**: for a scoring from 0 to ten, we can consider: 0-3 is safe, 4-6 is suspicious (so we can have full log), 7-9 is highly suspicious, 10 will block
-  * [ ] `blocking_threshold` so the user can configure it instead of having the hardcoded 10
-  * [ ] `log_suspicion_threshold` log when in the unix socket when the threshold is reaching it
+* [x] **Scoring engine**: for a scoring from 0 to ten, we can consider: 0-3 is safe, 4-6 is suspicious (so we can have full log), 7-9 is highly suspicious, 10 will block
+  * [x] `blocking_threshold` so the user can configure it instead of having the hardcoded 10
+  * [x] `log_suspicion_threshold` log when in the unix socket when the threshold is reaching it
 * [ ] **TXT filtering**:
   * [ ] max TXT length
   * [ ] max TXT paquet per second/minute?

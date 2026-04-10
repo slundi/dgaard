@@ -39,11 +39,12 @@ pub fn compute_score(domain: &str) -> SuspicionScore {
     let mut score = SuspicionScore::new();
     let config = CONFIG.load();
     let engine = CURRENT_ENGINE.load();
+    let blocking_threshold = config.security.scoring.blocking_threshold;
 
     // 1. Long domain check (very cheap)
     if domain.len() > LONG_DOMAIN_THRESHOLD {
         score.add(score_points::LONG_DOMAIN, BlockReason::InvalidStructure);
-        if score.is_malicious() {
+        if score.total >= blocking_threshold {
             return score;
         }
     }
@@ -52,7 +53,7 @@ pub fn compute_score(domain: &str) -> SuspicionScore {
     let depth = domain.bytes().filter(|&b| b == b'.').count();
     if depth >= DEEP_SUBDOMAIN_THRESHOLD {
         score.add(score_points::DEEP_SUBDOMAIN, BlockReason::InvalidStructure);
-        if score.is_malicious() {
+        if score.total >= blocking_threshold {
             return score;
         }
     }
@@ -70,7 +71,7 @@ pub fn compute_score(domain: &str) -> SuspicionScore {
         } else {
             score.add(score_points::SUSPICIOUS_TLD, BlockReason::TldExcluded);
         }
-        if score.is_malicious() {
+        if score.total >= blocking_threshold {
             return score;
         }
     }
@@ -78,7 +79,7 @@ pub fn compute_score(domain: &str) -> SuspicionScore {
     // 4. IDN/Punycode homograph check
     if is_idn_suspicious(domain) {
         score.add(score_points::IDN_HOMOGRAPH, BlockReason::SuspiciousIdn);
-        if score.is_malicious() {
+        if score.total >= blocking_threshold {
             return score;
         }
     }
@@ -86,7 +87,7 @@ pub fn compute_score(domain: &str) -> SuspicionScore {
     // 5. NRD check: newly registered domains are inherently more suspicious
     if is_nrd(domain) {
         score.add(score_points::NRD, BlockReason::NrdList);
-        if score.is_malicious() {
+        if score.total >= blocking_threshold {
             return score;
         }
     }
@@ -110,7 +111,7 @@ pub fn compute_score(domain: &str) -> SuspicionScore {
                     score_points::ENTROPY_HIGH,
                     BlockReason::HighEntropy(entropy),
                 );
-                if score.is_malicious() {
+                if score.total >= blocking_threshold {
                     return score;
                 }
             }
@@ -150,6 +151,7 @@ pub fn compute_score(domain: &str) -> SuspicionScore {
 pub fn score_answer(score: &mut SuspicionScore, answer: &InspectedAnswer) {
     let config = CONFIG.load();
     let structure = &config.security.structure;
+    let blocking_threshold = config.security.scoring.blocking_threshold;
 
     // Check total answer record count across all types
     let total = answer.a_records.len()
@@ -161,7 +163,7 @@ pub fn score_answer(score: &mut SuspicionScore, answer: &InspectedAnswer) {
             score_points::EXCESSIVE_ANSWERS,
             BlockReason::InvalidStructure,
         );
-        if score.is_malicious() {
+        if score.total >= blocking_threshold {
             return;
         }
     }
@@ -175,7 +177,7 @@ pub fn score_answer(score: &mut SuspicionScore, answer: &InspectedAnswer) {
         && ttl < low_ttl_cfg.threshold_secs
     {
         score.add(score_points::LOW_TTL, BlockReason::LowTtl(ttl));
-        if score.is_malicious() {
+        if score.total >= blocking_threshold {
             return;
         }
     }
@@ -188,7 +190,7 @@ pub fn score_answer(score: &mut SuspicionScore, answer: &InspectedAnswer) {
                 score_points::TXT_RECORD_TOO_LONG,
                 BlockReason::InvalidStructure,
             );
-            if score.is_malicious() {
+            if score.total >= blocking_threshold {
                 return;
             }
             break;
