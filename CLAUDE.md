@@ -73,7 +73,7 @@ To maintain a footprint under 5MB and support MIPS/ARM architectures, we use a s
 * **Configuration**: `toml-span` (Low-dependency, span-aware parsing).
 * **Serialization**: `rkyv` (Zero-copy) and `postcard` (Compact binary).
 * **Hashing**: `xxhash-rust` (XXH3_64) for O(1) lookups.
-* *DNS Protocol*: `trust-dns-proto` for low-level packet manipulation.
+* **DNS Protocol**: `trust-dns-proto` for low-level packet manipulation.
 
 ### 📂 File Tree Structure
 
@@ -85,6 +85,7 @@ The project follows a "Logic vs. Engine" separation:
 ├── dgaard.toml           # Example configuration
 ├── AGENT.md              # Logic & Philosophy
 ├── README.md             # Market-facing docs
+├── config.example.toml   # Documented example/template configuration
 ├── src/
 │   ├── main.rs           # Entry point & Runtime Builder
 │   ├── config.rs         # toml-span mapping
@@ -100,6 +101,15 @@ The project follows a "Logic vs. Engine" separation:
 │   └── stats/            # Unix Socket & Telemetry
 └── tests/                # Integration tests
 ```
+
+### Development steps
+
+After coding (implementing feature, refactoring, fixing) you must ends with the following steps:
+
+1. format the code using `cargo fmt`
+2. ensure nothing is broken by running `cargo nextest run`
+3. run cargo clippy to fix warnings from modified coded
+4. suggest a conventionnal commit
 
 ### 🧪 Testing Strategy
 
