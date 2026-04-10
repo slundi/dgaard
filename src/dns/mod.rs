@@ -10,7 +10,7 @@ use tokio::net::UdpSocket;
 use crate::dns::packet::DnsPacket;
 use crate::dns::upstream::forward_to_upstream;
 use crate::model::{Action, StatAction, StatBlockReason};
-use crate::resolve::{check_qtype, resolve};
+use crate::resolve::{check_qtype, resolve_with_score, score_answer};
 use crate::{STATS_COUNTERS, STATS_SENDER};
 
 /// Handle an incoming DNS query by running it through the filter pipeline.
@@ -52,26 +52,73 @@ pub(crate) async fn handle_query(
     }
 
     // 2b. Run domain through the filter pipeline
-    let action = resolve(&dns_packet.domain);
+    let resolve_result = resolve_with_score(&dns_packet.domain);
+    let action = resolve_result.action;
+    let mut score = resolve_result.score;
 
     // 3. Process the action and determine stat action
     let (response, stat_action) = match &action {
         Action::Allow => {
-            STATS_COUNTERS.increment_allowed();
-            // Forward to upstream DNS server
-            let resp = match forward_to_upstream(&packet).await {
-                Ok(upstream_response) => upstream_response,
-                Err(_) => DnsPacket::build_servfail_response(&dns_packet.message),
-            };
-            (resp, Some(StatAction::Allowed))
+            match forward_to_upstream(&packet).await {
+                Ok(upstream_bytes) => {
+                    // DPI: score the upstream answer; block if it crosses the malicious threshold
+                    if let Some(answer) = InspectedAnswer::from_response(&upstream_bytes) {
+                        score_answer(&mut score, &answer);
+                    }
+                    if score.is_malicious() {
+                        STATS_COUNTERS.increment_blocked();
+                        let stat_reason = score
+                            .primary_reason()
+                            .map(StatBlockReason::from)
+                            .unwrap_or(StatBlockReason::Suspicious);
+                        (
+                            DnsPacket::build_nxdomain_response(&dns_packet.message),
+                            Some(StatAction::Blocked(stat_reason)),
+                        )
+                    } else {
+                        STATS_COUNTERS.increment_allowed();
+                        (upstream_bytes, Some(StatAction::Allowed))
+                    }
+                }
+                Err(_) => {
+                    STATS_COUNTERS.increment_allowed();
+                    (
+                        DnsPacket::build_servfail_response(&dns_packet.message),
+                        Some(StatAction::Allowed),
+                    )
+                }
+            }
         }
         Action::ProxyToUpstream => {
-            STATS_COUNTERS.increment_proxied();
-            let resp = match forward_to_upstream(&packet).await {
-                Ok(upstream_response) => upstream_response,
-                Err(_) => DnsPacket::build_servfail_response(&dns_packet.message),
-            };
-            (resp, Some(StatAction::Proxied))
+            match forward_to_upstream(&packet).await {
+                Ok(upstream_bytes) => {
+                    // DPI: score the upstream answer; block if it crosses the malicious threshold
+                    if let Some(answer) = InspectedAnswer::from_response(&upstream_bytes) {
+                        score_answer(&mut score, &answer);
+                    }
+                    if score.is_malicious() {
+                        STATS_COUNTERS.increment_blocked();
+                        let stat_reason = score
+                            .primary_reason()
+                            .map(StatBlockReason::from)
+                            .unwrap_or(StatBlockReason::Suspicious);
+                        (
+                            DnsPacket::build_nxdomain_response(&dns_packet.message),
+                            Some(StatAction::Blocked(stat_reason)),
+                        )
+                    } else {
+                        STATS_COUNTERS.increment_proxied();
+                        (upstream_bytes, Some(StatAction::Proxied))
+                    }
+                }
+                Err(_) => {
+                    STATS_COUNTERS.increment_proxied();
+                    (
+                        DnsPacket::build_servfail_response(&dns_packet.message),
+                        Some(StatAction::Proxied),
+                    )
+                }
+            }
         }
         Action::Block(reason) => {
             STATS_COUNTERS.increment_blocked();
