@@ -312,11 +312,6 @@ impl SuspicionScore {
         self.reasons.push(reason);
     }
 
-    /// Add points without a specific reason (for sub-threshold signals).
-    pub fn add_points(&mut self, points: u8) {
-        self.total = self.total.saturating_add(points);
-    }
-
     /// Check if the domain should be considered malicious (score >= 10).
     pub fn is_malicious(&self) -> bool {
         self.total >= 10
@@ -364,51 +359,6 @@ mod tests {
         assert_eq!(score.reasons.len(), 1);
         assert!(score.is_suspicious());
         assert!(!score.is_malicious());
-    }
-
-    #[test]
-    fn test_suspicion_score_add_points() {
-        let mut score = SuspicionScore::new();
-        score.add_points(3);
-        assert_eq!(score.total, 3);
-        assert!(score.reasons.is_empty());
-    }
-
-    #[test]
-    fn test_suspicion_score_thresholds() {
-        let mut score = SuspicionScore::new();
-
-        // 0-3: Safe
-        score.add_points(3);
-        assert!(!score.is_suspicious());
-        assert!(!score.is_highly_suspicious());
-        assert!(!score.is_malicious());
-
-        // 4-6: Suspicious
-        score.add_points(1);
-        assert!(score.is_suspicious());
-        assert!(!score.is_highly_suspicious());
-        assert!(!score.is_malicious());
-
-        // 7-9: Highly suspicious
-        score.add_points(3);
-        assert!(score.is_suspicious());
-        assert!(score.is_highly_suspicious());
-        assert!(!score.is_malicious());
-
-        // 10+: Malicious
-        score.add_points(3);
-        assert!(score.is_suspicious());
-        assert!(score.is_highly_suspicious());
-        assert!(score.is_malicious());
-    }
-
-    #[test]
-    fn test_suspicion_score_saturating() {
-        let mut score = SuspicionScore::new();
-        score.add_points(200);
-        score.add_points(100); // Would overflow without saturation
-        assert_eq!(score.total, 255);
     }
 
     #[test]

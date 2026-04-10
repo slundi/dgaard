@@ -78,20 +78,6 @@ pub struct ResolveResult {
     pub score: SuspicionScore,
 }
 
-/// Main resolution function that processes a domain through the configured pipeline.
-///
-/// This function iterates through the pipeline steps defined in the configuration
-/// and returns an Action as soon as a definitive verdict is reached.
-///
-/// # Arguments
-/// * `domain` - The domain name to resolve (lowercase, no trailing dot)
-///
-/// # Returns
-/// An `Action` indicating what should be done with the DNS query.
-pub fn resolve(domain: &str) -> Action {
-    resolve_with_score(domain).action
-}
-
 /// Resolution function that also returns the computed suspicion score.
 ///
 /// Use this when you need access to the suspicion score for logging or telemetry.
@@ -285,7 +271,7 @@ pub mod tests {
         let engine = create_test_engine(&["ads.tracker.com"], &[], &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
-        let action = resolve("ads.tracker.com");
+        let action = resolve_with_score("ads.tracker.com").action;
         assert!(matches!(
             action,
             Action::Block(BlockReason::StaticBlacklist(_))
@@ -298,7 +284,7 @@ pub mod tests {
         let engine = create_test_engine(&[], &["trusted.example.com"], &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
-        let action = resolve("trusted.example.com");
+        let action = resolve_with_score("trusted.example.com").action;
         assert!(matches!(action, Action::Allow));
     }
 
@@ -308,7 +294,7 @@ pub mod tests {
         let engine = create_test_engine(&[], &[], &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
-        let action = resolve("unknown.example.com");
+        let action = resolve_with_score("unknown.example.com").action;
         assert!(matches!(action, Action::ProxyToUpstream));
     }
 
@@ -319,7 +305,7 @@ pub mod tests {
         CURRENT_ENGINE.store(Arc::new(engine));
 
         // Excessive subdomain depth
-        let action = resolve("a.b.c.d.e.f.g.h.i.j.k.example.com");
+        let action = resolve_with_score("a.b.c.d.e.f.g.h.i.j.k.example.com").action;
         assert!(matches!(
             action,
             Action::Block(BlockReason::InvalidStructure)
@@ -332,7 +318,7 @@ pub mod tests {
         let engine = create_test_engine(&[], &[], &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
-        let action = resolve("xn--pple-43d.com");
+        let action = resolve_with_score("xn--pple-43d.com").action;
         assert!(matches!(action, Action::Block(BlockReason::SuspiciousIdn)));
     }
 
@@ -373,7 +359,7 @@ pub mod tests {
         let engine = create_engine_with_tld_block(&["xyz"]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
-        let action = resolve("malware.xyz");
+        let action = resolve_with_score("malware.xyz").action;
         assert!(
             matches!(action, Action::Block(BlockReason::AbpRule(_))),
             "Domain under blocked TLD should be blocked, got: {:?}",
@@ -404,7 +390,7 @@ pub mod tests {
         let engine = create_engine_with_wildcard_patterns(&["ads*.example.com"]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
-        let action = resolve("ads1.example.com");
+        let action = resolve_with_score("ads1.example.com").action;
         assert!(
             matches!(action, Action::Block(BlockReason::AbpRule(ref s)) if s == "glob"),
             "Domain matching wildcard pattern should be blocked with 'glob' reason, got: {:?}",
@@ -418,7 +404,7 @@ pub mod tests {
         let engine = create_engine_with_wildcard_patterns(&["ads*.example.com"]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
-        let action = resolve("safe.example.com");
+        let action = resolve_with_score("safe.example.com").action;
         assert!(
             matches!(action, Action::ProxyToUpstream),
             "Domain not matching pattern should be proxied, got: {:?}",
@@ -485,7 +471,7 @@ pub mod tests {
         let engine = create_lexical_engine(&["porno"], true, &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
-        let action = resolve("porno.com");
+        let action = resolve_with_score("porno.com").action;
         assert!(
             matches!(action, Action::Block(BlockReason::BannedKeyword(ref k)) if k == "porno"),
             "Domain with banned keyword should be blocked, got: {:?}",
@@ -501,7 +487,7 @@ pub mod tests {
         let engine = create_lexical_engine(&["porno"], true, &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
-        let action = resolve("google.com");
+        let action = resolve_with_score("google.com").action;
         assert!(
             matches!(action, Action::ProxyToUpstream),
             "Domain without banned keyword should be proxied, got: {:?}",
