@@ -281,7 +281,7 @@ pub async fn reload_lists() {
         println!("Loading NRD list from {}", sources.nrd_list_path);
         load_source(
             &sources.nrd_list_path,
-            DomainEntryFlags::NONE,
+            DomainEntryFlags::NRD,
             &client,
             &mut fast_map,
             &mut hierarchical_list,

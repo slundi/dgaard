@@ -148,7 +148,7 @@ impl FilterEngine {
         if !sources.nrd_list_path.is_empty()
             && let Err(e) = load_list_file(
                 &sources.nrd_list_path,
-                DomainEntryFlags::NONE,
+                DomainEntryFlags::NRD,
                 &mut fast_map,
                 &mut hierarchical_list,
                 &mut wildcard_patterns,

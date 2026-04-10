@@ -11,6 +11,8 @@ bitflags! {
         const NO_LOG = 0b0001_0000;
         /// Use for ABP lines that contains CSS or JS or any filter rule that a browser can render.
         /// It will be usefull generate a light list for web browser so the user can serve it.
+        /// Domain is on the Newly Registered Domain list (<24h old).
+        const NRD = 0b0010_0000;
         const INVALID = 0b1000_0000;
     }
 }
