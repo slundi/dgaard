@@ -524,7 +524,7 @@ impl Default for RebindingShieldConfig {
 /// threat intelligence feeds.
 ///
 /// Maps to `[security.asn_filter]` in the configuration file.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Default)]
 pub struct AsnFilterConfig {
     /// Master switch — set to `false` to disable ASN range filtering entirely.
     pub enabled: bool,
@@ -538,16 +538,6 @@ pub struct AsnFilterConfig {
     /// Ranges are parsed once at engine build time for zero-allocation hot-path
     /// matching. Invalid entries are skipped with a warning.
     pub blocked_ranges: Vec<String>,
-}
-
-impl Default for AsnFilterConfig {
-    fn default() -> Self {
-        // Disabled by default: requires explicit operator configuration.
-        Self {
-            enabled: false,
-            blocked_ranges: Vec::new(),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

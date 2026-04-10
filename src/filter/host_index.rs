@@ -40,10 +40,10 @@ pub fn write_host_index(path: &str, index: &HashMap<u64, String>) -> std::io::Re
         return Ok(());
     }
 
-    if let Some(parent) = Path::new(path).parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = Path::new(path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
     }
 
     let file = File::create(path)?;

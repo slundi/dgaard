@@ -231,10 +231,10 @@ fn write_browser_rules(path: &str, rules: &[String]) -> std::io::Result<()> {
     if path.is_empty() || rules.is_empty() {
         return Ok(());
     }
-    if let Some(parent) = std::path::Path::new(path).parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = std::path::Path::new(path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
     }
     let file = std::fs::File::create(path)?;
     let mut w = std::io::BufWriter::new(file);
@@ -344,17 +344,17 @@ pub async fn reload_lists() {
     CURRENT_ENGINE.store(Arc::new(new_engine));
 
     // Write host index if configured
-    if !cfg.sources.host_index_path.is_empty() {
-        if let Err(e) = host_index::write_host_index(&cfg.sources.host_index_path, &host_index) {
-            eprintln!("Warning: Failed to write host index: {}", e);
-        }
+    if !cfg.sources.host_index_path.is_empty()
+        && let Err(e) = host_index::write_host_index(&cfg.sources.host_index_path, &host_index)
+    {
+        eprintln!("Warning: Failed to write host index: {}", e);
     }
 
     // Write browser rules if configured
-    if !cfg.sources.browser_rules_path.is_empty() {
-        if let Err(e) = write_browser_rules(&cfg.sources.browser_rules_path, &browser_rules) {
-            eprintln!("Warning: Failed to write browser rules: {}", e);
-        }
+    if !cfg.sources.browser_rules_path.is_empty()
+        && let Err(e) = write_browser_rules(&cfg.sources.browser_rules_path, &browser_rules)
+    {
+        eprintln!("Warning: Failed to write browser rules: {}", e);
     }
 }
 
