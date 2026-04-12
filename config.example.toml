@@ -253,7 +253,12 @@ max_label_length = 60
 nrd_list_path = "/tmp/nrd_daily.txt"
 
 # Static blocklists (Support for multiple files)
-blacklists = ["/etc/dgaard/lists/adaway.txt", "/etc/dgaard/lists/malware_domains.txt"]
+blacklists = [
+    # "/etc/dgaard/lists/adaway.txt",
+    # "/etc/dgaard/lists/malware_domains.txt",
+    "https://raw.githubusercontent.com/Perflyst/PiHoleBlocklist/refs/heads/master/SmartTV.txt",
+    "https://easylist.to/easylist/easylist.txt"
+]
 
 # Whitelists (Overwrites all other filters)
 whitelists = ["/etc/dgaard/lists/personal_whitelist.txt", "/etc/dgaard/lists/cdn_providers.txt"]
