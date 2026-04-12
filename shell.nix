@@ -25,6 +25,8 @@ pkgs.mkShell {
     # cargo-deb # build deb
     # cargo-deps # dependency graph
     rustfmt
+
+    just
   ];
 
   packages = with pkgs; [
