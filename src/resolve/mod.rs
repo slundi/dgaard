@@ -506,7 +506,6 @@ pub mod tests {
         let result = super::resolve_with_score("google.com");
         assert!(matches!(result.action, Action::ProxyToUpstream));
         assert_eq!(result.score.total, 0);
-        assert!(!result.score.is_suspicious());
     }
 
     #[test]

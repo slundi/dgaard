@@ -344,21 +344,6 @@ impl SuspicionScore {
         self.reasons.push(reason);
     }
 
-    /// Check if the domain should be considered malicious (score >= 10).
-    pub fn is_malicious(&self) -> bool {
-        self.total >= 10
-    }
-
-    /// Check if the domain is suspicious (score >= 4).
-    pub fn is_suspicious(&self) -> bool {
-        self.total >= 4
-    }
-
-    /// Check if the domain is highly suspicious (score >= 7).
-    pub fn is_highly_suspicious(&self) -> bool {
-        self.total >= 7
-    }
-
     /// Get the primary block reason (the one with highest individual score contribution).
     pub fn primary_reason(&self) -> Option<&BlockReason> {
         self.reasons.first()
@@ -372,26 +357,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // SuspicionScore tests
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_suspicion_score_new() {
-        let score = SuspicionScore::new();
-        assert_eq!(score.total, 0);
-        assert!(score.reasons.is_empty());
-        assert!(!score.is_suspicious());
-        assert!(!score.is_highly_suspicious());
-        assert!(!score.is_malicious());
-    }
-
-    #[test]
-    fn test_suspicion_score_add() {
-        let mut score = SuspicionScore::new();
-        score.add(4, BlockReason::HighEntropy(4.5));
-        assert_eq!(score.total, 4);
-        assert_eq!(score.reasons.len(), 1);
-        assert!(score.is_suspicious());
-        assert!(!score.is_malicious());
-    }
 
     #[test]
     fn test_suspicion_score_primary_reason() {

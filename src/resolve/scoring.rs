@@ -325,7 +325,6 @@ mod tests {
         let score = compute_score("google.com");
         assert_eq!(score.total, 0);
         assert!(score.reasons.is_empty());
-        assert!(!score.is_suspicious());
     }
 
     #[test]
@@ -335,8 +334,6 @@ mod tests {
         let long_domain = format!("{}.com", "a".repeat(65));
         let score = compute_score(&long_domain);
         assert_eq!(score.total, score_points::LONG_DOMAIN);
-        // 3 points is below the suspicious threshold (4)
-        assert!(!score.is_suspicious());
     }
 
     #[test]
@@ -359,7 +356,6 @@ mod tests {
             score_points::IDN_HOMOGRAPH,
             score.total
         );
-        assert!(score.is_suspicious());
         // Verify IDN reason is included
         assert!(
             score
@@ -571,7 +567,6 @@ mod tests {
         let answer = make_answer_with_cnames(&["ad-server.net"]);
         score_answer(&mut score, &answer);
         assert_eq!(score.total, score_points::CNAME_CLOAKING);
-        assert!(score.is_malicious());
         assert!(
             score
                 .reasons
@@ -593,7 +588,6 @@ mod tests {
         let answer = make_answer_with_cnames(&["pixel.tracking.evil.net"]);
         score_answer(&mut score, &answer);
         assert_eq!(score.total, score_points::CNAME_CLOAKING);
-        assert!(score.is_malicious());
     }
 
     #[test]
@@ -609,7 +603,6 @@ mod tests {
         let answer = make_answer_with_cnames(&["clean-relay.com", "malware.io"]);
         score_answer(&mut score, &answer);
         assert_eq!(score.total, score_points::CNAME_CLOAKING);
-        assert!(score.is_malicious());
     }
 
     #[test]
@@ -704,7 +697,6 @@ mod tests {
         let answer = make_answer_with_ips(&["192.168.1.1".parse().unwrap()], &[]);
         score_answer(&mut score, &answer);
         assert_eq!(score.total, score_points::DNS_REBINDING);
-        assert!(score.is_malicious());
         assert!(
             score
                 .reasons
@@ -719,7 +711,6 @@ mod tests {
         let mut score = SuspicionScore::new();
         let answer = make_answer_with_ips(&["127.0.0.1".parse().unwrap()], &[]);
         score_answer(&mut score, &answer);
-        assert!(score.is_malicious());
     }
 
     #[test]
@@ -729,7 +720,6 @@ mod tests {
         let answer = make_answer_with_ips(&[], &["fd00::1".parse().unwrap()]);
         score_answer(&mut score, &answer);
         assert_eq!(score.total, score_points::DNS_REBINDING);
-        assert!(score.is_malicious());
     }
 
     #[test]
@@ -895,7 +885,6 @@ mod tests {
         let answer = make_answer_with_ips(&["203.0.113.42".parse().unwrap()], &[]);
         score_answer(&mut score, &answer);
         assert_eq!(score.total, score_points::ASN_BLOCKED);
-        assert!(score.is_malicious());
         assert!(
             score
                 .reasons
@@ -919,7 +908,6 @@ mod tests {
         let answer = make_answer_with_ips(&[], &["2001:db8::cafe".parse().unwrap()]);
         score_answer(&mut score, &answer);
         assert_eq!(score.total, score_points::ASN_BLOCKED);
-        assert!(score.is_malicious());
     }
 
     #[test]
@@ -994,20 +982,5 @@ mod tests {
         let answer = make_answer_with_ips(&["203.0.113.1".parse().unwrap()], &[]);
         score_answer(&mut score, &answer);
         assert_eq!(score.total, score_points::ASN_BLOCKED);
-        assert!(score.is_malicious());
-    }
-
-    #[test]
-    fn test_score_threshold_malicious() {
-        setup_test_config();
-        // Create a domain that should hit the malicious threshold
-        // IDN (6) + deep subdomain (3) + long domain (3) = 12 >= 10
-        let malicious = format!("xn--evil.{}.a.b.c.d.e.example.com", "x".repeat(50));
-        let score = compute_score(&malicious);
-        assert!(
-            score.is_malicious(),
-            "Expected malicious score >= 10, got {}",
-            score.total
-        );
     }
 }
