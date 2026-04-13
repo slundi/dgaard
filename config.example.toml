@@ -160,7 +160,39 @@ timeout_ms = 2000
 exclude = [".top", ".xyz", ".bid", ".country", ".stream", ".gdn"]
 
 # Conditional blocking: blocks if it contains a banned_keyword AND this TLD
-suspicious_tlds = [".biz", ".bible", ".top"]
+suspicious_tlds = [
+    ".biz",
+    ".bible",
+    ".top",
+    ".su",
+    ".li",
+    ".es",
+    ".sbs",
+    ".cfd",
+    ".ru",
+    ".pub",
+    # also works without dots
+    "so",
+    "icu",
+    "re",
+    "ua",
+    "online",
+    "ro",
+    "click",
+    "ar",
+    "vip",
+    "xin",
+    "cn",
+    "xyz",
+    "bond",
+    "cc",
+    "win",
+    "help",
+    "support",
+    "quest",
+    "buzz",
+    "fyi"
+]
 
 # DNS Rebinding Shield configuration.
 #
@@ -253,15 +285,42 @@ max_label_length = 60
 nrd_list_path = "/tmp/nrd_daily.txt"
 
 # Static blocklists (Support for multiple files)
+# You can get some here: https://filterlists.com/
 blacklists = [
     # "/etc/dgaard/lists/adaway.txt",
     # "/etc/dgaard/lists/malware_domains.txt",
     "https://raw.githubusercontent.com/Perflyst/PiHoleBlocklist/refs/heads/master/SmartTV.txt",
-    "https://easylist.to/easylist/easylist.txt"
+    "https://pgl.yoyo.org/as/serverlist.php?hostformat=adblock;showintro=1&mimetype=plaintext",
+    "https://filters.adtidy.org/extension/ublock/filters/11.txt",
+    # "https://easylist.to/easylist/easylist.txt",
+    "https://easylist-downloads.adblockplus.org/liste_ar+liste_fr+easylist.txt",
+
+    # annoyances
+    "https://filters.adtidy.org/extension/ublock/filters/14.txt",
+    # "https://easylist-downloads.adblockplus.org/fanboy-annoyance.txt"
+    # "https://fanboy.co.nz/enhancedstats.txt"
+
+    # widgets
+    "https://filters.adtidy.org/windows/filters/22.txt",
+
+    # cookie notice
+    "https://www.i-dont-care-about-cookies.eu/abp/",
+
+    # privacy
+    "https://filters.adtidy.org/extension/ublock/filters/118_optimized.txt",
+    # "https://filters.adtidy.org/extension/ublock/filters/3.txt"
+    # "https://filters.adtidy.org/windows/filters/17.txt"
+
+    # malware
+    "https://raw.githubusercontent.com/DandelionSprout/adfilt/master/Alternate%20versions%20Anti-Malware%20List/AntiMalwareAdGuard.txt"
 ]
 
 # Whitelists (Overwrites all other filters)
-whitelists = ["/etc/dgaard/lists/personal_whitelist.txt", "/etc/dgaard/lists/cdn_providers.txt"]
+whitelists = [
+    # "/etc/dgaard/lists/personal_whitelist.txt",
+    # "/etc/dgaard/lists/cdn_providers.txt"
+    "https://raw.githubusercontent.com/anudeepND/whitelist/master/domains/whitelist.txt"
+]
 
 update_interval_hours = 24
 # If the download fails, how long to wait before retrying
