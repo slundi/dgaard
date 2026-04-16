@@ -105,12 +105,13 @@ mod tests {
         );
 
         assert!(
-            validate_input("README.md").unwrap() == Resource::FilePath(PathBuf::from("README.md"))
+            validate_input("../README.md").unwrap()
+                == Resource::FilePath(PathBuf::from("../README.md"))
         );
 
         assert!(
-            validate_input("../dgaard/README.md").unwrap()
-                == Resource::FilePath(PathBuf::from("../dgaard/README.md"))
+            validate_input("../dgaard/Cargo.toml").unwrap()
+                == Resource::FilePath(PathBuf::from("../dgaard/Cargo.toml"))
         );
 
         assert!(validate_input("not_a_valid_resource").is_err())
