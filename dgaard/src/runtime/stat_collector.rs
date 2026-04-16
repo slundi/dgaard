@@ -205,24 +205,59 @@ pub(crate) async fn process_stat_message(
     }
 }
 
-/// Map a `StatBlockReason` to a short human-readable label for log output.
-fn stat_block_reason_str(reason: &StatBlockReason) -> &'static str {
-    match reason {
-        StatBlockReason::StaticBlacklist => "blocklist",
-        StatBlockReason::AbpRule => "abp-rule",
-        StatBlockReason::HighEntropy => "dga",
-        StatBlockReason::LexicalAnalysis => "lexical",
-        StatBlockReason::BannedKeyword => "keyword",
-        StatBlockReason::InvalidStructure => "structure",
-        StatBlockReason::SuspiciousIdn => "idn",
-        StatBlockReason::NrdList => "nrd",
-        StatBlockReason::TldExcluded => "tld",
-        StatBlockReason::Suspicious => "suspicious",
-        StatBlockReason::CnameCloaking => "cname-cloaking",
-        StatBlockReason::ForbiddenQType => "forbidden-qtype",
-        StatBlockReason::DnsRebinding => "dns-rebinding",
-        StatBlockReason::LowTtl => "low-ttl",
-        StatBlockReason::AsnBlocked => "asn-blocked",
+/// Map a `StatBlockReason` bitflag set to a human-readable label for log output.
+/// Multiple active flags are joined with `+`.
+fn stat_block_reason_str(reason: &StatBlockReason) -> String {
+    let mut parts = Vec::new();
+    if reason.contains(StatBlockReason::STATIC_BLACKLIST) {
+        parts.push("blocklist");
+    }
+    if reason.contains(StatBlockReason::ABP_RULE) {
+        parts.push("abp-rule");
+    }
+    if reason.contains(StatBlockReason::HIGH_ENTROPY) {
+        parts.push("dga");
+    }
+    if reason.contains(StatBlockReason::LEXICAL_ANALYSIS) {
+        parts.push("lexical");
+    }
+    if reason.contains(StatBlockReason::BANNED_KEYWORD) {
+        parts.push("keyword");
+    }
+    if reason.contains(StatBlockReason::INVALID_STRUCTURE) {
+        parts.push("structure");
+    }
+    if reason.contains(StatBlockReason::SUSPICIOUS_IDN) {
+        parts.push("idn");
+    }
+    if reason.contains(StatBlockReason::NRD_LIST) {
+        parts.push("nrd");
+    }
+    if reason.contains(StatBlockReason::TLD_EXCLUDED) {
+        parts.push("tld");
+    }
+    if reason.contains(StatBlockReason::SUSPICIOUS) {
+        parts.push("suspicious");
+    }
+    if reason.contains(StatBlockReason::CNAME_CLOAKING) {
+        parts.push("cname-cloaking");
+    }
+    if reason.contains(StatBlockReason::FORBIDDEN_QTYPE) {
+        parts.push("forbidden-qtype");
+    }
+    if reason.contains(StatBlockReason::DNS_REBINDING) {
+        parts.push("dns-rebinding");
+    }
+    if reason.contains(StatBlockReason::LOW_TTL) {
+        parts.push("low-ttl");
+    }
+    if reason.contains(StatBlockReason::ASN_BLOCKED) {
+        parts.push("asn-blocked");
+    }
+    if parts.is_empty() {
+        "unknown".to_string()
+    } else {
+        parts.join("+")
     }
 }
 

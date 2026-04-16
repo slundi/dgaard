@@ -28,7 +28,7 @@ fn classify_score(
         score
             .primary_reason()
             .map(StatBlockReason::from)
-            .unwrap_or(StatBlockReason::Suspicious)
+            .unwrap_or(StatBlockReason::SUSPICIOUS)
     };
     if score.total >= scoring.blocking_threshold {
         (true, StatAction::Blocked(reason()))

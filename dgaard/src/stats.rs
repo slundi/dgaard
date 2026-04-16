@@ -200,7 +200,7 @@ mod tests {
 
         // Send two events for the same domain
         sender.send_proxied("example.com", addr);
-        sender.send_block("example.com", addr, StatBlockReason::StaticBlacklist);
+        sender.send_block("example.com", addr, StatBlockReason::STATIC_BLACKLIST);
 
         // First domain: mapping + event
         let msg1 = receiver.recv().await.unwrap();

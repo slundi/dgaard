@@ -1,5 +1,7 @@
 use std::net::IpAddr;
 
+use bitflags::bitflags;
+
 use crate::model::BlockReason;
 
 #[derive(Debug, Clone)]
@@ -56,87 +58,62 @@ pub enum StatAction {
     HighlySuspicious(StatBlockReason),
 }
 
-/// Compact block reason for telemetry (uses u8 discriminants).
-/// Maps to the more detailed BlockReason enum used internally.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(u8)]
-pub enum StatBlockReason {
-    /// Hit a static blacklist
-    StaticBlacklist = 0,
-    /// Matched an ABP/wildcard rule
-    AbpRule = 1,
-    /// High Shannon entropy (DGA detection)
-    HighEntropy = 2,
-    /// Failed lexical analysis
-    LexicalAnalysis = 3,
-    /// Blocked by parental control keyword
-    BannedKeyword = 4,
-    /// Invalid structure (depth, length)
-    InvalidStructure = 5,
-    /// Suspicious IDN/Punycode
-    SuspiciousIdn = 6,
-    /// Newly Registered Domain
-    NrdList = 7,
-    /// Excluded TLD
-    TldExcluded = 8,
-    /// Generic suspicious activity (score-based)
-    Suspicious = 9,
-    /// CNAME chain resolves to a known-blacklisted domain (cloaking)
-    CnameCloaking = 10,
-    /// Query type is blocked by the QType Warden policy
-    ForbiddenQType = 11,
-    /// Upstream response resolves a public domain to a private/reserved IP (DNS rebinding)
-    DnsRebinding = 12,
-    /// Abnormally low TTL — fast-flux or short-lived malware infrastructure
-    LowTtl = 13,
-    /// Response resolves to an IP in a user-configured blocked ASN range
-    AsnBlocked = 14,
-}
-
-impl TryFrom<u8> for StatBlockReason {
-    type Error = ();
-
-    /// Convert from u8 discriminant.
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(StatBlockReason::StaticBlacklist),
-            1 => Ok(StatBlockReason::AbpRule),
-            2 => Ok(StatBlockReason::HighEntropy),
-            3 => Ok(StatBlockReason::LexicalAnalysis),
-            4 => Ok(StatBlockReason::BannedKeyword),
-            5 => Ok(StatBlockReason::InvalidStructure),
-            6 => Ok(StatBlockReason::SuspiciousIdn),
-            7 => Ok(StatBlockReason::NrdList),
-            8 => Ok(StatBlockReason::TldExcluded),
-            9 => Ok(StatBlockReason::Suspicious),
-            10 => Ok(StatBlockReason::CnameCloaking),
-            11 => Ok(StatBlockReason::ForbiddenQType),
-            12 => Ok(StatBlockReason::DnsRebinding),
-            13 => Ok(StatBlockReason::LowTtl),
-            14 => Ok(StatBlockReason::AsnBlocked),
-            _ => Err(()),
-        }
+bitflags! {
+    /// Compact block reason flags for telemetry (u16 bitflags).
+    /// Multiple reasons can be combined with `|` to represent composite signals.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct StatBlockReason: u16 {
+        /// Hit a static blacklist
+        const STATIC_BLACKLIST = 1 << 0;
+        /// Matched an ABP/wildcard rule
+        const ABP_RULE = 1 << 1;
+        /// High Shannon entropy (DGA detection)
+        const HIGH_ENTROPY = 1 << 2;
+        /// Failed lexical analysis
+        const LEXICAL_ANALYSIS = 1 << 3;
+        /// Blocked by parental control keyword
+        const BANNED_KEYWORD = 1 << 4;
+        /// Invalid structure (depth, length)
+        const INVALID_STRUCTURE = 1 << 5;
+        /// Suspicious IDN/Punycode
+        const SUSPICIOUS_IDN = 1 << 6;
+        /// Newly Registered Domain
+        const NRD_LIST = 1 << 7;
+        /// Excluded TLD
+        const TLD_EXCLUDED = 1 << 8;
+        /// Generic suspicious activity (score-based)
+        const SUSPICIOUS = 1 << 9;
+        /// CNAME chain resolves to a known-blacklisted domain (cloaking)
+        const CNAME_CLOAKING = 1 << 10;
+        /// Query type is blocked by the QType Warden policy
+        const FORBIDDEN_QTYPE = 1 << 11;
+        /// Upstream response resolves a public domain to a private/reserved IP (DNS rebinding)
+        const DNS_REBINDING = 1 << 12;
+        /// Abnormally low TTL — fast-flux or short-lived malware infrastructure
+        const LOW_TTL = 1 << 13;
+        /// Response resolves to an IP in a user-configured blocked ASN range
+        const ASN_BLOCKED = 1 << 14;
     }
 }
 
 impl From<&BlockReason> for StatBlockReason {
     fn from(reason: &BlockReason) -> Self {
         match reason {
-            BlockReason::StaticBlacklist(_) => StatBlockReason::StaticBlacklist,
-            BlockReason::AbpRule(_) => StatBlockReason::AbpRule,
-            BlockReason::HighEntropy(_) => StatBlockReason::HighEntropy,
-            BlockReason::LexicalAnalysis => StatBlockReason::LexicalAnalysis,
-            BlockReason::BannedKeyword(_) => StatBlockReason::BannedKeyword,
-            BlockReason::InvalidStructure => StatBlockReason::InvalidStructure,
-            BlockReason::SuspiciousIdn => StatBlockReason::SuspiciousIdn,
-            BlockReason::NrdList => StatBlockReason::NrdList,
-            BlockReason::TldExcluded => StatBlockReason::TldExcluded,
-            BlockReason::Suspicious => StatBlockReason::Suspicious,
-            BlockReason::CnameCloaking => StatBlockReason::CnameCloaking,
-            BlockReason::ForbiddenQType(_) => StatBlockReason::ForbiddenQType,
-            BlockReason::DnsRebinding => StatBlockReason::DnsRebinding,
-            BlockReason::LowTtl(_) => StatBlockReason::LowTtl,
-            BlockReason::AsnBlocked => StatBlockReason::AsnBlocked,
+            BlockReason::StaticBlacklist(_) => StatBlockReason::STATIC_BLACKLIST,
+            BlockReason::AbpRule(_) => StatBlockReason::ABP_RULE,
+            BlockReason::HighEntropy(_) => StatBlockReason::HIGH_ENTROPY,
+            BlockReason::LexicalAnalysis => StatBlockReason::LEXICAL_ANALYSIS,
+            BlockReason::BannedKeyword(_) => StatBlockReason::BANNED_KEYWORD,
+            BlockReason::InvalidStructure => StatBlockReason::INVALID_STRUCTURE,
+            BlockReason::SuspiciousIdn => StatBlockReason::SUSPICIOUS_IDN,
+            BlockReason::NrdList => StatBlockReason::NRD_LIST,
+            BlockReason::TldExcluded => StatBlockReason::TLD_EXCLUDED,
+            BlockReason::Suspicious => StatBlockReason::SUSPICIOUS,
+            BlockReason::CnameCloaking => StatBlockReason::CNAME_CLOAKING,
+            BlockReason::ForbiddenQType(_) => StatBlockReason::FORBIDDEN_QTYPE,
+            BlockReason::DnsRebinding => StatBlockReason::DNS_REBINDING,
+            BlockReason::LowTtl(_) => StatBlockReason::LOW_TTL,
+            BlockReason::AsnBlocked => StatBlockReason::ASN_BLOCKED,
         }
     }
 }
@@ -149,59 +126,68 @@ mod tests {
     fn test_stat_block_reason_from_block_reason() {
         assert_eq!(
             StatBlockReason::from(&BlockReason::StaticBlacklist("test".into())),
-            StatBlockReason::StaticBlacklist
+            StatBlockReason::STATIC_BLACKLIST
         );
         assert_eq!(
             StatBlockReason::from(&BlockReason::AbpRule("rule".into())),
-            StatBlockReason::AbpRule
+            StatBlockReason::ABP_RULE
         );
         assert_eq!(
             StatBlockReason::from(&BlockReason::HighEntropy(4.5)),
-            StatBlockReason::HighEntropy
+            StatBlockReason::HIGH_ENTROPY
         );
         assert_eq!(
             StatBlockReason::from(&BlockReason::LexicalAnalysis),
-            StatBlockReason::LexicalAnalysis
+            StatBlockReason::LEXICAL_ANALYSIS
         );
         assert_eq!(
             StatBlockReason::from(&BlockReason::InvalidStructure),
-            StatBlockReason::InvalidStructure
+            StatBlockReason::INVALID_STRUCTURE
         );
         assert_eq!(
             StatBlockReason::from(&BlockReason::SuspiciousIdn),
-            StatBlockReason::SuspiciousIdn
+            StatBlockReason::SUSPICIOUS_IDN
         );
         assert_eq!(
             StatBlockReason::from(&BlockReason::NrdList),
-            StatBlockReason::NrdList
+            StatBlockReason::NRD_LIST
         );
         assert_eq!(
             StatBlockReason::from(&BlockReason::TldExcluded),
-            StatBlockReason::TldExcluded
+            StatBlockReason::TLD_EXCLUDED
         );
         assert_eq!(
             StatBlockReason::from(&BlockReason::Suspicious),
-            StatBlockReason::Suspicious
+            StatBlockReason::SUSPICIOUS
         );
         assert_eq!(
             StatBlockReason::from(&BlockReason::CnameCloaking),
-            StatBlockReason::CnameCloaking
+            StatBlockReason::CNAME_CLOAKING
         );
         assert_eq!(
             StatBlockReason::from(&BlockReason::ForbiddenQType(255)),
-            StatBlockReason::ForbiddenQType
+            StatBlockReason::FORBIDDEN_QTYPE
         );
         assert_eq!(
             StatBlockReason::from(&BlockReason::DnsRebinding),
-            StatBlockReason::DnsRebinding
+            StatBlockReason::DNS_REBINDING
         );
         assert_eq!(
             StatBlockReason::from(&BlockReason::LowTtl(5)),
-            StatBlockReason::LowTtl
+            StatBlockReason::LOW_TTL
         );
         assert_eq!(
             StatBlockReason::from(&BlockReason::AsnBlocked),
-            StatBlockReason::AsnBlocked
+            StatBlockReason::ASN_BLOCKED
         );
+    }
+
+    #[test]
+    fn test_stat_block_reason_bitflags_combine() {
+        let combined = StatBlockReason::HIGH_ENTROPY | StatBlockReason::SUSPICIOUS_IDN;
+        assert!(combined.contains(StatBlockReason::HIGH_ENTROPY));
+        assert!(combined.contains(StatBlockReason::SUSPICIOUS_IDN));
+        assert!(!combined.contains(StatBlockReason::ABP_RULE));
+        assert_eq!(combined.bits(), (1 << 2) | (1 << 6));
     }
 }

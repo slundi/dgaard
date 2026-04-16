@@ -83,7 +83,7 @@ pub enum BlockReason {
 ///
 /// ### Event (type = 0x01)
 /// ```text
-/// [timestamp: u64][domain_hash: u64][client_ip: 16 bytes][action: u8][block_reason?: u8]
+/// [timestamp: u64][domain_hash: u64][client_ip: 16 bytes][action: u8][block_reason?: u16 LE]
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum StatMessage {
@@ -130,15 +130,15 @@ impl StatMessage {
                     StatAction::Proxied => buf.push(1),
                     StatAction::Blocked(reason) => {
                         buf.push(2);
-                        buf.push(reason as u8);
+                        buf.extend_from_slice(&reason.bits().to_le_bytes());
                     }
                     StatAction::Suspicious(reason) => {
                         buf.push(3);
-                        buf.push(reason as u8);
+                        buf.extend_from_slice(&reason.bits().to_le_bytes());
                     }
                     StatAction::HighlySuspicious(reason) => {
                         buf.push(4);
-                        buf.push(reason as u8);
+                        buf.extend_from_slice(&reason.bits().to_le_bytes());
                     }
                 }
             }
@@ -192,37 +192,40 @@ impl StatMessage {
                     0 => StatAction::Allowed,
                     1 => StatAction::Proxied,
                     2 => {
-                        if payload.len() < 34 {
+                        if payload.len() < 35 {
                             return None;
                         }
-                        match StatBlockReason::try_from(payload[33]) {
-                            Ok(reason) => StatAction::Blocked(reason),
-                            Err(e) => {
-                                eprintln!("Unknown reason: {:?}", e);
+                        let bits = u16::from_le_bytes([payload[33], payload[34]]);
+                        match StatBlockReason::from_bits(bits) {
+                            Some(reason) => StatAction::Blocked(reason),
+                            None => {
+                                eprintln!("Unknown reason bits: 0x{:04x}", bits);
                                 return None;
                             }
                         }
                     }
                     3 => {
-                        if payload.len() < 34 {
+                        if payload.len() < 35 {
                             return None;
                         }
-                        match StatBlockReason::try_from(payload[33]) {
-                            Ok(reason) => StatAction::Suspicious(reason),
-                            Err(e) => {
-                                eprintln!("Unknown reason: {:?}", e);
+                        let bits = u16::from_le_bytes([payload[33], payload[34]]);
+                        match StatBlockReason::from_bits(bits) {
+                            Some(reason) => StatAction::Suspicious(reason),
+                            None => {
+                                eprintln!("Unknown reason bits: 0x{:04x}", bits);
                                 return None;
                             }
                         }
                     }
                     4 => {
-                        if payload.len() < 34 {
+                        if payload.len() < 35 {
                             return None;
                         }
-                        match StatBlockReason::try_from(payload[33]) {
-                            Ok(reason) => StatAction::HighlySuspicious(reason),
-                            Err(e) => {
-                                eprintln!("Unknown reason: {:?}", e);
+                        let bits = u16::from_le_bytes([payload[33], payload[34]]);
+                        match StatBlockReason::from_bits(bits) {
+                            Some(reason) => StatAction::HighlySuspicious(reason),
+                            None => {
+                                eprintln!("Unknown reason bits: 0x{:04x}", bits);
                                 return None;
                             }
                         }
@@ -425,19 +428,19 @@ mod tests {
     #[test]
     fn test_event_blocked_all_reasons() {
         let reasons = [
-            StatBlockReason::StaticBlacklist,
-            StatBlockReason::AbpRule,
-            StatBlockReason::HighEntropy,
-            StatBlockReason::LexicalAnalysis,
-            StatBlockReason::InvalidStructure,
-            StatBlockReason::SuspiciousIdn,
-            StatBlockReason::NrdList,
-            StatBlockReason::TldExcluded,
-            StatBlockReason::CnameCloaking,
-            StatBlockReason::ForbiddenQType,
-            StatBlockReason::DnsRebinding,
-            StatBlockReason::LowTtl,
-            StatBlockReason::AsnBlocked,
+            StatBlockReason::STATIC_BLACKLIST,
+            StatBlockReason::ABP_RULE,
+            StatBlockReason::HIGH_ENTROPY,
+            StatBlockReason::LEXICAL_ANALYSIS,
+            StatBlockReason::INVALID_STRUCTURE,
+            StatBlockReason::SUSPICIOUS_IDN,
+            StatBlockReason::NRD_LIST,
+            StatBlockReason::TLD_EXCLUDED,
+            StatBlockReason::CNAME_CLOAKING,
+            StatBlockReason::FORBIDDEN_QTYPE,
+            StatBlockReason::DNS_REBINDING,
+            StatBlockReason::LOW_TTL,
+            StatBlockReason::ASN_BLOCKED,
         ];
 
         for reason in reasons {
@@ -552,15 +555,44 @@ mod tests {
         // [len:2][type:1][ts:8][hash:8][ip:16][action:1] = 36 bytes for Allowed
         assert_eq!(bytes.len(), 36);
 
-        // For Blocked, add 1 byte for reason
+        // For Blocked, add 2 bytes for reason (u16 bitflags)
         let event_blocked = StatEvent {
             timestamp: 0,
             domain_hash: 0,
             client_ip: [0u8; 16],
-            action: StatAction::Blocked(StatBlockReason::HighEntropy),
+            action: StatAction::Blocked(StatBlockReason::HIGH_ENTROPY),
         };
         let msg_blocked = StatMessage::Event(event_blocked);
         let bytes_blocked = msg_blocked.serialize();
-        assert_eq!(bytes_blocked.len(), 37);
+        assert_eq!(bytes_blocked.len(), 38);
+    }
+
+    #[test]
+    fn test_event_blocked_combined_reasons_roundtrip() {
+        let combined = StatBlockReason::HIGH_ENTROPY
+            | StatBlockReason::SUSPICIOUS_IDN
+            | StatBlockReason::NRD_LIST;
+        let event = StatEvent {
+            timestamp: 1704067200,
+            domain_hash: 0xABCD,
+            client_ip: [0u8; 16],
+            action: StatAction::Blocked(combined),
+        };
+        let msg = StatMessage::Event(event);
+
+        let bytes = msg.serialize();
+        let decoded = StatMessage::deserialize(&bytes).expect("deserialize failed");
+
+        assert_eq!(msg, decoded);
+        if let StatMessage::Event(e) = decoded {
+            if let StatAction::Blocked(r) = e.action {
+                assert!(r.contains(StatBlockReason::HIGH_ENTROPY));
+                assert!(r.contains(StatBlockReason::SUSPICIOUS_IDN));
+                assert!(r.contains(StatBlockReason::NRD_LIST));
+                assert!(!r.contains(StatBlockReason::ABP_RULE));
+            } else {
+                panic!("expected Blocked action");
+            }
+        }
     }
 }
