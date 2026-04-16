@@ -9,6 +9,7 @@
   * [x] **Binary-safe reader** for the host index file.
   * [x] **Unix Domain Socket listener** with `tokio::net::UnixStream`.
 * [x] **State Management**: Create a thread-safe AppState to store rolling window statistics and the domain map.
+* [ ] **TOML configuration**: for inputs (socket & bin mapping file), TUI (tick, key bindings, theme/colors), output/integrations (sqlite file, websocket, REST API, hooks)
 
 ## Phase 2: TUI Implementation (Ratatui)
 
