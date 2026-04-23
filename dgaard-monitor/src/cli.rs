@@ -10,13 +10,16 @@ pub struct Opts {
     #[options(help = "print help message")]
     pub help: bool,
 
-    #[options(help = "path to Unix Domain Socket", meta = "PATH")]
+    #[options(short = "c", help = "path to TOML configuration file", meta = "PATH")]
+    pub config: Option<String>,
+
+    #[options(help = "path to Unix Domain Socket (overrides config)", meta = "PATH")]
     pub socket: Option<String>,
 
-    #[options(help = "path to host index file", meta = "PATH")]
+    #[options(help = "path to host index file (overrides config)", meta = "PATH")]
     pub index: Option<String>,
 
-    #[options(help = "path to SQLite database", meta = "PATH")]
+    #[options(help = "path to SQLite database (overrides config)", meta = "PATH")]
     pub db: Option<String>,
 }
 

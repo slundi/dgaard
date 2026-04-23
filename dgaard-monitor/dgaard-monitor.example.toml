@@ -1,0 +1,86 @@
+# dgaard-monitor — example configuration
+# Copy to dgaard-monitor.toml and adjust to your environment.
+# Pass to the binary with:  dgaard-monitor -c /path/to/dgaard-monitor.toml
+
+# ---------------------------------------------------------------------------
+# Input — where to read events from
+# ---------------------------------------------------------------------------
+[input]
+# Unix Domain Socket exposed by the dgaard DNS proxy.
+socket = "/tmp/dns.sock"
+
+# Binary host-index file produced by dgaard (hash → domain mapping).
+index = "/var/lib/dns/hosts.bin"
+
+# ---------------------------------------------------------------------------
+# Persistence — local SQLite storage
+# ---------------------------------------------------------------------------
+[persistence]
+db = "/var/dgaard/stats.sqlite"
+
+# Rolling event log retention (Tier 1).
+events_retention_hours = 72
+
+# Hourly aggregates retention (Tier 2).
+aggregates_retention_days = 90
+
+# ---------------------------------------------------------------------------
+# TUI — terminal user interface
+# ---------------------------------------------------------------------------
+[tui]
+# Terminal refresh rate in milliseconds.
+tick_ms = 250
+
+# Key bindings (single character or named key: "space", "up", "down", …).
+key_quit        = "q"
+key_pause       = "space"
+key_scroll_up   = "up"
+key_scroll_down = "down"
+
+# ---------------------------------------------------------------------------
+# Forwarding — route enriched events to external sinks
+# ---------------------------------------------------------------------------
+[forwarding]
+# Write formatted lines to a file (omit to write to stdout).
+# file = "/var/log/dgaard/dns.log"
+
+# Template for each forwarded line.
+# Available placeholders: {timestamp}, {client_ip}, {action}, {domain}
+template = "{timestamp} {client_ip} {action} {domain}"
+
+# HTTP(S) endpoint for JSON POST (SOAR, Slack incoming webhook, …).
+# forward_url = "https://soar.internal/api/v1/dns-alert"
+
+# Which action variants to forward.  Empty list = forward all events.
+# Valid values: "Allowed", "Proxied", "Blocked", "Suspicious", "HighlySuspicious"
+filter = ["Blocked", "Suspicious", "HighlySuspicious"]
+
+# ---------------------------------------------------------------------------
+# Connectivity — REST API
+# ---------------------------------------------------------------------------
+[api]
+enabled   = false
+listen    = "127.0.0.1"
+port      = 8080
+token     = "changeme"
+root_path = "/api"
+
+# ---------------------------------------------------------------------------
+# Connectivity — WebSocket
+# ---------------------------------------------------------------------------
+[websocket]
+enabled   = false
+listen    = "127.0.0.1"
+port      = 8081
+token     = "changeme"
+root_path = "/ws"
+
+# ---------------------------------------------------------------------------
+# Connectivity — MCP (Model Context Protocol)
+# ---------------------------------------------------------------------------
+[mcp]
+enabled   = false
+listen    = "127.0.0.1"
+port      = 8082
+token     = "changeme"
+root_path = "/mcp"
