@@ -9,16 +9,24 @@
   * [x] **Binary-safe reader** for the host index file.
   * [x] **Unix Domain Socket listener** with `tokio::net::UnixStream`.
 * [x] **State Management**: Create a thread-safe AppState to store rolling window statistics and the domain map.
-* [ ] **TOML configuration**: for inputs (socket & bin mapping file), TUI (tick, key bindings, theme/colors), output/integrations (sqlite file, websocket, REST API, hooks)
+* [ ] **TOML configuration**: for inputs (socket & bin mapping file), TUI (tick, key bindings), output/integrations (sqlite file, websocket, REST API, hooks)
 
 ## Phase 2: TUI Implementation (Ratatui)
 
 * [ ] Main Loop: Setup terminal raw mode and tick rate (e.g., 250ms).
-* [ ] Layout: Define blocks for:
+* [ ] Input Handling: Support `q` or `Ctrl+c` to quit and `c` to clear current session stats in a separete file since we will support custom key mapping later.
+* [ ] TUI layout:
+  * [ ] Top bar: contain tabs `Dashboard`, `Last queries`, `Talkers`, `About`. And some state indicator (active filter 🕵, frozen view ❄️)
+  * [ ] remaining space is to display tab content
+* [ ] `Dashboard` tab:
   * [ ] Live Feed: A scrolling list of the last 20 queries (Client IP -> Domain -> Action).
-  * [ ] Top Blocked: A bar chart or table of domains hitting the blocklist.
+  * [ ] Top domains: A bar chart or table of domains, red for blocked, green for good ones.
   * [ ] Traffic Gauge: Queries per second (QPS).
-* [ ] Input Handling: Support q to quit and c to clear current session stats.
+  * [ ] Most active blocking flags (count and ratio)?
+* [ ] Tab `Last queries` (tail like) with column display: datetime, Domain, IP, blocking flags. `f` to filter flags or client, `s` for a sorting (default last queries on top) popup, `z` to freeze so the display is not updated (show info on ).
+* [ ] Tab `Talkers` with column display: Client or name, DNS request count, per filter count, first/last seen
+* [ ] Popup `Talker`: Title `Talker <client>` that displays most visited domain, last domain
+* [ ] Tab `About`: contains project name, version, repo URL, license, key mapping
 
 ## Phase 3: Analytics
 
@@ -52,8 +60,9 @@
   4. Log the reload: New index loaded: `45,000` domains mapped.
 * **"Top Talkers" Table**: Instead of just showing the last resolved domain, keep a counter of queries per `client_ip`. It helps identify misconfigured devices or potential botnet activity on the network.
 * **Block Ratio Gauge**: A circular or horizontal gauge showing: $Block Ratio = \frac{Total Queries Total}{Blocked Queries})​×100$. Instant visual feedback on how "aggressive" filter lists are acting.
-* **Latency/Trend Sparkline**: Even though the current protocol doesn't include "Response Time," yoweu can track Queries Per Second (QPS) over the last 60 seconds. We will visualize traffic spikes or sudden drops in network usage.
+* **Latency/Trend Sparkline**: Even though the current protocol doesn't include "Response Time," we can track Queries Per Second (QPS) over the last 60 seconds. We will visualize traffic spikes or sudden drops in network usage.
 * **Interactive Lookup**: Since we have the mapping file loaded, add a "Search" mode (press `/`) where the user can type a domain to see its hash or check if it’s currently in the proxy’s index.
+* **Beaconing detection**: Show domains that are periodically pinged by client.
 * **Color-Coded Actions**: Using Ratatui's styling to color the live feed:
   * Green: Allowed/Resolved.
   * Red: Blocked (Malware/Ads).
