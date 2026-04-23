@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 
 use crate::protocol::{StatAction, StatEvent};
 
@@ -92,18 +92,26 @@ impl RollingStats {
 pub struct AppState {
     pub domain_map: Arc<RwLock<HashMap<u64, String>>>,
     pub stats: Arc<RwLock<RollingStats>>,
+    events_tx: broadcast::Sender<StatEvent>,
 }
 
 impl AppState {
     pub fn new(window: Duration) -> Self {
+        let (events_tx, _) = broadcast::channel(256);
         Self {
             domain_map: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(RwLock::new(RollingStats::new(window))),
+            events_tx,
         }
     }
 
     pub async fn record_event(&self, event: StatEvent) {
+        let _ = self.events_tx.send(event.clone());
         self.stats.write().await.record(event);
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<StatEvent> {
+        self.events_tx.subscribe()
     }
 
     pub async fn insert_domain(&self, hash: u64, domain: String) {
