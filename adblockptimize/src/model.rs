@@ -1,4 +1,6 @@
-use std::str::FromStr;
+use std::{path::PathBuf, str::FromStr};
+
+use url::Url;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum ListFormat {
@@ -18,7 +20,15 @@ impl FromStr for ListFormat {
             "dnsmasq" => Ok(ListFormat::Dnsmasq),
             "plain" => Ok(ListFormat::Plain),
             "abp" => Ok(ListFormat::Abp),
-            _ => Err(format!("unknown format '{s}', expected: hosts, dnsmasq, plain, abp")),
+            _ => Err(format!(
+                "unknown format '{s}', expected: hosts, dnsmasq, plain, abp"
+            )),
         }
     }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Resource {
+    HttpUrl(Url),
+    FilePath(PathBuf),
 }
