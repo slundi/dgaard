@@ -1,6 +1,8 @@
 use gumdrop::Options;
 
+#[allow(dead_code)]
 pub const DEFAULT_SOCKET: &str = "/tmp/dns.sock";
+#[allow(dead_code)]
 pub const DEFAULT_INDEX: &str = "/var/lib/dns/hosts.bin";
 #[allow(dead_code)]
 pub const DEFAULT_DB: &str = "/var/dgaard/stats.sqlite";
@@ -27,10 +29,12 @@ pub struct Opts {
 }
 
 impl Opts {
+    #[allow(dead_code)]
     pub fn socket_path(&self) -> &str {
         self.socket.as_deref().unwrap_or(DEFAULT_SOCKET)
     }
 
+    #[allow(dead_code)]
     pub fn index_path(&self) -> &str {
         self.index.as_deref().unwrap_or(DEFAULT_INDEX)
     }

@@ -1,3 +1,6 @@
+// Fields are declared for future use by service implementations.
+#![allow(dead_code)]
+
 use serde::Deserialize;
 use thiserror::Error;
 
