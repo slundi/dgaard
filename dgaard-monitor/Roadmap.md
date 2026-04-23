@@ -4,45 +4,55 @@
 
 * [x] **CLI Parsing**: Implement using `gumdrop` for clean argument handling (e.g., `--socket /tmp/dns.sock --index /var/lib/dns/hosts.bin --db /var/dgaard/stats.sqlite`) in `cli.rs` for future commands (default will run tui, but later `serve` for a JSON API, `websocket`, `hook`)
 * [x] **Error handling**: with thiserror in `error.rs`
-* [ ] **App configuration**: in config.rs
+* [x] **App configuration**: in config.rs
 * [x] **IO Layer**:
   * [x] **Binary-safe reader** for the host index file.
   * [x] **Unix Domain Socket listener** with `tokio::net::UnixStream`.
 * [x] **State Management**: Create a thread-safe AppState to store rolling window statistics and the domain map.
-* [ ] **TOML configuration**: for inputs (socket & bin mapping file), TUI (tick, key bindings), output/integrations (sqlite file, websocket, REST API, hooks)
+* [x] **TOML configuration**: for inputs (socket & bin mapping file), TUI (tick, key bindings), output/integrations (sqlite file, websocket, REST API, hooks)
 
 ## Phase 2: TUI Implementation (Ratatui)
 
 * [ ] Main Loop: Setup terminal raw mode and tick rate (e.g., 250ms).
 * [ ] Input Handling: Support `q` or `Ctrl+c` to quit and `c` to clear current session stats in a separete file since we will support custom key mapping later.
 * [ ] TUI layout:
-  * [ ] Top bar: contain tabs `Dashboard`, `Last queries`, `Talkers`, `About`. And some state indicator (active filter 🕵, frozen view ❄️)
+  * [ ] Top bar, with 3 rowws:
+   * [ ] Row 1 Header: contain tabs `Dashboard`, `Queries`, `Talkers`, `Timelines`, `About`. And some state indicator (active filter 🕵, frozen view ❄️, connectivity status)
+   * [ ] Row 2 Key metrics:  total, blocked %, active client count, QPS
+   * [ ] Row 3 dynamic: Split horizontally between "Live Feed" (Left 60%) and "Flag Distribution" (Right 40%)
   * [ ] remaining space is to display tab content
 * [ ] `Dashboard` tab:
+  * [ ] Total stats: total queries, active clients, blocked queries, percentage blocked, query types (A (IPv4), AAAA (IPv6), PTR, TXT, ...), ~~upstream server~~
   * [ ] Live Feed: A scrolling list of the last 20 queries (Client IP -> Domain -> Action).
-  * [ ] Top domains: A bar chart or table of domains, red for blocked, green for good ones.
+  * [ ] Top domains: A bar chart or table of domains, red for blocked, green for permitted ones.
   * [ ] Traffic Gauge: Queries per second (QPS).
   * [ ] Most active blocking flags (count and ratio)?
-* [ ] Tab `Last queries` (tail like) with column display: datetime, Domain, IP, blocking flags. `f` to filter flags or client, `s` for a sorting (default last queries on top) popup, `z` to freeze so the display is not updated (show info on ).
-* [ ] Tab `Talkers` with column display: Client or name, DNS request count, per filter count, first/last seen
-* [ ] Popup `Talker`: Title `Talker <client>` that displays most visited domain, last domain
+* [ ] Flag Distribution: Use a Sparkline or BarChart to show which StatBlockReason bitflags are firing most often.
+* [ ] Tab `Queries` (tail like) with column display: datetime, Domain, IP, blocking flags. `f` to filter flags or client, `s` for a sorting (default last queries on top) popup, `z` to freeze so the display is not updated (show info on ).
+  * [ ] Implement Virtual Scrolling (only render what’s visible) to handle a history buffer of 1,000+ entries without lag.
+  * [ ] Action Styling: Full row highlight or prefix icons (e.g., ✔ for Allowed, ✘ for Blocked).
+* [ ] Tab `Talkers` (most active client IPs) with column display: Client or name, DNS request count, per filter count, first/last seen
+  * [ ] Add Reverse DNS: If the monitor can resolve local IPs to hostnames, display the hostname in the Talker tab.
+  * [ ] Popup `Talker`: Title `Talker <client>` that displays most visited domain, last domain
+  * [ ] Add timeline?
+* [ ] Tab `Timelines` for 24h trends: Total queries, Client activity
 * [ ] Tab `About`: contains project name, version, repo URL, license, key mapping
 
 ## Phase 3: Analytics
 
-* [ ] Client Tracking: Identify "Top Talkers" (most active client IPs).
-* [ ] Reason Breakdown: If StatAction includes specific block reasons (Malware, Ad, Tracking), display a pie chart of block categories.
-* [ ] Search/Filter: Allow filtering the live feed by specific client IP or domain keyword.
+* [ ] **Client Tracking**: Identify "Top Talkers" (most active client IPs).
+* [ ] **Reason Breakdown**: If StatAction includes specific block reasons (Malware, Ad, Tracking), display a pie chart of block categories.
+* [ ] **Search/Filter**: Allow filtering the live feed by specific client IP or domain keyword.
 
 ## Phase 4: Data & Persistence
 
-* [ ] File Watcher: Implement notify to hot-reload the host index without restarting the monitor.
-* [ ] Timeseries DB: Integrate SQLite (via rusqlite) to store aggregated hourly counts for top domains.
-* [ ] Hash Reconciliation: Logic to handle index updates where a domain's hash might have changed.
+* [ ] **File Watcher**: Implement notify to hot-reload the host index without restarting the monitor.
+* [ ] **Timeseries DB**: Integrate SQLite (via rusqlite) to store aggregated hourly counts for top domains.
+* [ ] **Hash Reconciliation**: Logic to handle index updates where a domain's hash might have changed.
 
 ## Phase 5: API & Connectivity
 
-* [ ] Headless Mode: CLI flag --headless to disable TUI and only run the API.
+* [x] Headless Mode: CLI flag --headless to disable TUI and only run the API.
 * [ ] JSON API: Endpoints for /stats/top-blocked and /stats/clients.
 * [ ] WebSocket Stream: Mirror the Unix socket events as JSON over WebSockets for web-based GUIs.
 
@@ -96,3 +106,13 @@ impl WindowedStats {
 ```
   * **Weighted Decay (The "Half-Life" Method)**: Instead of deleting data, we reduce its "weight" over time. Every hour, we multiply all your counters by 0.5. Result: Recent activity is heavily weighted, but consistent long-term patterns still show up. This is great for identifying "low and slow" data exfiltration.
   * **Database Partitioning (The "Bucket" Method)**: store counts in 5-minute or 1-hour chunks (buckets). Result: When we want to see "Today's stats," the app sums up the last 24 buckets. When a bucket is 30 days old, the server automatically deletes (purges) it to save disk space.
+
+## Wonders
+
+* Use [lnav](https://lnav.org/): for a Kibana of the terminal. So write JSON to stdout. (last queries and ad-hoc analysis)
+* Use [Dashbrew](https://rasjonell.github.io/dashbrew/): TUI dashboard builder specifically designed to visualize data from scripts and APIs. So JSON genration here too.
+* Use [GoAccess](https://goaccess.io/): While primarily built for web logs (Nginx/Apache), it is a highly optimized real-time visualizer. Write data in log format. https://goaccess.io/man#custom-log (talkers, top domains)
+* https://github.com/dimonomid/nerdlog
+* https://wtfutil.com/
+* https://logdy.dev/
+* https://github.com/fedexist/grafatui need to export to prometeus (Visualizing QPS, Block Ratios, and Time-series data)
