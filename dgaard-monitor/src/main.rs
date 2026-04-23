@@ -11,6 +11,8 @@ mod tui;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::watch;
+
 use state::AppState;
 
 use crate::connectivity::{api, mcp, websocket};
@@ -80,79 +82,138 @@ async fn main() {
         state.insert_domain(hash, domain).await;
     }
 
+    // Shutdown channel: false = running, true = stop.
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Collect task handles so we can wait for a clean exit.
+    let mut handles = Vec::new();
+
     // --- Spawn tasks ---
 
     // Unix socket listener (always running).
     {
         let s = Arc::clone(&state);
-        tokio::spawn(async move {
+        let mut rx = shutdown_rx.clone();
+        handles.push(tokio::spawn(async move {
             loop {
+                // Check for shutdown before attempting a (re)connection.
+                if *rx.borrow() {
+                    break;
+                }
                 match io::socket::connect(&socket_path) {
                     Ok(mut stream) => {
                         println!("Connected to {socket_path}");
                         loop {
-                            match io::socket::read_frame(&mut stream).await {
-                                Ok(protocol::StatMessage::DomainMapping { hash, domain }) => {
-                                    s.insert_domain(hash, domain).await;
-                                }
-                                Ok(protocol::StatMessage::Event(event)) => {
-                                    s.record_event(event).await;
-                                }
-                                Err(e) => {
-                                    eprintln!("Stream error: {e}");
-                                    break;
+                            tokio::select! {
+                                biased;
+                                // Shutdown takes priority over reading.
+                                _ = rx.changed() => return,
+                                result = io::socket::read_frame(&mut stream) => {
+                                    match result {
+                                        Ok(protocol::StatMessage::DomainMapping { hash, domain }) => {
+                                            s.insert_domain(hash, domain).await;
+                                        }
+                                        Ok(protocol::StatMessage::Event(event)) => {
+                                            s.record_event(event).await;
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Stream error: {e}");
+                                            break; // reconnect
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                     Err(e) => {
                         eprintln!("Connection failed: {e}, retrying in 5s...");
-                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        // Sleep interruptibly so shutdown is not delayed.
+                        tokio::select! {
+                            biased;
+                            _ = rx.changed() => break,
+                            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                        }
                     }
                 }
             }
-        });
+        }));
     }
 
     // TUI (skipped when --headless).
     if !opts.headless {
         let s = Arc::clone(&state);
-        tokio::spawn(async move {
-            tui::run(tui_cfg, s).await;
-        });
+        let rx = shutdown_rx.clone();
+        handles.push(tokio::spawn(async move {
+            tui::run(tui_cfg, s, rx).await;
+        }));
     }
 
     // Forwarding sink (always running).
     {
         let s = Arc::clone(&state);
-        tokio::spawn(async move {
-            forwarding::run(fwd_cfg, s).await;
-        });
+        let rx = shutdown_rx.clone();
+        handles.push(tokio::spawn(async move {
+            forwarding::run(fwd_cfg, s, rx).await;
+        }));
     }
 
     // Optional connectivity services.
     if api_cfg.enabled {
         let s = Arc::clone(&state);
-        tokio::spawn(async move {
-            api::run(api_cfg, s).await;
-        });
+        let rx = shutdown_rx.clone();
+        handles.push(tokio::spawn(async move {
+            api::run(api_cfg, s, rx).await;
+        }));
     }
 
     if ws_cfg.enabled {
         let s = Arc::clone(&state);
-        tokio::spawn(async move {
-            websocket::run(ws_cfg, s).await;
-        });
+        let rx = shutdown_rx.clone();
+        handles.push(tokio::spawn(async move {
+            websocket::run(ws_cfg, s, rx).await;
+        }));
     }
 
     if mcp_cfg.enabled {
         let s = Arc::clone(&state);
-        tokio::spawn(async move {
-            mcp::run(mcp_cfg, s).await;
-        });
+        let rx = shutdown_rx.clone();
+        handles.push(tokio::spawn(async move {
+            mcp::run(mcp_cfg, s, rx).await;
+        }));
     }
 
-    // Park the main task — spawned tasks drive the process.
-    // TODO: replace with graceful shutdown on SIGTERM / Ctrl-C.
-    std::future::pending::<()>().await;
+    // --- Wait for a termination signal ---
+
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nReceived SIGINT, shutting down...");
+            }
+            _ = sigterm.recv() => {
+                println!("Received SIGTERM, shutting down...");
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to register Ctrl-C handler");
+        println!("\nReceived Ctrl-C, shutting down...");
+    }
+
+    // Broadcast shutdown to all tasks.
+    let _ = shutdown_tx.send(true);
+
+    // Wait for every task to finish (up to 10 s each).
+    for handle in handles {
+        let _ = tokio::time::timeout(Duration::from_secs(10), handle).await;
+    }
+
+    println!("All tasks stopped. Bye.");
 }
