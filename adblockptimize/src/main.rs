@@ -81,9 +81,15 @@ async fn main() {
     let opts = cli::parse();
     let client = build_https_client();
 
-    let mut all_rules: Vec<Rule> = Vec::new();
+    let mut handles: tokio::task::JoinSet<Vec<Rule>> = tokio::task::JoinSet::new();
     for list in opts.paths {
-        all_rules.extend(load_source(&list, &client).await);
+        let client = client.clone();
+        handles.spawn(async move { load_source(&list, &client).await });
+    }
+
+    let mut all_rules: Vec<Rule> = Vec::new();
+    while let Some(result) = handles.join_next().await {
+        all_rules.extend(result.expect("task panicked"));
     }
 
     // Split into network / browser / whitelist, deduplicate, sort
@@ -130,6 +136,51 @@ async fn main() {
     if !opts.no_browser {
         let lines: Vec<String> = browser.iter().map(|r| r.value().to_string()).collect();
         write_lines(&opts.browser_file, &lines);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{error::ResourceError, http::build_https_client, model::Resource};
+
+    #[test]
+    fn validate_input_rejects_unknown_resource() {
+        assert!(matches!(
+            validate_input("notafileorurl"),
+            Err(ResourceError::UnknownResource)
+        ));
+    }
+
+    #[test]
+    fn validate_input_rejects_non_http_scheme() {
+        assert!(matches!(
+            validate_input("ftp://example.com/list.txt"),
+            Err(ResourceError::NonHttpScheme)
+        ));
+    }
+
+    #[test]
+    fn validate_input_accepts_https_url() {
+        assert!(matches!(
+            validate_input("https://example.com/list.txt"),
+            Ok(Resource::HttpUrl(_))
+        ));
+    }
+
+    #[test]
+    fn validate_input_accepts_existing_file() {
+        assert!(matches!(
+            validate_input("/etc/hostname"),
+            Ok(Resource::FilePath(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn load_source_returns_empty_for_invalid_source() {
+        let client = build_https_client();
+        let rules = load_source("notexistentfile", &client).await;
+        assert!(rules.is_empty());
     }
 }
 

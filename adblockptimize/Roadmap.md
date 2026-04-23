@@ -15,6 +15,4 @@
 
 ## Unsorted
 
-* [ ] download & process multiple lists using rayon?
-* [ ] zstd compress to reduce RAM usage for sorting and deduplication?
-* [ ] extract dgaard structs into a lib so it can be used for adblockptimize?
+* [x] download & process multiple lists on available CPU
