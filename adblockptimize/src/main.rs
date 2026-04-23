@@ -1,22 +1,25 @@
+mod abp;
 mod cli;
 mod error;
 mod http;
 mod io;
 mod model;
+mod parser;
 
 use std::path::Path;
 
-use rayon::prelude::*;
 use url::Url;
 
 use crate::{
     error::ResourceError,
     http::{HttpsClient, build_https_client, download_list},
+    io::{load_list_content, load_list_file},
     model::Resource,
 };
 
 const WILDCARD_RULE: u8 = 0b00000001;
 const REGEX_RULE: u8 = 0b00000010;
+const WHITELIST: u8 = 0b10000000;
 
 pub fn validate_input(input: &str) -> Result<Resource, ResourceError> {
     // 1. Try to parse as a URL
@@ -65,22 +68,14 @@ pub async fn load_source(
         Ok(Resource::HttpUrl(url)) => match download_list(client, &url).await {
             Ok(content) => {
                 println!("Downloaded {} ({} bytes)", source, content.len());
-                // load_list_content(
-                //     &content,
-                //     network_rules,
-                //     browser_rules,
-                // );
+                load_list_content(&content, network_rules, browser_rules);
             }
             Err(e) => eprintln!("Warning: Failed to download {}: {}", source, e),
         },
         Ok(Resource::FilePath(_)) => {
-            // if let Err(e) = load_list_file(
-            //     source,
-            //     network_rules,
-            //     browser_rules,
-            // ) {
-            //     eprintln!("Warning: Failed to load {}: {}", source, e);
-            // }
+            if let Err(e) = load_list_file(source, network_rules, browser_rules) {
+                eprintln!("Warning: Failed to load {}: {}", source, e);
+            }
         }
         Err(e) => eprintln!("Warning: Invalid source {}: {}", source, e),
     }
@@ -90,12 +85,13 @@ pub async fn load_source(
 async fn main() {
     let opts = cli::parse();
     let client = build_https_client();
-    // process lists in parralel
-    opts.paths.par_iter().for_each(|list| {
-        let mut network: Vec<(String, u8)> = Vec::new();
-        let mut browser: Vec<String> = Vec::new(); // only ABP rules
-        load_source(list, &client, &mut network, &mut browser);
-    });
+
+    let mut network: Vec<(String, u8)> = Vec::new();
+    let mut browser: Vec<String> = Vec::new(); // only ABP rules
+    // process lists
+    for list in opts.paths {
+        load_source(&list, &client, &mut network, &mut browser).await;
+    }
 
     // gather result, deduplicate, sort
 }

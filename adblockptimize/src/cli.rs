@@ -26,7 +26,7 @@ pub struct Opts {
     #[options(help = "Output file for browser blocking list")]
     pub browser_file: Option<PathBuf>,
 
-    #[options(free, help="List of paths or URL to parse")]
+    #[options(free, help = "List of paths or URL to parse")]
     pub paths: Vec<String>,
 }
 
