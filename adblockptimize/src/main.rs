@@ -139,6 +139,22 @@ async fn main() {
     }
 }
 
+/// Write lines to a file, or print them to stdout if no path is given.
+fn write_lines(path: &Option<std::path::PathBuf>, lines: &[String]) {
+    match path {
+        Some(p) => {
+            if let Err(e) = std::fs::write(p, lines.join("\n")) {
+                eprintln!("Error writing {}: {e}", p.display());
+            }
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,21 +197,5 @@ mod tests {
         let client = build_https_client();
         let rules = load_source("notexistentfile", &client).await;
         assert!(rules.is_empty());
-    }
-}
-
-/// Write lines to a file, or print them to stdout if no path is given.
-fn write_lines(path: &Option<std::path::PathBuf>, lines: &[String]) {
-    match path {
-        Some(p) => {
-            if let Err(e) = std::fs::write(p, lines.join("\n")) {
-                eprintln!("Error writing {}: {e}", p.display());
-            }
-        }
-        None => {
-            for line in lines {
-                println!("{line}");
-            }
-        }
     }
 }
