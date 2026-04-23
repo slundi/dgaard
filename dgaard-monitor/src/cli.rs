@@ -21,6 +21,9 @@ pub struct Opts {
 
     #[options(help = "path to SQLite database (overrides config)", meta = "PATH")]
     pub db: Option<String>,
+
+    #[options(help = "disable the TUI and run as a headless service")]
+    pub headless: bool,
 }
 
 impl Opts {
@@ -106,6 +109,18 @@ mod tests {
         assert_eq!(opts.socket_path(), "/run/dns.sock");
         assert_eq!(opts.index_path(), "/data/hosts.bin");
         assert_eq!(opts.db_path(), "/data/stats.db");
+    }
+
+    #[test]
+    fn test_headless_default_is_false() {
+        let opts = parse_args(&[]).unwrap();
+        assert!(!opts.headless);
+    }
+
+    #[test]
+    fn test_headless_flag() {
+        let opts = parse_args(&["--headless"]).unwrap();
+        assert!(opts.headless);
     }
 
     #[test]
