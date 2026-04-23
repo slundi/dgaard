@@ -1,6 +1,7 @@
 mod abp;
 mod cli;
 mod error;
+mod formatter;
 mod http;
 mod io;
 mod model;
@@ -12,9 +13,10 @@ use url::Url;
 
 use crate::{
     error::ResourceError,
+    formatter::format_rule,
     http::{HttpsClient, build_https_client, download_list},
     io::{load_list_content, load_list_file},
-    model::{Resource, Rule},
+    model::{DnsTarget, Resource, Rule},
 };
 
 pub fn validate_input(input: &str) -> Result<Resource, ResourceError> {
@@ -84,9 +86,10 @@ async fn main() {
         all_rules.extend(load_source(&list, &client).await);
     }
 
-    // Split into network vs browser, deduplicate, sort
+    // Split into network / browser / whitelist, deduplicate, sort
     let mut network: Vec<&Rule> = all_rules.iter().filter(|r| r.is_network()).collect();
     let mut browser: Vec<&Rule> = all_rules.iter().filter(|r| r.is_browser()).collect();
+    let whitelists: Vec<&Rule> = all_rules.iter().filter(|r| r.is_whitelist()).collect();
 
     network.sort_by_key(|r| r.value());
     network.dedup_by_key(|r| r.value());
@@ -94,7 +97,54 @@ async fn main() {
     browser.sort_by_key(|r| r.value());
     browser.dedup_by_key(|r| r.value());
 
-    // TODO: write network and browser output files according to opts
-    println!("Network rules: {}", network.len());
-    println!("Browser rules: {}", browser.len());
+    let target = opts.target.unwrap_or(DnsTarget::Plain);
+
+    // Network output
+    if !opts.no_network {
+        let mut lines: Vec<String> = network
+            .iter()
+            .filter_map(|r| format_rule(r, target))
+            .collect();
+
+        // For AdGuard, include whitelists in the network file (unless a separate
+        // whitelist file was requested).
+        if matches!(target, DnsTarget::AdGuard) && opts.whitelist_file.is_none() {
+            lines.extend(whitelists.iter().filter_map(|r| format_rule(r, target)));
+        }
+
+        write_lines(&opts.network_file, &lines);
+    }
+
+    // Explicit whitelist file
+    if let Some(ref path) = opts.whitelist_file {
+        let lines: Vec<String> = whitelists
+            .iter()
+            .filter_map(|r| format_rule(r, target))
+            .collect();
+        if let Err(e) = std::fs::write(path, lines.join("\n")) {
+            eprintln!("Error writing whitelist file {}: {e}", path.display());
+        }
+    }
+
+    // Browser output
+    if !opts.no_browser {
+        let lines: Vec<String> = browser.iter().map(|r| r.value().to_string()).collect();
+        write_lines(&opts.browser_file, &lines);
+    }
+}
+
+/// Write lines to a file, or print them to stdout if no path is given.
+fn write_lines(path: &Option<std::path::PathBuf>, lines: &[String]) {
+    match path {
+        Some(p) => {
+            if let Err(e) = std::fs::write(p, lines.join("\n")) {
+                eprintln!("Error writing {}: {e}", p.display());
+            }
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
 }

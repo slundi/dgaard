@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use gumdrop::Options;
 
-use crate::model::ListFormat;
+use crate::model::{DnsTarget, ListFormat};
 
 #[derive(Debug, Options)]
 pub struct Opts {
@@ -20,8 +20,18 @@ pub struct Opts {
     )]
     pub format: Option<ListFormat>,
 
+    #[options(
+        help = "DNS server target (plain, hosts, dnsmasq, unbound, pihole, adguard). \
+                Determines the output syntax for the network blocking list. \
+                Defaults to plain."
+    )]
+    pub target: Option<DnsTarget>,
+
     #[options(help = "Output file for network blocking list")]
     pub network_file: Option<PathBuf>,
+
+    #[options(help = "If applicable target, output file for whitelist")]
+    pub whitelist_file: Option<PathBuf>,
 
     #[options(help = "Output file for browser blocking list")]
     pub browser_file: Option<PathBuf>,
@@ -115,5 +125,52 @@ mod tests {
     fn no_args_gives_empty_db() {
         let opts = parse(&[]).unwrap();
         assert!(opts.paths.is_empty());
+    }
+
+    #[test]
+    fn target_defaults_to_none() {
+        let opts = parse(&["file.txt"]).unwrap();
+        assert_eq!(opts.target, None);
+    }
+
+    #[test]
+    fn target_dnsmasq() {
+        let opts = parse(&["--target=dnsmasq", "file.txt"]).unwrap();
+        assert_eq!(opts.target, Some(DnsTarget::Dnsmasq));
+    }
+
+    #[test]
+    fn target_unbound() {
+        let opts = parse(&["--target", "unbound", "file.txt"]).unwrap();
+        assert_eq!(opts.target, Some(DnsTarget::Unbound));
+    }
+
+    #[test]
+    fn target_pihole() {
+        let opts = parse(&["--target=pihole", "file.txt"]).unwrap();
+        assert_eq!(opts.target, Some(DnsTarget::PiHole));
+    }
+
+    #[test]
+    fn target_adguard() {
+        let opts = parse(&["--target=adguard", "file.txt"]).unwrap();
+        assert_eq!(opts.target, Some(DnsTarget::AdGuard));
+    }
+
+    #[test]
+    fn target_plain() {
+        let opts = parse(&["--target=plain", "file.txt"]).unwrap();
+        assert_eq!(opts.target, Some(DnsTarget::Plain));
+    }
+
+    #[test]
+    fn target_hosts() {
+        let opts = parse(&["--target=hosts", "file.txt"]).unwrap();
+        assert_eq!(opts.target, Some(DnsTarget::Hosts));
+    }
+
+    #[test]
+    fn unknown_target_is_error() {
+        assert!(parse(&["--target=bind9"]).is_err());
     }
 }

@@ -38,10 +38,10 @@ pub(crate) fn load_list_file(path: &str) -> std::io::Result<Vec<Rule>> {
         let bytes_read = reader.read(&mut chunk)?;
 
         if bytes_read == 0 {
-            if !leftover.is_empty() {
-                if let Some(rule) = parse_line(&leftover) {
-                    rules.push(rule);
-                }
+            if !leftover.is_empty()
+                && let Some(rule) = parse_line(&leftover)
+            {
+                rules.push(rule);
             }
             break;
         }
