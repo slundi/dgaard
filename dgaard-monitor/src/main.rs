@@ -90,6 +90,15 @@ async fn main() {
 
     // --- Spawn tasks ---
 
+    // Index watcher — reloads the domain map whenever the file changes.
+    {
+        let s = Arc::clone(&state);
+        let rx = shutdown_rx.clone();
+        handles.push(tokio::spawn(async move {
+            io::watcher::watch_index(index_path, s, rx).await;
+        }));
+    }
+
     // Unix socket listener (always running).
     {
         let s = Arc::clone(&state);
