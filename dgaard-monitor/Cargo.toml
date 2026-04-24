@@ -7,7 +7,18 @@ edition = "2024"
 gumdrop = "0.8"
 inotify = "0.11"
 thiserror = "2.0.18"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "time", "signal", "fs"] }
+tokio = { version = "1", features = [
+    "rt",
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "io-util",
+    "io-std",
+    "sync",
+    "time",
+    "signal",
+    "fs",
+] }
 bitflags = "2.11.0"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
@@ -22,5 +33,8 @@ async-trait = "0.1"
 serde_json = "1.0"
 rust-mcp-sdk = "0.9"
 
+axum = "0.8"
+
 [dev-dependencies]
 tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

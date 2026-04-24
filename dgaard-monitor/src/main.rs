@@ -7,6 +7,7 @@ mod io;
 mod protocol;
 mod state;
 mod tui;
+mod util;
 
 use std::sync::Arc;
 use std::time::Duration;

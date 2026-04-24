@@ -74,7 +74,7 @@ impl RollingStats {
     #[allow(dead_code)]
     pub fn top_domains(&self, n: usize) -> Vec<(u64, u64)> {
         let mut pairs: Vec<(u64, u64)> = self.domain_hits.iter().map(|(&k, &v)| (k, v)).collect();
-        pairs.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        pairs.sort_unstable_by_key(|b| std::cmp::Reverse(b.1));
         pairs.truncate(n);
         pairs
     }
@@ -83,7 +83,7 @@ impl RollingStats {
     pub fn top_clients(&self, n: usize) -> Vec<([u8; 16], u64)> {
         let mut pairs: Vec<([u8; 16], u64)> =
             self.client_hits.iter().map(|(&k, &v)| (k, v)).collect();
-        pairs.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        pairs.sort_unstable_by_key(|b| std::cmp::Reverse(b.1));
         pairs.truncate(n);
         pairs
     }
