@@ -7,15 +7,13 @@ use axum::{
     response::{IntoResponse, Json, Response},
     routing::get,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::sync::watch;
 
-use crate::{config::ConnectivityConfig, util::action_name};
-use crate::{
-    protocol::{StatAction, StatBlockReason},
-    util::ip_to_string,
-};
-use crate::{state::AppState, util::parse_filter_ip};
+use crate::config::ConnectivityConfig;
+use crate::protocol::StatBlockReason;
+use crate::state::AppState;
+use crate::util::{EventRecord, action_name, event_to_record, flags_of, parse_filter_ip};
 
 // ── Query params ───────────────────────────────────────────────────────────────
 
@@ -35,84 +33,6 @@ struct EventsQuery {
     flags: Option<u16>,
     /// Maximum number of results. Defaults to 200; capped at 1 000.
     limit: Option<u64>,
-}
-
-// ── Response ───────────────────────────────────────────────────────────────────
-
-#[derive(Serialize, Deserialize)]
-struct EventRecord {
-    timestamp: u64,
-    /// Resolved domain name, or `null` when the hash is unknown.
-    domain: Option<String>,
-    /// Raw domain hash as a 16-digit hex string.
-    domain_hash: String,
-    client_ip: String,
-    action: String,
-    /// Raw block-reason bitmask; `null` for Allowed and Proxied events.
-    flags: Option<u16>,
-    /// Human-readable labels for each set bit in `flags`.
-    flags_labels: Vec<String>,
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
-
-fn flags_of(action: &StatAction) -> Option<StatBlockReason> {
-    match action {
-        StatAction::Blocked(r) | StatAction::Suspicious(r) | StatAction::HighlySuspicious(r) => {
-            Some(*r)
-        }
-        _ => None,
-    }
-}
-
-fn reason_labels(r: StatBlockReason) -> Vec<&'static str> {
-    let mut v = Vec::new();
-    if r.contains(StatBlockReason::STATIC_BLACKLIST) {
-        v.push("STATIC_BLACKLIST");
-    }
-    if r.contains(StatBlockReason::ABP_RULE) {
-        v.push("ABP_RULE");
-    }
-    if r.contains(StatBlockReason::HIGH_ENTROPY) {
-        v.push("HIGH_ENTROPY");
-    }
-    if r.contains(StatBlockReason::LEXICAL_ANALYSIS) {
-        v.push("LEXICAL_ANALYSIS");
-    }
-    if r.contains(StatBlockReason::BANNED_KEYWORD) {
-        v.push("BANNED_KEYWORD");
-    }
-    if r.contains(StatBlockReason::INVALID_STRUCTURE) {
-        v.push("INVALID_STRUCTURE");
-    }
-    if r.contains(StatBlockReason::SUSPICIOUS_IDN) {
-        v.push("SUSPICIOUS_IDN");
-    }
-    if r.contains(StatBlockReason::NRD_LIST) {
-        v.push("NRD_LIST");
-    }
-    if r.contains(StatBlockReason::TLD_EXCLUDED) {
-        v.push("TLD_EXCLUDED");
-    }
-    if r.contains(StatBlockReason::SUSPICIOUS) {
-        v.push("SUSPICIOUS");
-    }
-    if r.contains(StatBlockReason::CNAME_CLOAKING) {
-        v.push("CNAME_CLOAKING");
-    }
-    if r.contains(StatBlockReason::FORBIDDEN_QTYPE) {
-        v.push("FORBIDDEN_QTYPE");
-    }
-    if r.contains(StatBlockReason::DNS_REBINDING) {
-        v.push("DNS_REBINDING");
-    }
-    if r.contains(StatBlockReason::LOW_TTL) {
-        v.push("LOW_TTL");
-    }
-    if r.contains(StatBlockReason::ASN_BLOCKED) {
-        v.push("ASN_BLOCKED");
-    }
-    v
 }
 
 // ── Axum state ─────────────────────────────────────────────────────────────────
@@ -182,11 +102,10 @@ async fn query_events(state: &AppState, q: &EventsQuery) -> Result<Vec<EventReco
             true
         })
         .filter_map(|ev| {
-            let resolved = domain_map.get(&ev.domain_hash).cloned();
             if let Some(ref needle) = q.domain {
                 let needle_lc = needle.to_ascii_lowercase();
+                let resolved = domain_map.get(&ev.domain_hash);
                 let name_match = resolved
-                    .as_deref()
                     .map(|n| n.to_ascii_lowercase().contains(&needle_lc))
                     .unwrap_or(false);
                 let hash_match = format!("{:016x}", ev.domain_hash).contains(&needle_lc);
@@ -194,24 +113,11 @@ async fn query_events(state: &AppState, q: &EventsQuery) -> Result<Vec<EventReco
                     return None;
                 }
             }
-            let reason = flags_of(&ev.action);
-            Some(EventRecord {
-                timestamp: ev.timestamp,
-                domain: resolved,
-                domain_hash: format!("{:016x}", ev.domain_hash),
-                client_ip: ip_to_string(&ev.client_ip),
-                action: action_name(&ev.action).to_string(),
-                flags: reason.map(|r| r.bits()),
-                flags_labels: reason
-                    .map_or_else(Vec::new, reason_labels)
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect(),
-            })
+            Some(event_to_record(&ev, &*domain_map))
         })
         .collect();
 
-    records.sort_unstable_by_key(|b| std::cmp::Reverse(b.timestamp));
+    records.sort_unstable_by_key(|r| std::cmp::Reverse(r.timestamp));
     records.truncate(limit);
     Ok(records)
 }
@@ -320,7 +226,7 @@ mod tests {
     };
     use http_body_util::BodyExt;
     use std::time::Duration;
-    use tower::ServiceExt; // .oneshot()
+    use tower::ServiceExt;
 
     fn make_state() -> Arc<AppState> {
         Arc::new(AppState::new(Duration::from_secs(3600)))

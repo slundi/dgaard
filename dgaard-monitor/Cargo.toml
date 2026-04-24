@@ -33,7 +33,7 @@ async-trait = "0.1"
 serde_json = "1.0"
 rust-mcp-sdk = "0.9"
 
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 
 [dev-dependencies]
 tempfile = "3"

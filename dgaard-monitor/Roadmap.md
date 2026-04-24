@@ -53,8 +53,8 @@
 ## Phase 5: API & Connectivity
 
 * [x] Headless Mode: CLI flag --headless to disable TUI and only run the API.
-* [ ] JSON API: Endpoints for /stats/top-blocked and /stats/clients.
-* [ ] WebSocket Stream: Mirror the Unix socket events as JSON over WebSockets for web-based GUIs.
+* [x] JSON API: Endpoints for /stats/top-blocked and /stats/clients.
+* [x] WebSocket Stream: Mirror the Unix socket events as JSON over WebSockets for web-based GUIs.
 
 ## Phase 6: Integrations
 
@@ -92,7 +92,7 @@ impl WindowedStats {
     fn add_event(&mut self, hash: u64) {
         let now = Instant::now();
         self.events.push_back((now, hash));
-        
+
         // "Age out" old data
         while let Some((timestamp, _)) = self.events.front() {
             if now.duration_since(*timestamp) > self.window_duration {
