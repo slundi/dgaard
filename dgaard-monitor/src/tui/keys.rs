@@ -36,6 +36,16 @@ pub enum Action {
     Search,
     /// Clear the active filter and return to the unfiltered view.
     ClearFilter,
+    /// Jump directly to tab 1 (Dashboard).
+    Tab1,
+    /// Jump directly to tab 2 (Queries).
+    Tab2,
+    /// Jump directly to tab 3 (Talkers).
+    Tab3,
+    /// Jump directly to tab 4 (Timelines).
+    Tab4,
+    /// Jump directly to tab 5 (About).
+    Tab5,
 }
 
 /// Resolved key bindings built once from `TuiConfig`.
@@ -82,6 +92,11 @@ impl KeyMap {
             "s" => Some(Action::Sort),
             "/" => Some(Action::Search),
             "esc" => Some(Action::ClearFilter),
+            "1" => Some(Action::Tab1),
+            "2" => Some(Action::Tab2),
+            "3" => Some(Action::Tab3),
+            "4" => Some(Action::Tab4),
+            "5" => Some(Action::Tab5),
             _ => None,
         }
     }
@@ -120,6 +135,16 @@ mod tests {
     fn test_fixed_freeze() {
         let km = default_keymap();
         assert_eq!(km.resolve("z"), Some(Action::Freeze));
+    }
+
+    #[test]
+    fn test_direct_tab_number_keys() {
+        let km = default_keymap();
+        assert_eq!(km.resolve("1"), Some(Action::Tab1));
+        assert_eq!(km.resolve("2"), Some(Action::Tab2));
+        assert_eq!(km.resolve("3"), Some(Action::Tab3));
+        assert_eq!(km.resolve("4"), Some(Action::Tab4));
+        assert_eq!(km.resolve("5"), Some(Action::Tab5));
     }
 
     #[test]

@@ -11,6 +11,18 @@ use crate::config::TuiConfig;
 use crate::tui::keys::{Action, KeyMap};
 use crate::tui::tabs::Tab;
 
+/// Map a direct-tab action to its `Tab` variant.
+fn tab_for_action(action: Action) -> Option<Tab> {
+    match action {
+        Action::Tab1 => Some(Tab::Dashboard),
+        Action::Tab2 => Some(Tab::Queries),
+        Action::Tab3 => Some(Tab::Talkers),
+        Action::Tab4 => Some(Tab::Timelines),
+        Action::Tab5 => Some(Tab::About),
+        _ => None,
+    }
+}
+
 /// All mutable state belonging to the TUI layer.
 pub struct TuiApp {
     /// Currently visible tab.
@@ -48,6 +60,12 @@ impl TuiApp {
             Action::ScrollDown => self.scroll = self.scroll.saturating_add(1),
             Action::Freeze => self.frozen = !self.frozen,
             Action::ClearFilter => self.filter = None,
+            Action::Tab1 | Action::Tab2 | Action::Tab3 | Action::Tab4 | Action::Tab5 => {
+                if let Some(tab) = tab_for_action(action) {
+                    self.active_tab = tab;
+                    self.scroll = 0;
+                }
+            }
             // Handled at a higher level (quit, popups, search mode)
             Action::Quit | Action::Pause | Action::Filter | Action::Sort | Action::Search => {}
         }
@@ -130,5 +148,41 @@ mod tests {
         app.filter = Some("192.168.1.1".to_string());
         app.apply(Action::ClearFilter);
         assert!(app.filter.is_none());
+    }
+
+    #[test]
+    fn test_direct_tab_keys_jump_to_correct_tab() {
+        let cases = [
+            (Action::Tab1, Tab::Dashboard),
+            (Action::Tab2, Tab::Queries),
+            (Action::Tab3, Tab::Talkers),
+            (Action::Tab4, Tab::Timelines),
+            (Action::Tab5, Tab::About),
+        ];
+        for (action, expected) in cases {
+            let mut app = default_app();
+            app.apply(action);
+            assert_eq!(
+                app.active_tab, expected,
+                "{action:?} should navigate to {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_direct_tab_key_resets_scroll() {
+        let mut app = default_app();
+        app.scroll = 10;
+        app.apply(Action::Tab2);
+        assert_eq!(app.scroll, 0, "direct tab jump should reset scroll to 0");
+    }
+
+    #[test]
+    fn test_direct_tab_key_same_tab_resets_scroll() {
+        let mut app = default_app(); // starts on Dashboard
+        app.scroll = 5;
+        app.apply(Action::Tab1); // jump to Dashboard (already there)
+        assert_eq!(app.scroll, 0);
+        assert_eq!(app.active_tab, Tab::Dashboard);
     }
 }

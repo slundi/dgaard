@@ -56,7 +56,28 @@ pub struct KeyBinding {
 /// tab: navigation, view controls, Queries-tab actions.
 pub fn key_bindings(keymap: &KeyMap) -> Vec<KeyBinding> {
     vec![
-        // Navigation
+        // Direct tab navigation (fixed)
+        KeyBinding {
+            action: "Tab 1 Dashboard",
+            key: "1".to_string(),
+        },
+        KeyBinding {
+            action: "Tab 2 Queries",
+            key: "2".to_string(),
+        },
+        KeyBinding {
+            action: "Tab 3 Talkers",
+            key: "3".to_string(),
+        },
+        KeyBinding {
+            action: "Tab 4 Timelines",
+            key: "4".to_string(),
+        },
+        KeyBinding {
+            action: "Tab 5 About",
+            key: "5".to_string(),
+        },
+        // Cycle navigation (fixed)
         KeyBinding {
             action: "Tab Right",
             key: "tab".to_string(),
@@ -177,8 +198,8 @@ mod tests {
 
     #[test]
     fn test_key_bindings_count() {
-        // 2 nav + 4 configurable + 3 view + 2 queries = 11
-        assert_eq!(key_bindings(&default_keymap()).len(), 11);
+        // 5 direct-tab + 2 cycle nav + 4 configurable + 3 view + 2 queries = 16
+        assert_eq!(key_bindings(&default_keymap()).len(), 16);
     }
 
     #[test]
@@ -203,6 +224,22 @@ mod tests {
         let pause = bindings.iter().find(|b| b.action == "Pause").unwrap();
         assert_eq!(quit.key, "q");
         assert_eq!(pause.key, "space");
+    }
+
+    #[test]
+    fn test_key_bindings_direct_tab_numbers() {
+        let bindings = key_bindings(&default_keymap());
+        let cases = [
+            ("Tab 1 Dashboard", "1"),
+            ("Tab 2 Queries", "2"),
+            ("Tab 3 Talkers", "3"),
+            ("Tab 4 Timelines", "4"),
+            ("Tab 5 About", "5"),
+        ];
+        for (action, key) in cases {
+            let b = bindings.iter().find(|b| b.action == action).unwrap();
+            assert_eq!(b.key, key, "wrong key for '{action}'");
+        }
     }
 
     #[test]
