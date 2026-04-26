@@ -118,11 +118,11 @@ pub fn key_bindings(keymap: &KeyMap) -> Vec<KeyBinding> {
         },
         // Queries-tab specific (fixed)
         KeyBinding {
-            action: "Filter",
+            action: "Filter flags/client",
             key: "f".to_string(),
         },
         KeyBinding {
-            action: "Sort",
+            action: "Sort newest/oldest",
             key: "s".to_string(),
         },
     ]
@@ -268,8 +268,14 @@ mod tests {
     #[test]
     fn test_key_bindings_fixed_queries_actions() {
         let bindings = key_bindings(&default_keymap());
-        let filter = bindings.iter().find(|b| b.action == "Filter").unwrap();
-        let sort = bindings.iter().find(|b| b.action == "Sort").unwrap();
+        let filter = bindings
+            .iter()
+            .find(|b| b.action == "Filter flags/client")
+            .unwrap();
+        let sort = bindings
+            .iter()
+            .find(|b| b.action == "Sort newest/oldest")
+            .unwrap();
         assert_eq!(filter.key, "f");
         assert_eq!(sort.key, "s");
     }
