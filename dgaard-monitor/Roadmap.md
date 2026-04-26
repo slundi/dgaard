@@ -28,9 +28,9 @@
   * [ ] Traffic Gauge: Queries per second (QPS).
   * [ ] Most active blocking flags (count and ratio)?
 * [ ] Flag Distribution: Use a Sparkline or BarChart to show which StatBlockReason bitflags are firing most often.
-* [ ] Tab `Queries` (tail like) with column display: datetime, Domain, IP, blocking flags. `f` to filter flags or client, `s` for a sorting (default last queries on top) popup, `z` to freeze so the display is not updated (show info on ).
-  * [ ] Implement Virtual Scrolling (only render what’s visible) to handle a history buffer of 1,000+ entries without lag.
-  * [ ] Action Styling: Full row highlight or prefix icons (e.g., ✔ for Allowed, ✘ for Blocked).
+* [x] Tab `Queries` (tail like) with column display: datetime, Domain, IP, blocking flags. `f` to filter flags or client, `s` for a sorting (default last queries on top) popup, `z` to freeze so the display is not updated (show info on ).
+  * [x] Implement Virtual Scrolling (only render what’s visible) to handle a history buffer of 1,000+ entries without lag.
+  * [x] Action Styling: Full row highlight or prefix icons (e.g., ✔ for Allowed, ✘ for Blocked).
 * [ ] Tab `Talkers` (most active client IPs) with column display: Client or name, DNS request count, per filter count, first/last seen
   * [ ] Add Reverse DNS: If the monitor can resolve local IPs to hostnames, display the hostname in the Talker tab.
   * [ ] Popup `Talker`: Title `Talker <client>` that displays most visited domain, last domain

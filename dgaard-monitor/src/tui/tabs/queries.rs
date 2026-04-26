@@ -2,22 +2,35 @@
 //!
 //! Displays a scrollable table of recent DNS events, newest on top by default:
 //!
-//!   Timestamp    Domain                         Client IP         Flags
-//!   ──────────── ────────────────────────────── ───────────────── ─────────────────────
-//!   14:23:01     example.com                    192.168.1.5       Allowed
-//!   14:23:00     ads.tracker.net                192.168.1.3       Blocked:Blacklist+AbpRule
-//!   14:22:58     suspicious.xyz                 192.168.1.7       Suspicious:HighEntropy
+//!    Datetime   Domain                         Client IP         Flags
+//!   ─────────── ────────────────────────────── ───────────────── ──────────────────────
+//!   ✔ 14:23:01  example.com                    192.168.1.5       Allowed
+//!   ✘ 14:23:00  ads.tracker.net                192.168.1.3       Blocked:Blacklist+AbpRule
+//!   ⚠ 14:22:58  suspicious.xyz                 192.168.1.7       Suspicious:HighEntropy
+//!   · 14:22:55  upstream-relay.corp            192.168.1.2       Proxied
 //!
-//! Interactive controls:
-//!   `f`     — open filter popup: enter a client IP prefix or a flag name
-//!             (e.g. `"192.168"` or `"Blacklist"`).
-//!   `s`     — open sort popup: toggle between newest-first and oldest-first.
-//!   `z`     — toggle frozen display; the header shows `[FROZEN]` while active.
-//!             New events continue to buffer in `AppState`; they appear when unfrozen.
-//!   `up/dn` — scroll through the virtual list (only when not frozen at tail).
+//! The indicator column (single char, first) and domain colour are driven by `DomainColor`:
+//!   `✔` green  — Allowed
+//!   `✘` red    — Blocked / HighlySuspicious
+//!   `⚠` yellow — Suspicious
+//!   `·` dim    — Proxied
 //!
-//! Virtual scrolling: `visible_rows(height)` returns at most `height` display rows,
-//! applying the active filter and sort.  The internal buffer is capped at `MAX_ROWS`.
+//! Interactive controls (`f` / `s` / `z` are global fixed bindings — available on every
+//! tab that opts in; the outer event loop dispatches `Action::Filter` / `Action::Sort` to
+//! the active tab handler):
+//!   `f`     — filter popup: enter a client IP prefix or a flag name (e.g. `"192.168"`,
+//!             `"Blacklist"`).
+//!   `s`     — sort popup: toggle between newest-first and oldest-first.
+//!   `z`     — toggle frozen display; header shows `[FROZEN]`.  New events keep buffering
+//!             in `AppState` and appear when unfrozen.
+//!   `↑/↓`   — virtual scroll: only the `height` rows around `scroll` are returned by
+//!             `visible_rows(height, scroll)`, so 1 000+ buffered entries cause no lag.
+//!
+//! Virtual scrolling detail:
+//!   The internal buffer (`VecDeque`) is capped at `MAX_ROWS`.  Eviction is O(1) via
+//!   `pop_front`.  `visible_rows(height, scroll)` iterates the filtered+sorted slice once
+//!   and returns at most `height` rows starting at `scroll` — the renderer never touches
+//!   more rows than fit on screen.
 //!
 //! The data layer (all `pub fn`s, structs, and `QueriesState`) is pure Rust with no
 //! ratatui dependency, making it fully unit-testable.
@@ -26,6 +39,8 @@
 
 #![allow(dead_code)]
 
+use std::collections::VecDeque;
+
 use crate::protocol::{StatAction, StatBlockReason, StatEvent};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -33,10 +48,17 @@ use crate::protocol::{StatAction, StatBlockReason, StatEvent};
 /// Maximum rows kept in the display buffer (oldest are dropped when exceeded).
 pub const MAX_ROWS: usize = 1_000;
 
-/// Column widths used for text formatting (matches the module doc example).
+/// Column widths for text formatting (matches the module doc table above).
 pub const COL_DATETIME: usize = 8;
 pub const COL_DOMAIN: usize = 30;
 pub const COL_CLIENT: usize = 17;
+
+// ── Indicator symbols ─────────────────────────────────────────────────────────
+
+pub const INDICATOR_ALLOWED: &str = "✔";
+pub const INDICATOR_BLOCKED: &str = "✘";
+pub const INDICATOR_SUSPICIOUS: &str = "⚠";
+pub const INDICATOR_PROXIED: &str = "·";
 
 // ── SortOrder ─────────────────────────────────────────────────────────────────
 
@@ -90,15 +112,43 @@ impl ActionKind {
             StatAction::HighlySuspicious(_) => Self::HighlySuspicious,
         }
     }
+}
 
-    /// Short uppercase label used in the Flags column when there are no reasons.
-    pub fn label(self) -> &'static str {
+// ── DomainColor ───────────────────────────────────────────────────────────────
+
+/// Colour hint for the Domain column and the single-char indicator.
+///
+/// The renderer maps these to actual ratatui `Color` values; keeping them
+/// as an enum here avoids a ratatui dependency in the data layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DomainColor {
+    /// Green  — `Allowed`.
+    Green,
+    /// Red    — `Blocked` or `HighlySuspicious`.
+    Red,
+    /// Yellow — `Suspicious`.
+    Yellow,
+    /// Dim    — `Proxied` (pass-through, no verdict).
+    Dim,
+}
+
+impl DomainColor {
+    pub fn from_action(action: &StatAction) -> Self {
+        match action {
+            StatAction::Allowed => Self::Green,
+            StatAction::Proxied => Self::Dim,
+            StatAction::Blocked(_) | StatAction::HighlySuspicious(_) => Self::Red,
+            StatAction::Suspicious(_) => Self::Yellow,
+        }
+    }
+
+    /// The single-char indicator to display before the timestamp.
+    pub fn indicator(self) -> &'static str {
         match self {
-            Self::Allowed => "Allowed",
-            Self::Proxied => "Proxied",
-            Self::Blocked => "Blocked",
-            Self::Suspicious => "Suspicious",
-            Self::HighlySuspicious => "HighlySusp",
+            Self::Green => INDICATOR_ALLOWED,
+            Self::Red => INDICATOR_BLOCKED,
+            Self::Yellow => INDICATOR_SUSPICIOUS,
+            Self::Dim => INDICATOR_PROXIED,
         }
     }
 }
@@ -107,20 +157,16 @@ impl ActionKind {
 
 /// Format a 16-byte client IP for display.
 ///
-/// Handles three encodings:
 /// * IPv4-mapped IPv6 (`::ffff:a.b.c.d`) → `"a.b.c.d"`
-/// * IPv4 in first 4 bytes, rest zero  → `"a.b.c.d"`
-/// * Anything else                      → compact IPv6 hex groups
+/// * IPv4 in first 4 bytes, rest zero    → `"a.b.c.d"`
+/// * Anything else                        → compact IPv6 hex groups
 pub fn format_ip(ip: [u8; 16]) -> String {
-    // IPv4-mapped: 10 zero bytes, 0xff, 0xff, then 4 address bytes
     if ip[..10] == [0u8; 10] && ip[10] == 0xff && ip[11] == 0xff {
         return format!("{}.{}.{}.{}", ip[12], ip[13], ip[14], ip[15]);
     }
-    // IPv4 in first 4 bytes, remaining 12 bytes zero
     if ip[4..] == [0u8; 12] {
         return format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
     }
-    // Full IPv6
     ip.chunks(2)
         .map(|c| format!("{:04x}", u16::from_be_bytes([c[0], c[1]])))
         .collect::<Vec<_>>()
@@ -177,27 +223,15 @@ pub fn flags_label(action: &StatAction) -> String {
         StatAction::Proxied => "Proxied".to_string(),
         StatAction::Blocked(r) => {
             let s = reason_str(*r);
-            if s.is_empty() {
-                "Blocked".to_string()
-            } else {
-                format!("Blocked:{s}")
-            }
+            if s.is_empty() { "Blocked".to_string() } else { format!("Blocked:{s}") }
         }
         StatAction::Suspicious(r) => {
             let s = reason_str(*r);
-            if s.is_empty() {
-                "Suspicious".to_string()
-            } else {
-                format!("Suspicious:{s}")
-            }
+            if s.is_empty() { "Suspicious".to_string() } else { format!("Suspicious:{s}") }
         }
         StatAction::HighlySuspicious(r) => {
             let s = reason_str(*r);
-            if s.is_empty() {
-                "HighlySusp".to_string()
-            } else {
-                format!("HighlySusp:{s}")
-            }
+            if s.is_empty() { "HighlySusp".to_string() } else { format!("HighlySusp:{s}") }
         }
     }
 }
@@ -206,6 +240,10 @@ pub fn flags_label(action: &StatAction) -> String {
 
 /// One display-ready row in the Queries table.
 pub struct QueryRow {
+    /// Single-char indicator (`✔` / `✘` / `⚠` / `·`) — first column.
+    pub indicator: &'static str,
+    /// Colour hint for the indicator and domain text.
+    pub domain_color: DomainColor,
     /// Formatted timestamp (`HH:MM:SS`).
     pub datetime: String,
     /// Resolved domain name, or `"#<hex>"` when the hash is unknown.
@@ -214,18 +252,17 @@ pub struct QueryRow {
     pub client_ip: String,
     /// Flags column string (`"Allowed"`, `"Blocked:Blacklist+AbpRule"`, …).
     pub flags: String,
-    /// Collapsed action kind — drives the row colour in the renderer.
+    /// Collapsed action kind — cross-checks colour decisions in tests.
     pub action_kind: ActionKind,
-    /// Raw bitmask for `FilterMode::ByFlags` matching.
-    /// Empty for `Allowed` / `Proxied`.
+    /// Raw bitmask for `FilterMode::ByFlags` matching (empty for Allowed/Proxied).
     pub reasons: StatBlockReason,
 }
 
 impl QueryRow {
     /// Build a display row from a raw event and its resolved domain name.
     ///
-    /// Pass `domain` as `""` or a pre-formatted `"#<hex>"` fallback when
-    /// the hash is not in the domain map.
+    /// Pass `domain` as `""` when the hash is not in the domain map; a hex
+    /// fallback `"#<hash>"` is used automatically.
     pub fn from_event(event: &StatEvent, domain: &str) -> Self {
         let reasons = match &event.action {
             StatAction::Blocked(r)
@@ -233,7 +270,10 @@ impl QueryRow {
             | StatAction::HighlySuspicious(r) => *r,
             _ => StatBlockReason::empty(),
         };
+        let color = DomainColor::from_action(&event.action);
         Self {
+            indicator: color.indicator(),
+            domain_color: color,
             datetime: format_timestamp(event.timestamp),
             domain: if domain.is_empty() {
                 format!("#{:016x}", event.domain_hash)
@@ -278,16 +318,27 @@ impl FilterMode {
 /// All mutable state owned by the Queries tab.
 ///
 /// `TuiApp` holds one of these alongside the generic scroll offset.
-#[derive(Default)]
 pub struct QueriesState {
-    /// Internal buffer in insertion order (oldest index 0, newest last).
-    rows: Vec<QueryRow>,
+    /// Internal buffer in insertion order (oldest front, newest back).
+    /// `VecDeque` gives O(1) front-eviction when the cap is reached.
+    rows: VecDeque<QueryRow>,
     /// Currently active filter.
     pub filter: FilterMode,
     /// Current sort order.
     pub sort: SortOrder,
     /// When `true`, `push_event` is a no-op; the buffer stays fixed.
     pub frozen: bool,
+}
+
+impl Default for QueriesState {
+    fn default() -> Self {
+        Self {
+            rows: VecDeque::new(),
+            filter: FilterMode::default(),
+            sort: SortOrder::default(),
+            frozen: false,
+        }
+    }
 }
 
 impl QueriesState {
@@ -297,31 +348,38 @@ impl QueriesState {
 
     /// Append a new event to the buffer.
     ///
-    /// Does nothing when `frozen` is `true`.  When the buffer exceeds
-    /// `MAX_ROWS`, the oldest row is dropped.
+    /// Does nothing when `frozen` is `true`.  When the buffer reaches
+    /// `MAX_ROWS`, the oldest row is dropped in O(1) via `pop_front`.
     pub fn push_event(&mut self, event: &StatEvent, domain: &str) {
         if self.frozen {
             return;
         }
         if self.rows.len() >= MAX_ROWS {
-            self.rows.remove(0);
+            self.rows.pop_front();
         }
-        self.rows.push(QueryRow::from_event(event, domain));
+        self.rows.push_back(QueryRow::from_event(event, domain));
     }
 
-    /// Return up to `height` rows after applying the current filter and sort.
+    /// Return up to `height` rows starting at `scroll`, after applying
+    /// the current filter and sort.
     ///
-    /// `NewestFirst`: most recent row at index 0 of the returned slice.
-    /// `OldestFirst`: oldest row at index 0.
-    pub fn visible_rows(&self, height: usize) -> Vec<&QueryRow> {
-        let filtered: Vec<&QueryRow> = self
-            .rows
-            .iter()
-            .filter(|r| self.filter.matches(r))
-            .collect();
+    /// Virtual scrolling: only `height` rows are materialised — the rest of
+    /// the buffer is never visited by the renderer regardless of buffer size.
+    ///
+    /// * `NewestFirst` — index 0 = most recent; scrolling down shows older rows.
+    /// * `OldestFirst` — index 0 = oldest; scrolling down shows newer rows.
+    ///
+    /// `scroll` is silently clamped so it never goes past the last row.
+    pub fn visible_rows(&self, height: usize, scroll: usize) -> Vec<&QueryRow> {
+        let filtered: Vec<&QueryRow> =
+            self.rows.iter().filter(|r| self.filter.matches(r)).collect();
         match self.sort {
-            SortOrder::NewestFirst => filtered.iter().rev().take(height).copied().collect(),
-            SortOrder::OldestFirst => filtered.iter().take(height).copied().collect(),
+            SortOrder::NewestFirst => {
+                filtered.iter().rev().skip(scroll).take(height).copied().collect()
+            }
+            SortOrder::OldestFirst => {
+                filtered.iter().skip(scroll).take(height).copied().collect()
+            }
         }
     }
 
@@ -340,7 +398,8 @@ impl QueriesState {
 
 /// Render the Queries tab body.
 ///
-/// TODO: signature becomes `render(app: &TuiApp, state: &QueriesState, area: Area, frame: &mut Frame)`.
+/// TODO: signature becomes
+/// `render(state: &QueriesState, scroll: usize, area: Area, frame: &mut Frame)`.
 pub fn render() {
     // TODO: implement with ratatui Table + Block
 }
@@ -353,12 +412,7 @@ mod tests {
     use crate::protocol::{StatAction, StatBlockReason, StatEvent};
 
     fn ev(ts: u64, ip: [u8; 16], action: StatAction) -> StatEvent {
-        StatEvent {
-            timestamp: ts,
-            domain_hash: 0xdead,
-            client_ip: ip,
-            action,
-        }
+        StatEvent { timestamp: ts, domain_hash: 0xdead, client_ip: ip, action }
     }
 
     fn ipv4(a: u8, b: u8, c: u8, d: u8) -> [u8; 16] {
@@ -406,13 +460,11 @@ mod tests {
 
     #[test]
     fn test_format_timestamp_wraps_24h() {
-        // 25 h = 1 h into next day → 01:00:00
         assert_eq!(format_timestamp(25 * 3600), "01:00:00");
     }
 
     #[test]
     fn test_format_timestamp_specific() {
-        // 14*3600 + 23*60 + 01 = 51781
         assert_eq!(format_timestamp(51781), "14:23:01");
     }
 
@@ -430,43 +482,87 @@ mod tests {
 
     #[test]
     fn test_flags_label_blocked_no_reason() {
-        assert_eq!(
-            flags_label(&StatAction::Blocked(StatBlockReason::empty())),
-            "Blocked"
-        );
+        assert_eq!(flags_label(&StatAction::Blocked(StatBlockReason::empty())), "Blocked");
     }
 
     #[test]
     fn test_flags_label_blocked_single_flag() {
-        let label = flags_label(&StatAction::Blocked(StatBlockReason::STATIC_BLACKLIST));
-        assert_eq!(label, "Blocked:Blacklist");
+        assert_eq!(
+            flags_label(&StatAction::Blocked(StatBlockReason::STATIC_BLACKLIST)),
+            "Blocked:Blacklist"
+        );
     }
 
     #[test]
     fn test_flags_label_blocked_multi_flag() {
         let r = StatBlockReason::STATIC_BLACKLIST | StatBlockReason::ABP_RULE;
-        let label = flags_label(&StatAction::Blocked(r));
-        assert_eq!(label, "Blocked:Blacklist+AbpRule");
+        assert_eq!(flags_label(&StatAction::Blocked(r)), "Blocked:Blacklist+AbpRule");
     }
 
     #[test]
     fn test_flags_label_suspicious() {
-        let label = flags_label(&StatAction::Suspicious(StatBlockReason::HIGH_ENTROPY));
-        assert_eq!(label, "Suspicious:HighEntropy");
+        assert_eq!(
+            flags_label(&StatAction::Suspicious(StatBlockReason::HIGH_ENTROPY)),
+            "Suspicious:HighEntropy"
+        );
     }
 
     #[test]
     fn test_flags_label_highly_suspicious() {
-        let label = flags_label(&StatAction::HighlySuspicious(
-            StatBlockReason::CNAME_CLOAKING,
-        ));
-        assert_eq!(label, "HighlySusp:CnameCloaking");
+        assert_eq!(
+            flags_label(&StatAction::HighlySuspicious(StatBlockReason::CNAME_CLOAKING)),
+            "HighlySusp:CnameCloaking"
+        );
+    }
+
+    // --- DomainColor / indicator ---
+
+    #[test]
+    fn test_domain_color_allowed_is_green() {
+        assert_eq!(DomainColor::from_action(&StatAction::Allowed), DomainColor::Green);
+    }
+
+    #[test]
+    fn test_domain_color_proxied_is_dim() {
+        assert_eq!(DomainColor::from_action(&StatAction::Proxied), DomainColor::Dim);
+    }
+
+    #[test]
+    fn test_domain_color_blocked_is_red() {
+        assert_eq!(
+            DomainColor::from_action(&StatAction::Blocked(StatBlockReason::empty())),
+            DomainColor::Red
+        );
+    }
+
+    #[test]
+    fn test_domain_color_highly_suspicious_is_red() {
+        assert_eq!(
+            DomainColor::from_action(&StatAction::HighlySuspicious(StatBlockReason::empty())),
+            DomainColor::Red
+        );
+    }
+
+    #[test]
+    fn test_domain_color_suspicious_is_yellow() {
+        assert_eq!(
+            DomainColor::from_action(&StatAction::Suspicious(StatBlockReason::empty())),
+            DomainColor::Yellow
+        );
+    }
+
+    #[test]
+    fn test_indicator_symbols() {
+        assert_eq!(DomainColor::Green.indicator(), INDICATOR_ALLOWED);
+        assert_eq!(DomainColor::Red.indicator(), INDICATOR_BLOCKED);
+        assert_eq!(DomainColor::Yellow.indicator(), INDICATOR_SUSPICIOUS);
+        assert_eq!(DomainColor::Dim.indicator(), INDICATOR_PROXIED);
     }
 
     // --- QueryRow::from_event ---
 
     #[test]
-    fn test_query_row_domain_resolved() {
+    fn test_query_row_allowed_fields() {
         let event = ev(51781, ipv4(192, 168, 1, 5), StatAction::Allowed);
         let row = QueryRow::from_event(&event, "example.com");
         assert_eq!(row.datetime, "14:23:01");
@@ -474,33 +570,52 @@ mod tests {
         assert_eq!(row.client_ip, "192.168.1.5");
         assert_eq!(row.flags, "Allowed");
         assert_eq!(row.action_kind, ActionKind::Allowed);
+        assert_eq!(row.domain_color, DomainColor::Green);
+        assert_eq!(row.indicator, INDICATOR_ALLOWED);
         assert!(row.reasons.is_empty());
+    }
+
+    #[test]
+    fn test_query_row_blocked_indicator_and_color() {
+        let event = ev(0, ipv4(1, 2, 3, 4), StatAction::Blocked(StatBlockReason::STATIC_BLACKLIST));
+        let row = QueryRow::from_event(&event, "bad.com");
+        assert_eq!(row.domain_color, DomainColor::Red);
+        assert_eq!(row.indicator, INDICATOR_BLOCKED);
+    }
+
+    #[test]
+    fn test_query_row_suspicious_indicator_and_color() {
+        let event = ev(0, ipv4(1, 2, 3, 4), StatAction::Suspicious(StatBlockReason::HIGH_ENTROPY));
+        let row = QueryRow::from_event(&event, "odd.com");
+        assert_eq!(row.domain_color, DomainColor::Yellow);
+        assert_eq!(row.indicator, INDICATOR_SUSPICIOUS);
+    }
+
+    #[test]
+    fn test_query_row_proxied_indicator_and_color() {
+        let event = ev(0, ipv4(1, 2, 3, 4), StatAction::Proxied);
+        let row = QueryRow::from_event(&event, "relay.corp");
+        assert_eq!(row.domain_color, DomainColor::Dim);
+        assert_eq!(row.indicator, INDICATOR_PROXIED);
     }
 
     #[test]
     fn test_query_row_domain_fallback_when_empty() {
         let event = ev(0, ipv4(10, 0, 0, 1), StatAction::Proxied);
         let row = QueryRow::from_event(&event, "");
-        assert!(
-            row.domain.starts_with('#'),
-            "fallback domain should start with '#': {}",
-            row.domain
-        );
+        assert!(row.domain.starts_with('#'), "fallback domain: {}", row.domain);
     }
 
     #[test]
     fn test_query_row_reasons_populated_for_blocked() {
         let reason = StatBlockReason::STATIC_BLACKLIST | StatBlockReason::HIGH_ENTROPY;
-        let event = ev(0, ipv4(1, 2, 3, 4), StatAction::Blocked(reason));
-        let row = QueryRow::from_event(&event, "bad.com");
+        let row = QueryRow::from_event(&ev(0, ipv4(1, 2, 3, 4), StatAction::Blocked(reason)), "b.com");
         assert_eq!(row.reasons, reason);
-        assert_eq!(row.action_kind, ActionKind::Blocked);
     }
 
     #[test]
     fn test_query_row_reasons_empty_for_allowed() {
-        let event = ev(0, ipv4(1, 2, 3, 4), StatAction::Allowed);
-        let row = QueryRow::from_event(&event, "ok.com");
+        let row = QueryRow::from_event(&ev(0, ipv4(1, 2, 3, 4), StatAction::Allowed), "ok.com");
         assert!(row.reasons.is_empty());
     }
 
@@ -546,26 +661,27 @@ mod tests {
     #[test]
     fn test_filter_by_flags_no_match_on_allowed_row() {
         let row = QueryRow::from_event(&ev(0, ipv4(1, 1, 1, 1), StatAction::Allowed), "ok.com");
-        // Allowed rows have empty reasons, so no flags filter will match
         assert!(!FilterMode::ByFlags(StatBlockReason::STATIC_BLACKLIST).matches(&row));
     }
 
     // --- QueriesState ---
 
-    fn make_state() -> QueriesState {
-        QueriesState::new()
+    fn push_n(s: &mut QueriesState, n: u64) {
+        for ts in 0..n {
+            s.push_event(&ev(ts, ipv4(1, 1, 1, 1), StatAction::Allowed), "a.com");
+        }
     }
 
     #[test]
     fn test_push_adds_row() {
-        let mut s = make_state();
+        let mut s = QueriesState::new();
         s.push_event(&ev(0, ipv4(1, 1, 1, 1), StatAction::Allowed), "a.com");
         assert_eq!(s.row_count(), 1);
     }
 
     #[test]
     fn test_push_frozen_does_not_add() {
-        let mut s = make_state();
+        let mut s = QueriesState::new();
         s.frozen = true;
         s.push_event(&ev(0, ipv4(1, 1, 1, 1), StatAction::Allowed), "a.com");
         assert_eq!(s.row_count(), 0);
@@ -573,71 +689,94 @@ mod tests {
 
     #[test]
     fn test_push_evicts_oldest_at_max_rows() {
-        let mut s = make_state();
+        let mut s = QueriesState::new();
         for i in 0..MAX_ROWS {
-            s.push_event(
-                &ev(i as u64, ipv4(1, 1, 1, 1), StatAction::Allowed),
-                "a.com",
-            );
+            s.push_event(&ev(i as u64, ipv4(1, 1, 1, 1), StatAction::Allowed), "a.com");
         }
         assert_eq!(s.row_count(), MAX_ROWS);
-        // Push one more — oldest (ts=0) should be gone
-        s.push_event(
-            &ev(MAX_ROWS as u64, ipv4(1, 1, 1, 1), StatAction::Allowed),
-            "a.com",
-        );
+        s.push_event(&ev(MAX_ROWS as u64, ipv4(1, 1, 1, 1), StatAction::Allowed), "a.com");
         assert_eq!(s.row_count(), MAX_ROWS);
-        // The first row now has ts=1 (formatted 00:00:01)
+        // oldest (ts=0) evicted; front is now ts=1
         assert_eq!(s.rows[0].datetime, "00:00:01");
     }
 
+    // --- visible_rows: sort order ---
+
     #[test]
     fn test_visible_rows_newest_first_order() {
-        let mut s = make_state();
-        for ts in 0..5u64 {
-            s.push_event(&ev(ts, ipv4(1, 1, 1, 1), StatAction::Allowed), "a.com");
-        }
+        let mut s = QueriesState::new();
+        push_n(&mut s, 5);
         s.sort = SortOrder::NewestFirst;
-        let rows = s.visible_rows(5);
+        let rows = s.visible_rows(5, 0);
         assert_eq!(rows[0].datetime, format_timestamp(4));
         assert_eq!(rows[4].datetime, format_timestamp(0));
     }
 
     #[test]
     fn test_visible_rows_oldest_first_order() {
-        let mut s = make_state();
-        for ts in 0..5u64 {
-            s.push_event(&ev(ts, ipv4(1, 1, 1, 1), StatAction::Allowed), "a.com");
-        }
+        let mut s = QueriesState::new();
+        push_n(&mut s, 5);
         s.sort = SortOrder::OldestFirst;
-        let rows = s.visible_rows(5);
+        let rows = s.visible_rows(5, 0);
         assert_eq!(rows[0].datetime, format_timestamp(0));
         assert_eq!(rows[4].datetime, format_timestamp(4));
     }
 
+    // --- visible_rows: virtual scroll ---
+
     #[test]
     fn test_visible_rows_height_limit() {
-        let mut s = make_state();
-        for ts in 0..10u64 {
-            s.push_event(&ev(ts, ipv4(1, 1, 1, 1), StatAction::Allowed), "a.com");
-        }
-        assert_eq!(s.visible_rows(3).len(), 3);
+        let mut s = QueriesState::new();
+        push_n(&mut s, 10);
+        assert_eq!(s.visible_rows(3, 0).len(), 3);
     }
 
     #[test]
+    fn test_visible_rows_scroll_newest_first() {
+        let mut s = QueriesState::new();
+        push_n(&mut s, 5); // ts 0..4
+        s.sort = SortOrder::NewestFirst;
+        // scroll=0: [ts4, ts3, ts2]; scroll=1: [ts3, ts2, ts1]; scroll=2: [ts2, ts1, ts0]
+        assert_eq!(s.visible_rows(3, 0)[0].datetime, format_timestamp(4));
+        assert_eq!(s.visible_rows(3, 1)[0].datetime, format_timestamp(3));
+        assert_eq!(s.visible_rows(3, 2)[0].datetime, format_timestamp(2));
+    }
+
+    #[test]
+    fn test_visible_rows_scroll_oldest_first() {
+        let mut s = QueriesState::new();
+        push_n(&mut s, 5); // ts 0..4
+        s.sort = SortOrder::OldestFirst;
+        // scroll=0: [ts0, ts1, ts2]; scroll=1: [ts1, ts2, ts3]; scroll=2: [ts2, ts3, ts4]
+        assert_eq!(s.visible_rows(3, 0)[0].datetime, format_timestamp(0));
+        assert_eq!(s.visible_rows(3, 1)[0].datetime, format_timestamp(1));
+        assert_eq!(s.visible_rows(3, 2)[0].datetime, format_timestamp(2));
+    }
+
+    #[test]
+    fn test_visible_rows_scroll_past_end_returns_empty() {
+        let mut s = QueriesState::new();
+        push_n(&mut s, 3);
+        // scroll beyond all 3 rows → empty
+        assert!(s.visible_rows(3, 10).is_empty());
+    }
+
+    // --- visible_rows: filter ---
+
+    #[test]
     fn test_visible_rows_with_filter() {
-        let mut s = make_state();
+        let mut s = QueriesState::new();
         s.push_event(&ev(0, ipv4(192, 168, 1, 1), StatAction::Allowed), "a.com");
         s.push_event(&ev(1, ipv4(10, 0, 0, 1), StatAction::Allowed), "b.com");
         s.push_event(&ev(2, ipv4(192, 168, 1, 2), StatAction::Allowed), "c.com");
         s.filter = FilterMode::ByClient("192.168".to_string());
-        assert_eq!(s.visible_rows(10).len(), 2);
+        assert_eq!(s.visible_rows(10, 0).len(), 2);
     }
 
     #[test]
     fn test_clear_empties_buffer() {
-        let mut s = make_state();
-        s.push_event(&ev(0, ipv4(1, 1, 1, 1), StatAction::Allowed), "a.com");
+        let mut s = QueriesState::new();
+        push_n(&mut s, 3);
         s.clear();
         assert_eq!(s.row_count(), 0);
     }
