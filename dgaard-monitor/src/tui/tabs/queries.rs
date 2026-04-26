@@ -223,15 +223,27 @@ pub fn flags_label(action: &StatAction) -> String {
         StatAction::Proxied => "Proxied".to_string(),
         StatAction::Blocked(r) => {
             let s = reason_str(*r);
-            if s.is_empty() { "Blocked".to_string() } else { format!("Blocked:{s}") }
+            if s.is_empty() {
+                "Blocked".to_string()
+            } else {
+                format!("Blocked:{s}")
+            }
         }
         StatAction::Suspicious(r) => {
             let s = reason_str(*r);
-            if s.is_empty() { "Suspicious".to_string() } else { format!("Suspicious:{s}") }
+            if s.is_empty() {
+                "Suspicious".to_string()
+            } else {
+                format!("Suspicious:{s}")
+            }
         }
         StatAction::HighlySuspicious(r) => {
             let s = reason_str(*r);
-            if s.is_empty() { "HighlySusp".to_string() } else { format!("HighlySusp:{s}") }
+            if s.is_empty() {
+                "HighlySusp".to_string()
+            } else {
+                format!("HighlySusp:{s}")
+            }
         }
     }
 }
@@ -371,15 +383,20 @@ impl QueriesState {
     ///
     /// `scroll` is silently clamped so it never goes past the last row.
     pub fn visible_rows(&self, height: usize, scroll: usize) -> Vec<&QueryRow> {
-        let filtered: Vec<&QueryRow> =
-            self.rows.iter().filter(|r| self.filter.matches(r)).collect();
+        let filtered: Vec<&QueryRow> = self
+            .rows
+            .iter()
+            .filter(|r| self.filter.matches(r))
+            .collect();
         match self.sort {
-            SortOrder::NewestFirst => {
-                filtered.iter().rev().skip(scroll).take(height).copied().collect()
-            }
-            SortOrder::OldestFirst => {
-                filtered.iter().skip(scroll).take(height).copied().collect()
-            }
+            SortOrder::NewestFirst => filtered
+                .iter()
+                .rev()
+                .skip(scroll)
+                .take(height)
+                .copied()
+                .collect(),
+            SortOrder::OldestFirst => filtered.iter().skip(scroll).take(height).copied().collect(),
         }
     }
 
@@ -412,7 +429,12 @@ mod tests {
     use crate::protocol::{StatAction, StatBlockReason, StatEvent};
 
     fn ev(ts: u64, ip: [u8; 16], action: StatAction) -> StatEvent {
-        StatEvent { timestamp: ts, domain_hash: 0xdead, client_ip: ip, action }
+        StatEvent {
+            timestamp: ts,
+            domain_hash: 0xdead,
+            client_ip: ip,
+            action,
+        }
     }
 
     fn ipv4(a: u8, b: u8, c: u8, d: u8) -> [u8; 16] {
@@ -482,7 +504,10 @@ mod tests {
 
     #[test]
     fn test_flags_label_blocked_no_reason() {
-        assert_eq!(flags_label(&StatAction::Blocked(StatBlockReason::empty())), "Blocked");
+        assert_eq!(
+            flags_label(&StatAction::Blocked(StatBlockReason::empty())),
+            "Blocked"
+        );
     }
 
     #[test]
@@ -496,7 +521,10 @@ mod tests {
     #[test]
     fn test_flags_label_blocked_multi_flag() {
         let r = StatBlockReason::STATIC_BLACKLIST | StatBlockReason::ABP_RULE;
-        assert_eq!(flags_label(&StatAction::Blocked(r)), "Blocked:Blacklist+AbpRule");
+        assert_eq!(
+            flags_label(&StatAction::Blocked(r)),
+            "Blocked:Blacklist+AbpRule"
+        );
     }
 
     #[test]
@@ -510,7 +538,9 @@ mod tests {
     #[test]
     fn test_flags_label_highly_suspicious() {
         assert_eq!(
-            flags_label(&StatAction::HighlySuspicious(StatBlockReason::CNAME_CLOAKING)),
+            flags_label(&StatAction::HighlySuspicious(
+                StatBlockReason::CNAME_CLOAKING
+            )),
             "HighlySusp:CnameCloaking"
         );
     }
@@ -519,12 +549,18 @@ mod tests {
 
     #[test]
     fn test_domain_color_allowed_is_green() {
-        assert_eq!(DomainColor::from_action(&StatAction::Allowed), DomainColor::Green);
+        assert_eq!(
+            DomainColor::from_action(&StatAction::Allowed),
+            DomainColor::Green
+        );
     }
 
     #[test]
     fn test_domain_color_proxied_is_dim() {
-        assert_eq!(DomainColor::from_action(&StatAction::Proxied), DomainColor::Dim);
+        assert_eq!(
+            DomainColor::from_action(&StatAction::Proxied),
+            DomainColor::Dim
+        );
     }
 
     #[test]
@@ -577,7 +613,11 @@ mod tests {
 
     #[test]
     fn test_query_row_blocked_indicator_and_color() {
-        let event = ev(0, ipv4(1, 2, 3, 4), StatAction::Blocked(StatBlockReason::STATIC_BLACKLIST));
+        let event = ev(
+            0,
+            ipv4(1, 2, 3, 4),
+            StatAction::Blocked(StatBlockReason::STATIC_BLACKLIST),
+        );
         let row = QueryRow::from_event(&event, "bad.com");
         assert_eq!(row.domain_color, DomainColor::Red);
         assert_eq!(row.indicator, INDICATOR_BLOCKED);
@@ -585,7 +625,11 @@ mod tests {
 
     #[test]
     fn test_query_row_suspicious_indicator_and_color() {
-        let event = ev(0, ipv4(1, 2, 3, 4), StatAction::Suspicious(StatBlockReason::HIGH_ENTROPY));
+        let event = ev(
+            0,
+            ipv4(1, 2, 3, 4),
+            StatAction::Suspicious(StatBlockReason::HIGH_ENTROPY),
+        );
         let row = QueryRow::from_event(&event, "odd.com");
         assert_eq!(row.domain_color, DomainColor::Yellow);
         assert_eq!(row.indicator, INDICATOR_SUSPICIOUS);
@@ -603,13 +647,20 @@ mod tests {
     fn test_query_row_domain_fallback_when_empty() {
         let event = ev(0, ipv4(10, 0, 0, 1), StatAction::Proxied);
         let row = QueryRow::from_event(&event, "");
-        assert!(row.domain.starts_with('#'), "fallback domain: {}", row.domain);
+        assert!(
+            row.domain.starts_with('#'),
+            "fallback domain: {}",
+            row.domain
+        );
     }
 
     #[test]
     fn test_query_row_reasons_populated_for_blocked() {
         let reason = StatBlockReason::STATIC_BLACKLIST | StatBlockReason::HIGH_ENTROPY;
-        let row = QueryRow::from_event(&ev(0, ipv4(1, 2, 3, 4), StatAction::Blocked(reason)), "b.com");
+        let row = QueryRow::from_event(
+            &ev(0, ipv4(1, 2, 3, 4), StatAction::Blocked(reason)),
+            "b.com",
+        );
         assert_eq!(row.reasons, reason);
     }
 
@@ -691,10 +742,16 @@ mod tests {
     fn test_push_evicts_oldest_at_max_rows() {
         let mut s = QueriesState::new();
         for i in 0..MAX_ROWS {
-            s.push_event(&ev(i as u64, ipv4(1, 1, 1, 1), StatAction::Allowed), "a.com");
+            s.push_event(
+                &ev(i as u64, ipv4(1, 1, 1, 1), StatAction::Allowed),
+                "a.com",
+            );
         }
         assert_eq!(s.row_count(), MAX_ROWS);
-        s.push_event(&ev(MAX_ROWS as u64, ipv4(1, 1, 1, 1), StatAction::Allowed), "a.com");
+        s.push_event(
+            &ev(MAX_ROWS as u64, ipv4(1, 1, 1, 1), StatAction::Allowed),
+            "a.com",
+        );
         assert_eq!(s.row_count(), MAX_ROWS);
         // oldest (ts=0) evicted; front is now ts=1
         assert_eq!(s.rows[0].datetime, "00:00:01");
