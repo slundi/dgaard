@@ -41,7 +41,10 @@
 
 use std::collections::VecDeque;
 
-use crate::protocol::{StatAction, StatBlockReason, StatEvent};
+use crate::{
+    protocol::{StatAction, StatBlockReason, StatEvent},
+    tui::util::DomainColor,
+};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -52,13 +55,6 @@ pub const MAX_ROWS: usize = 1_000;
 pub const COL_DATETIME: usize = 8;
 pub const COL_DOMAIN: usize = 30;
 pub const COL_CLIENT: usize = 17;
-
-// ── Indicator symbols ─────────────────────────────────────────────────────────
-
-pub const INDICATOR_ALLOWED: &str = "✔";
-pub const INDICATOR_BLOCKED: &str = "✘";
-pub const INDICATOR_SUSPICIOUS: &str = "⚠";
-pub const INDICATOR_PROXIED: &str = "·";
 
 // ── SortOrder ─────────────────────────────────────────────────────────────────
 
@@ -110,45 +106,6 @@ impl ActionKind {
             StatAction::Blocked(_) => Self::Blocked,
             StatAction::Suspicious(_) => Self::Suspicious,
             StatAction::HighlySuspicious(_) => Self::HighlySuspicious,
-        }
-    }
-}
-
-// ── DomainColor ───────────────────────────────────────────────────────────────
-
-/// Colour hint for the Domain column and the single-char indicator.
-///
-/// The renderer maps these to actual ratatui `Color` values; keeping them
-/// as an enum here avoids a ratatui dependency in the data layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DomainColor {
-    /// Green  — `Allowed`.
-    Green,
-    /// Red    — `Blocked` or `HighlySuspicious`.
-    Red,
-    /// Yellow — `Suspicious`.
-    Yellow,
-    /// Dim    — `Proxied` (pass-through, no verdict).
-    Dim,
-}
-
-impl DomainColor {
-    pub fn from_action(action: &StatAction) -> Self {
-        match action {
-            StatAction::Allowed => Self::Green,
-            StatAction::Proxied => Self::Dim,
-            StatAction::Blocked(_) | StatAction::HighlySuspicious(_) => Self::Red,
-            StatAction::Suspicious(_) => Self::Yellow,
-        }
-    }
-
-    /// The single-char indicator to display before the timestamp.
-    pub fn indicator(self) -> &'static str {
-        match self {
-            Self::Green => INDICATOR_ALLOWED,
-            Self::Red => INDICATOR_BLOCKED,
-            Self::Yellow => INDICATOR_SUSPICIOUS,
-            Self::Dim => INDICATOR_PROXIED,
         }
     }
 }
@@ -416,7 +373,10 @@ pub fn render() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{StatAction, StatBlockReason, StatEvent};
+    use crate::{
+        protocol::{StatAction, StatBlockReason, StatEvent},
+        tui::util::{INDICATOR_ALLOWED, INDICATOR_BLOCKED, INDICATOR_SUSPICIOUS},
+    };
 
     fn ev(ts: u64, ip: [u8; 16], action: StatAction) -> StatEvent {
         StatEvent {
@@ -535,56 +495,6 @@ mod tests {
         );
     }
 
-    // --- DomainColor / indicator ---
-
-    #[test]
-    fn test_domain_color_allowed_is_green() {
-        assert_eq!(
-            DomainColor::from_action(&StatAction::Allowed),
-            DomainColor::Green
-        );
-    }
-
-    #[test]
-    fn test_domain_color_proxied_is_dim() {
-        assert_eq!(
-            DomainColor::from_action(&StatAction::Proxied),
-            DomainColor::Dim
-        );
-    }
-
-    #[test]
-    fn test_domain_color_blocked_is_red() {
-        assert_eq!(
-            DomainColor::from_action(&StatAction::Blocked(StatBlockReason::empty())),
-            DomainColor::Red
-        );
-    }
-
-    #[test]
-    fn test_domain_color_highly_suspicious_is_red() {
-        assert_eq!(
-            DomainColor::from_action(&StatAction::HighlySuspicious(StatBlockReason::empty())),
-            DomainColor::Red
-        );
-    }
-
-    #[test]
-    fn test_domain_color_suspicious_is_yellow() {
-        assert_eq!(
-            DomainColor::from_action(&StatAction::Suspicious(StatBlockReason::empty())),
-            DomainColor::Yellow
-        );
-    }
-
-    #[test]
-    fn test_indicator_symbols() {
-        assert_eq!(DomainColor::Green.indicator(), INDICATOR_ALLOWED);
-        assert_eq!(DomainColor::Red.indicator(), INDICATOR_BLOCKED);
-        assert_eq!(DomainColor::Yellow.indicator(), INDICATOR_SUSPICIOUS);
-        assert_eq!(DomainColor::Dim.indicator(), INDICATOR_PROXIED);
-    }
-
     // --- QueryRow::from_event ---
 
     #[test]
@@ -630,7 +540,7 @@ mod tests {
         let event = ev(0, ipv4(1, 2, 3, 4), StatAction::Proxied);
         let row = QueryRow::from_event(&event, "relay.corp");
         assert_eq!(row.domain_color, DomainColor::Dim);
-        assert_eq!(row.indicator, INDICATOR_PROXIED);
+        assert_eq!(row.indicator, INDICATOR_BLOCKED);
     }
 
     #[test]

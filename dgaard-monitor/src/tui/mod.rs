@@ -11,6 +11,7 @@ mod app;
 mod keys;
 mod layout;
 mod tabs;
+mod util;
 mod widgets;
 
 use crate::config::TuiConfig;
