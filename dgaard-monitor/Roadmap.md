@@ -36,7 +36,7 @@
   * [ ] Popup `Talker`: Title `Talker <client>` that displays most visited domain, last domain
   * [ ] Add timeline?
 * [ ] Tab `Timelines` for 24h trends: Total queries, Client activity
-* [ ] Tab `About`: contains project name, version, repo URL, license, key mapping
+* [x] Tab `About`: contains project name, version, repo URL `https://codeberg.org/slundi/dgaard`, license Apache 2, separator, key mapping
 
 ## Phase 3: Analytics
 
