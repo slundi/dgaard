@@ -67,36 +67,36 @@ pub fn flag_name(bit: usize) -> &'static str {
 
 /// Sort order for the Talkers table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TalkerSort {
+pub enum TalkerSortBy {
     /// Most requests first (default).
     #[default]
-    ByRequests,
+    Requests,
     /// Most recently active first.
-    ByLastSeen,
+    LastSeen,
     /// Earliest first-seen first.
-    ByFirstSeen,
+    FirstSeen,
     /// Highest blocked-event percentage first.
-    ByBlockedPct,
+    BlockedPct,
 }
 
-impl TalkerSort {
+impl TalkerSortBy {
     /// Human-readable label shown in the sort popup.
     pub fn label(self) -> &'static str {
         match self {
-            TalkerSort::ByRequests => "Most requests",
-            TalkerSort::ByLastSeen => "Last active",
-            TalkerSort::ByFirstSeen => "First seen",
-            TalkerSort::ByBlockedPct => "Most blocked %",
+            TalkerSortBy::Requests => "Most requests",
+            TalkerSortBy::LastSeen => "Last active",
+            TalkerSortBy::FirstSeen => "First seen",
+            TalkerSortBy::BlockedPct => "Most blocked %",
         }
     }
 
     /// Cycle to the next sort order.
     pub fn next(self) -> Self {
         match self {
-            TalkerSort::ByRequests => TalkerSort::ByLastSeen,
-            TalkerSort::ByLastSeen => TalkerSort::ByFirstSeen,
-            TalkerSort::ByFirstSeen => TalkerSort::ByBlockedPct,
-            TalkerSort::ByBlockedPct => TalkerSort::ByRequests,
+            TalkerSortBy::Requests => TalkerSortBy::LastSeen,
+            TalkerSortBy::LastSeen => TalkerSortBy::FirstSeen,
+            TalkerSortBy::FirstSeen => TalkerSortBy::BlockedPct,
+            TalkerSortBy::BlockedPct => TalkerSortBy::Requests,
         }
     }
 }
@@ -338,11 +338,11 @@ pub async fn resolve_and_cache(ip: [u8; 16]) {
     // Build the resolver; prefer system config so local PTR records resolve.
     let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
 
-    if let Ok(lookup) = resolver.reverse_lookup(addr).await {
-        if let Some(name) = lookup.iter().next() {
-            let hostname = name.to_string().trim_end_matches('.').to_string();
-            store_hostname(ip, hostname);
-        }
+    if let Ok(lookup) = resolver.reverse_lookup(addr).await
+        && let Some(name) = lookup.iter().next()
+    {
+        let hostname = name.to_string().trim_end_matches('.').to_string();
+        store_hostname(ip, hostname);
     }
 }
 
@@ -353,7 +353,7 @@ pub struct TalkersState {
     /// Per-IP aggregates keyed by raw 16-byte client address.
     pub entries: HashMap<[u8; 16], TalkerEntry>,
     /// Current sort order.
-    pub sort: TalkerSort,
+    pub sort: TalkerSortBy,
     /// Active filter.
     pub filter: TalkerFilter,
     /// When `true`, `push_event` is a no-op.
@@ -364,7 +364,7 @@ impl TalkersState {
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
-            sort: TalkerSort::default(),
+            sort: TalkerSortBy::default(),
             filter: TalkerFilter::default(),
             frozen: false,
         }
@@ -409,16 +409,16 @@ impl TalkersState {
             .collect();
 
         match self.sort {
-            TalkerSort::ByRequests => {
+            TalkerSortBy::Requests => {
                 rows.sort_by(|a, b| b.total_requests.cmp(&a.total_requests));
             }
-            TalkerSort::ByLastSeen => {
+            TalkerSortBy::LastSeen => {
                 rows.sort_by(|a, b| b.last_seen_ts.cmp(&a.last_seen_ts));
             }
-            TalkerSort::ByFirstSeen => {
+            TalkerSortBy::FirstSeen => {
                 rows.sort_by(|a, b| a.first_seen_ts.cmp(&b.first_seen_ts));
             }
-            TalkerSort::ByBlockedPct => {
+            TalkerSortBy::BlockedPct => {
                 rows.sort_by(|a, b| {
                     b.blocked_pct
                         .partial_cmp(&a.blocked_pct)
@@ -503,10 +503,10 @@ mod tests {
     #[test]
     fn test_talker_sort_labels_non_empty() {
         for sort in [
-            TalkerSort::ByRequests,
-            TalkerSort::ByLastSeen,
-            TalkerSort::ByFirstSeen,
-            TalkerSort::ByBlockedPct,
+            TalkerSortBy::Requests,
+            TalkerSortBy::LastSeen,
+            TalkerSortBy::FirstSeen,
+            TalkerSortBy::BlockedPct,
         ] {
             assert!(!sort.label().is_empty(), "{sort:?} has empty label");
         }
@@ -514,20 +514,20 @@ mod tests {
 
     #[test]
     fn test_talker_sort_next_cycles_all_four() {
-        let start = TalkerSort::ByRequests;
+        let start = TalkerSortBy::Requests;
         let s1 = start.next();
         let s2 = s1.next();
         let s3 = s2.next();
         let s4 = s3.next();
-        assert_eq!(s1, TalkerSort::ByLastSeen);
-        assert_eq!(s2, TalkerSort::ByFirstSeen);
-        assert_eq!(s3, TalkerSort::ByBlockedPct);
-        assert_eq!(s4, TalkerSort::ByRequests);
+        assert_eq!(s1, TalkerSortBy::LastSeen);
+        assert_eq!(s2, TalkerSortBy::FirstSeen);
+        assert_eq!(s3, TalkerSortBy::BlockedPct);
+        assert_eq!(s4, TalkerSortBy::Requests);
     }
 
     #[test]
     fn test_talker_sort_default_is_by_requests() {
-        assert_eq!(TalkerSort::default(), TalkerSort::ByRequests);
+        assert_eq!(TalkerSortBy::default(), TalkerSortBy::Requests);
     }
 
     // ── flag_name ────────────────────────────────────────────────────────────
@@ -805,7 +805,7 @@ mod tests {
         let state = TalkersState::new();
         assert_eq!(state.client_count(), 0);
         assert!(!state.frozen);
-        assert_eq!(state.sort, TalkerSort::ByRequests);
+        assert_eq!(state.sort, TalkerSortBy::Requests);
         assert_eq!(state.filter, TalkerFilter::None);
     }
 
@@ -928,7 +928,7 @@ mod tests {
     #[test]
     fn test_visible_rows_sort_by_last_seen_desc() {
         let mut state = state_with_three_talkers();
-        state.sort = TalkerSort::ByLastSeen;
+        state.sort = TalkerSortBy::LastSeen;
         let rows = state.visible_rows(3, 0);
         // .3 last=390, .1 last=274, .2 last=140 (approx; exact values don't matter — just order)
         assert!(rows[0].last_seen_ts >= rows[1].last_seen_ts);
@@ -938,7 +938,7 @@ mod tests {
     #[test]
     fn test_visible_rows_sort_by_first_seen_asc() {
         let mut state = state_with_three_talkers();
-        state.sort = TalkerSort::ByFirstSeen;
+        state.sort = TalkerSortBy::FirstSeen;
         let rows = state.visible_rows(3, 0);
         assert!(rows[0].first_seen_ts <= rows[1].first_seen_ts);
         assert!(rows[1].first_seen_ts <= rows[2].first_seen_ts);
@@ -947,7 +947,7 @@ mod tests {
     #[test]
     fn test_visible_rows_sort_by_blocked_pct_desc() {
         let mut state = state_with_three_talkers();
-        state.sort = TalkerSort::ByBlockedPct;
+        state.sort = TalkerSortBy::BlockedPct;
         let rows = state.visible_rows(3, 0);
         // ip2 has 100% blocked; ip1 and ip3 have 0%
         assert!((rows[0].blocked_pct - 100.0).abs() < 0.01);

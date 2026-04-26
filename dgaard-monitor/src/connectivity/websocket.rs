@@ -67,7 +67,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                     Ok(event) => {
                         let record = {
                             let domain_map = state.domain_map.read().await;
-                            event_to_record(&event, &*domain_map)
+                            event_to_record(&event, &domain_map)
                         };
                         let json = match serde_json::to_string(&record) {
                             Ok(j) => j,

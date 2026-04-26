@@ -113,7 +113,7 @@ async fn query_events(state: &AppState, q: &EventsQuery) -> Result<Vec<EventReco
                     return None;
                 }
             }
-            Some(event_to_record(&ev, &*domain_map))
+            Some(event_to_record(&ev, &domain_map))
         })
         .collect();
 

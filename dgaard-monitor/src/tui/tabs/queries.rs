@@ -330,6 +330,7 @@ impl FilterMode {
 /// All mutable state owned by the Queries tab.
 ///
 /// `TuiApp` holds one of these alongside the generic scroll offset.
+#[derive(Default)]
 pub struct QueriesState {
     /// Internal buffer in insertion order (oldest front, newest back).
     /// `VecDeque` gives O(1) front-eviction when the cap is reached.
@@ -340,17 +341,6 @@ pub struct QueriesState {
     pub sort: SortOrder,
     /// When `true`, `push_event` is a no-op; the buffer stays fixed.
     pub frozen: bool,
-}
-
-impl Default for QueriesState {
-    fn default() -> Self {
-        Self {
-            rows: VecDeque::new(),
-            filter: FilterMode::default(),
-            sort: SortOrder::default(),
-            frozen: false,
-        }
-    }
 }
 
 impl QueriesState {
