@@ -13,10 +13,10 @@ mod layout;
 mod tabs;
 mod widgets;
 
-use std::sync::Arc;
-use tokio::sync::watch;
 use crate::config::TuiConfig;
 use crate::state::AppState;
+use std::sync::Arc;
+use tokio::sync::watch;
 
 /// Run the terminal user interface.
 ///
