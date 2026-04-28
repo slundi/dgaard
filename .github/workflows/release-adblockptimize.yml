@@ -1,0 +1,144 @@
+name: Release adblockptimize
+
+on:
+  push:
+    branches:
+      - release
+    paths:
+      - 'adblockptimize/Cargo.toml'
+      - 'adblockptimize/src/**'
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check version changed
+        id: check
+        run: |
+          CURRENT=$(grep '^version' adblockptimize/Cargo.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+          PREVIOUS=$(git show HEAD^1:adblockptimize/Cargo.toml 2>/dev/null | grep '^version' | head -1 | sed 's/.*= *"\(.*\)"/\1/' || echo "0.0.0")
+          echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" != "$PREVIOUS" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Version changed: $PREVIOUS -> $CURRENT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Version unchanged ($CURRENT), skipping release."
+          fi
+
+  build:
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux musl — all three architectures via cross
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+          - target: armv7-unknown-linux-musleabihf
+            os: ubuntu-latest
+            use_cross: true
+          # macOS — native x86_64 and arm64
+          - target: x86_64-apple-darwin
+            os: macos-13
+            use_cross: false
+          - target: aarch64-apple-darwin
+            os: macos-14
+            use_cross: false
+          # Windows — x86_64 native, arm64 cross-compiled via MSVC
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use_cross: false
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            use_cross: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Install cross
+        if: matrix.use_cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} -p adblockptimize
+          else
+            cargo build --release --target ${{ matrix.target }} -p adblockptimize
+          fi
+
+      - name: Package binary (Unix)
+        if: ${{ !contains(matrix.target, 'windows') }}
+        run: |
+          tar czf adblockptimize-v${{ needs.check-version.outputs.version }}-${{ matrix.target }}.tar.gz \
+            -C target/${{ matrix.target }}/release adblockptimize
+
+      - name: Package binary (Windows)
+        if: contains(matrix.target, 'windows')
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path "target\${{ matrix.target }}\release\adblockptimize.exe" `
+            -DestinationPath "adblockptimize-v${{ needs.check-version.outputs.version }}-${{ matrix.target }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: adblockptimize-${{ matrix.target }}
+          path: |
+            adblockptimize-v*.tar.gz
+            adblockptimize-v*.zip
+          if-no-files-found: error
+
+  release:
+    needs: [check-version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: adblockptimize-*
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: adblockptimize-v${{ needs.check-version.outputs.version }}
+          name: "adblockptimize v${{ needs.check-version.outputs.version }}"
+          generate_release_notes: true
+          files: |
+            adblockptimize-v*.tar.gz
+            adblockptimize-v*.zip
