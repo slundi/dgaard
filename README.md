@@ -1,148 +1,145 @@
-# 🛡️ Dgaard: High-Performance Heuristic DNS Proxy
+# Dgaard
 
-**Dgaard** is a next-generation DNS filtering proxy written in Rust, designed for resource-constrained environments (like OpenWrt) and high-throughput networks. Unlike traditional blockers that rely solely on static lists, Dgaard uses a **stratified filtering pipeline** combining Zero-Copy lookups, Shannon Entropy heuristics, and Smart-IDN analysis.
+A suite of Rust tools for high-performance, privacy-first DNS filtering and network security. Designed for resource-constrained environments (OpenWrt, embedded routers) and SME networks alike.
 
-## ✨ Key Features
-- **DGA Detection:** Real-time Shannon Entropy and N-Gram analysis to identify randomly generated domains.
-- **Stratified Filtering:** High-speed matching using Bloom Filters and FSTs for millions of rules with minimal RAM.
-- **NRD Integration:** Blocks Newly Registered Domains using daily-updated feeds.
-- **Behavioral Analytics:** Detects NXDOMAIN hunting and DNS exfiltration patterns.
-- **Smart Keyword Sentry**: Proactive [parental control](docs/Parental-control.md) using `Aho-Corasick` label-matching to block categories (Adult, Gambling) with near-zero memory footprint, avoiding common over-blocking issues.
-- **OpenWrt Optimized:** Low memory footprint, zero-copy parsing, and async I/O.
-- **Live Stats:** Stream binary event data over a Unix Domain Socket for real-time monitoring.
-- **Deep Packet Inspection (DPI Lite)**: Analyzes TXT record entropy and CNAME chains to stop data exfiltration and CNAME cloaking.
-- **DNS Rebinding Protection**: Automatically drops public queries resolving to private local IPs.
-- **Threat Intelligence**: Analyzes blocklist trends to provide users with data-driven suggestions for parental control and TLD blocking.
-- **Smart Keyword Sentry**: Proactive label-matching using `Aho-Corasick` to block categories (Adult, Gambling) with near-zero memory footprint.
+---
 
-## 🎯 Target Audience
+## Packages
 
-* **OpenWrt & Embedded Users**: Who need a sub-10MB RAM footprint without sacrificing features.
-* **Privacy Enthusiasts**: Who want to block Zero-Day malicious domains (DGA) before they are even added to public blocklists.
-* **SMEs & Medium Networks**: Who require a multi-threaded, stable DNS forwarder that scales with CPU cores.
-* **Security Researchers**: Who need real-time streaming of DNS events via Unix Sockets for custom monitoring.
+### [dgaard](./dgaard) — DNS Security Proxy *(main project)*
 
-## 💡 Motivations
+[![Crates.io](https://img.shields.io/crates/v/dgaard)](https://crates.io/crates/dgaard)
 
-Traditional DNS blockers (Pi-hole, AdGuard) have two major limitations:
-1. **The "Static Gap"**: They are blind to Newly Registered Domains (NRD) and Algorithmically  Generated Domains (DGA) until a human adds them to a list.
-2. **Resource Bloat**: Parsing millions of strings into memory is inefficient for routers.
+A heuristic DNS filtering proxy that goes beyond static blocklists. Instead of waiting for a threat to appear on a list, Dgaard analyses the mathematical and lexical structure of every domain in real time to detect and block malicious traffic proactively.
 
-**Dgaard** solves this by using rkyv (Zero-Copy) for instant list loading and Shannon Entropy math to detect suspicious patterns in real-time.
+**Key capabilities:**
 
-## ⚖️ Comparison with Existing Solutions
-
-| Feature | Pi-hole / AdGuard | Blocky / Unbound | Dgaard |
-|:--------|:------------------|:-----------------|:-------|
-| **Language** | PHP/Go/C | Go / C | **Rust** (Memory Safe & Fast) |
-| **Filtering Method** | Exact Match Lists | Lists + RegEx | **Stratified: Lists + Heuristics + IDN** |
-| **RAM Usage** | Moderate to High | Moderate | **Ultra-Low (Bloom Filters & rkyv)** |
-| **DGA Detection** | ❌ No | ❌ No | **✅ Yes (Shannon Entropy Math)** |
-| **IDN/Homograph** | ⚠️ Partial | ❌ No | **✅ Yes (Punycode Analysis)** |
-| **Architecture** | Monolithic (UI+Core) | Core Only | **Split-Process (Engine + Unix Socket UI)** |
-| **Enterprise Scale** | ❌ Hard to scale | ✅ Possible | **✅ Built-in SO_REUSEPORT support** |
-
-### Comparison with Proprietary Solutions (Cisco Umbrella / NextDNS)
-
-* **Privacy**: Unlike cloud providers, Dgaard keeps 100% of your data on your local hardware. No logs ever leave your network.
-* **Cost**: Enterprise-grade DGA detection usually requires a monthly subscription. Dgaard provides it for free as an open-source tool.
-* **Latency**: Dgaard runs at your network edge (router), eliminating the RTT (Round Trip Time) to cloud-based filtering servers.
-
-## 🛠️ The Stratified Filtering Pipeline
-
-Dgaard processes every query through a "Short-Circuit" funnel to ensure maximum speed:
-* **Fast-Drop Gatekeeper**: Instantly rejects non-standard ASCII/malformed domains.
-* **Zero-Copy Whitelist**: Bypasses all checks for your trusted domains using `xxh64` hashes.
-* **Smart-IDN Blocker**: Decodes Punycode and blocks Homograph (look-alike) phishing attacks.
-* **Tiered Blacklist**: Massive 1M+ entry lists stored in Bloom Filters and rkyv archives (0.1ms lookup).
-* **Heuristic Engine**: Calculates the entropy of the domain. High-randomness strings (e.g. `ajh12-v9z.top`) are blocked as potential malware C2 channels.
-
-## 🚀 Technical Highlights
-
-* **Zero-Copy Serialization**: Uses `rkyv` to map massive blocklists from disk directly into memory.
-* **Async Core**: Powered by `Tokio` for high-concurrency UDP handling.
-* **Telemetry**: Streams real-time `Postcard`-encoded events over a Unix Domain Socket (UDS) for external Dashboards/TUIs.
-* **Atomic Updates**: Uses `arc-swap` for zero-downtime rule updates.
-
-## 🚀 Quick Start (OpenWrt)
-
-1. **Install Dependencies:**
-
-Ensure you have `ca-bundle` and `libstdcpp` installed.
-   
-2. **Download Binary:**
-
-Place the `dgaard` binary in `/usr/bin/` and `dgaard.toml` in `/etc/dgaard/`.
-
-3. **Configure Dnsmasq:**
-
-Point your local dnsmasq to Dgaard (default port 5353):
-```bash
-# in OpenWRT
-uci set dhcp.@dnsmasq[0].server='127.0.0.1#5353'
-uci commit dhcp
-/etc/init.d/dnsmasq restart
-```
-
-4. **Run**
+- **DGA detection** — Shannon Entropy and N-Gram models identify algorithmically generated domains (malware C2) before they appear on any blocklist.
+- **Stratified filtering pipeline** — queries flow through a short-circuit funnel: whitelist → hot LRU cache → Bloom filter + rkyv zero-copy blocklists → heuristic engine. Each stage is orders of magnitude cheaper than the next.
+- **Smart-IDN / Homograph protection** — decodes Punycode and blocks look-alike phishing domains.
+- **DNS exfiltration & rebinding protection** — monitors TXT record entropy, CNAME chains, and subdomain volume; drops public queries that resolve to private IPs.
+- **Behavioral analytics** — detects NXDOMAIN-hunting clients (botnet indicators) and DNS tunneling patterns.
+- **Live telemetry** — streams length-prefixed binary events over a Unix Domain Socket for real-time dashboards.
+- **OpenWrt-optimised** — binary under 5 MB, `SO_REUSEPORT` multi-threading, async Tokio runtime, zero-copy parsing with `rkyv`.
 
 ```bash
+cargo install dgaard
 dgaard --config /etc/dgaard/dgaard.toml
 ```
 
-## 🛠️ Configuration
+See the [dgaard README](./dgaard/README.md) and [example configuration](./dgaard/config.example.toml) for the full setup guide.
 
-Dgaard uses a stratified filtering order to maximize performance:
-1. Whitelist (Instant pass)
-2. Hot Cache (Favorites/Frequently used)
-3. Static Blocklists (Exact/Wildcard/Regex)
-4. Heuristic Engine (Entropy/Lexical/NRD)
-See [dgaard.toml](config.example.toml) for detailed options.
+---
 
-## 📊 Monitoring
+### [dgaard-monitor](./dgaard-monitor) — Real-Time TUI Dashboard
 
-Connect to the Unix socket to see live hits:
+[![Crates.io](https://img.shields.io/crates/v/dgaard-monitor)](https://crates.io/crates/dgaard-monitor)
+
+A terminal UI that connects to `dgaard`'s Unix Domain Socket and visualises DNS activity without adding any overhead to the proxy process. It resolves domain hashes back to human-readable names via a static mapping file, then renders live feeds, per-client traffic (Talkers), timeline charts, and top-N block statistics.
+
+**Key capabilities:**
+
+- Parses the length-prefixed binary protocol emitted by `dgaard` (`[u16: length][u8: type][payload]`).
+- Watches the host-index file with `inotify` and hot-reloads domain mappings without restarting.
+- Aggregates events into bucketed timelines with zoom cycling and gap-filling.
+- Resolves client IPs to hostnames via reverse-DNS (PTR lookups) in the background.
+- Linux only (relies on `inotify`).
 
 ```bash
-socat - UNIX-CONNECT:/tmp/dgaard_stats.sock
+cargo install dgaard-monitor
+
+# attach to a running dgaard instance
+dgaard-monitor --socket /tmp/dgaard_stats.sock --index /var/lib/dgaard/hosts.bin
 ```
 
-## Build & deploy
+See the [dgaard-monitor README](./dgaard-monitor/README.md) for the full protocol and configuration reference.
+
+---
+
+### [adblockptimize](./adblockptimize) — Adblock List Optimizer
+
+[![Crates.io](https://img.shields.io/crates/v/adblockptimize)](https://crates.io/crates/adblockptimize)
+
+A CLI tool that ingests standard adblock lists (files or URLs) and splits them into two deduplicated, sorted outputs: one for **network-level** blocking (DNS, dnsmasq, Unbound, Pi-hole, AdGuard Home) and one for **browser-level** blocking (CSS/JS/HTML cosmetic rules). Feeding the network output directly into `dgaard` gives you cleaner, smaller blocklists with no browser-specific noise.
 
 ```bash
+cargo install adblockptimize
+
+# split a list into network and browser files
+adblockptimize https://example.com/list.txt local-list.txt
+
+# dnsmasq format, network rules only
+adblockptimize --no-browser --format=dnsmasq https://example.com/list.txt
+
+# custom output file names
+adblockptimize --network-file=dns.txt --browser-file=ublock.txt https://example.com/list.txt
+```
+
+See the [adblockptimize README](./adblockptimize/README.md) for the full format and target compatibility table.
+
+---
+
+## Architecture
+
+```
+adblockptimize          dgaard-monitor
+      |                       |
+      | (optimised lists)     | (Unix socket telemetry)
+      v                       |
+   dgaard  <-----------------/
+(DNS proxy, port 5353)
+      |
+   dnsmasq / router DNS
+      |
+   LAN clients
+```
+
+`adblockptimize` pre-processes upstream adblock lists into compact, DNS-ready formats that `dgaard` can ingest. `dgaard-monitor` connects to `dgaard`'s telemetry socket and provides a live view of what is happening on the network — all three tools are designed to work together but can be used independently.
+
+---
+
+## Installation
+
+All packages are published to [crates.io](https://crates.io) and can be installed with Cargo:
+
+```bash
+cargo install dgaard
+cargo install dgaard-monitor   # Linux only
+cargo install adblockptimize
+```
+
+Pre-built binaries for Linux (musl), macOS, and Windows are available on the [Releases](../../releases) page. Each package is released independently and tagged `<package>-v<version>`.
+
+---
+
+## Building from source
+
+```bash
+git clone https://codeberg.org/slundi/dgaard
+cd dgaard
+
+# build all packages
 cargo build --release
 
-# cross compilation
+# build a specific package
+cargo build --release -p dgaard
+cargo build --release -p dgaard-monitor
+cargo build --release -p adblockptimize
+```
+
+Cross-compilation via [`cross`](https://github.com/cross-rs/cross):
+
+```bash
 cargo install cross --git https://github.com/cross-rs/cross
 
-# Deploy to your router
-# Move binary
-scp target/mips-unknown-linux-musl/release/dgaard root@192.168.1.1:/usr/bin/
-
-# Move config
-scp dgaard.toml root@192.168.1.1:/etc/dgaard.toml
-
-# Run it!
-ssh root@192.168.1.1 "dgaard /etc/dgaard.toml"
+cross build --release --target aarch64-unknown-linux-musl -p dgaard
+cross build --release --target armv7-unknown-linux-musleabihf -p dgaard
 ```
 
-Set permissions:
-```bash
-# Make it executable
-chmod +x /etc/init.d/dgaard
+---
 
-# Enable it to start on boot
-/etc/init.d/dgaard enable
+## License
 
-# Start it now
-/etc/init.d/dgaard start
-```
+Apache-2.0 — see each package's `Cargo.toml` for details.
 
-## 🤝 Contributing
-
-Dgaard is developed on Codeberg and mirrored to GitHub.
-
-* Primary Repo: [Codeberg main repo](https://codeberg.org/slundi/dgaard)
-* Mirror: [GitHub repo](https://codeberg.com/slundi/dgaard)
-
-Dgaard: Guarding your gateway with Rust-powered intelligence.
+Repository: <https://codeberg.org/slundi/dgaard>
