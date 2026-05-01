@@ -15,18 +15,18 @@
 
 * [ ] Main Loop: Setup terminal raw mode and tick rate (e.g., 250ms).
 * [ ] Input Handling: Support `q` or `Ctrl+c` to quit and `c` to clear current session stats in a separete file since we will support custom key mapping later.
-* [ ] TUI layout:
-  * [ ] Top bar, with 3 rowws:
-   * [ ] Row 1 Header: contain tabs `Dashboard`, `Queries`, `Talkers`, `Timelines`, `About`. And some state indicator (active filter 🕵, frozen view ❄️, connectivity status)
-   * [ ] Row 2 Key metrics:  total, blocked %, active client count, QPS
-   * [ ] Row 3 dynamic: Split horizontally between "Live Feed" (Left 60%) and "Flag Distribution" (Right 40%)
-  * [ ] remaining space is to display tab content
-* [ ] `Dashboard` tab:
-  * [ ] Total stats: total queries, active clients, blocked queries, percentage blocked, query types (A (IPv4), AAAA (IPv6), PTR, TXT, ...), ~~upstream server~~
-  * [ ] Live Feed: A scrolling list of the last 20 queries (Client IP -> Domain -> Action).
-  * [ ] Top domains: A bar chart or table of domains, red for blocked, green for permitted ones.
-  * [ ] Traffic Gauge: Queries per second (QPS).
-  * [ ] Most active blocking flags (count and ratio)?
+* [x] TUI layout:
+  * [x] Top bar, with 3 rows:
+   * [x] Row 1 Header: contain tabs `Dashboard`, `Queries`, `Talkers`, `Timelines`, `About`. And some state indicator (active filter 🕵, frozen view ❄️, connectivity status)
+   * [x] Row 2 Key metrics:  total, blocked %, active client count, QPS
+   * [x] Row 3 dynamic: Split horizontally between "Live Feed" (Left 60%) and "Flag Distribution" (Right 40%)
+  * [x] remaining space is to display tab content
+* [x] `Dashboard` tab:
+  * [x] Total stats: total queries, active clients, blocked queries, percentage blocked, query types (A (IPv4), AAAA (IPv6), PTR, TXT, ...), ~~upstream server~~
+  * [x] Live Feed: A scrolling list of the last 20 queries (Client IP -> Domain -> Action).
+  * [x] Top domains: A bar chart or table of domains, red for blocked, green for permitted ones.
+  * [x] Traffic Gauge: Queries per second (QPS).
+  * [x] Most active blocking flags (count and ratio)?
 * [ ] Flag Distribution: Use a Sparkline or BarChart to show which StatBlockReason bitflags are firing most often.
 * [x] Tab `Queries` (tail like) with column display: datetime, Domain, IP, blocking flags. `f` to filter flags or client, `s` for a sorting (default last queries on top) popup, `z` to freeze so the display is not updated (show info on ).
   * [x] Implement Virtual Scrolling (only render what’s visible) to handle a history buffer of 1,000+ entries without lag.
@@ -35,16 +35,17 @@
   * [x] Add Reverse DNS: If the monitor can resolve local IPs to hostnames, display the hostname in the Talker tab.
 * [ ] Tab `Timelines` for 24h trends: Total queries, Client activity
 * [x] Tab `About`: contains project name, version, repo URL `https://codeberg.org/slundi/dgaard`, license Apache 2, separator, key mapping
+* [ ] Country flags for hosted domains
 
 ## Phase 3: Analytics
 
-* [ ] **Client Tracking**: Identify "Top Talkers" (most active client IPs).
+* [x] **Client Tracking**: Identify "Top Talkers" (most active client IPs): done in `Talkers` tab with filter
 * [ ] **Reason Breakdown**: If StatAction includes specific block reasons (Malware, Ad, Tracking), display a pie chart of block categories.
 * [ ] **Search/Filter**: Allow filtering the live feed by specific client IP or domain keyword.
 
 ## Phase 4: Data & Persistence
 
-* [ ] **File Watcher**: Implement notify to hot-reload the host index without restarting the monitor.
+* [x] **File Watcher**: Implement notify to hot-reload the host index without restarting the monitor.
 * [ ] **Timeseries DB**: Integrate SQLite (via rusqlite) to store aggregated hourly counts for top domains.
 * [ ] **Hash Reconciliation**: Logic to handle index updates where a domain's hash might have changed.
 
@@ -56,8 +57,10 @@
 
 ## Phase 6: Integrations
 
-* [ ] Action Hooks: Configuration file to define on_block triggers.
-* [ ] Generic Webhooks: Support for POSTing JSON payloads to external URLs (SOAR, Slack, etc.).
+* [x] Action Hooks: Configuration file to define on_block triggers.
+* [x] Generic Webhooks: Support for POSTing JSON payloads to external URLs (SOAR, Slack, etc.).
+
+Should be doable with forwarding feature, needs further testing.
 
 ## Ideas
 
