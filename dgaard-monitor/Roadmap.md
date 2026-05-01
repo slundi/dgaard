@@ -33,8 +33,6 @@
   * [x] Action Styling: Full row highlight or prefix icons (e.g., ✔ for Allowed, ✘ for Blocked).
 * [x] Tab `Talkers` (most active client IPs) with column display: Client or name, DNS request count, per filter count, first/last seen
   * [x] Add Reverse DNS: If the monitor can resolve local IPs to hostnames, display the hostname in the Talker tab.
-  * [ ] Popup `Talker`: Title `Talker <client>` that displays most visited domain, last domain
-  * [ ] Add timeline?
 * [ ] Tab `Timelines` for 24h trends: Total queries, Client activity
 * [x] Tab `About`: contains project name, version, repo URL `https://codeberg.org/slundi/dgaard`, license Apache 2, separator, key mapping
 

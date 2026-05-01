@@ -109,9 +109,14 @@ pub enum TalkerFilter {
     /// No filter — all talkers are visible.
     #[default]
     None,
-    /// Show only entries whose formatted IP starts with the prefix OR whose
+    /// Fuzzy: show entries whose formatted IP starts with the prefix OR whose
     /// cached hostname contains the text as a substring (case-sensitive).
     ByText(String),
+    /// Strict: show only the entry whose formatted IP exactly equals `client`.
+    ByClient(String),
+    /// Strict: show only entries whose cached hostname exactly equals `hostname`
+    /// (case-sensitive).  Entries with no resolved hostname are excluded.
+    ByHostname(String),
 }
 
 impl TalkerFilter {
@@ -127,6 +132,10 @@ impl TalkerFilter {
                     .map(|h| h.contains(text.as_str()))
                     .unwrap_or(false)
             }
+            TalkerFilter::ByClient(client) => format_ip(entry.client_ip) == client.as_str(),
+            TalkerFilter::ByHostname(hostname) => cached_hostname(entry.client_ip)
+                .map(|h| h == *hostname)
+                .unwrap_or(false),
         }
     }
 }
@@ -989,6 +998,64 @@ mod tests {
     fn test_visible_rows_filter_no_match_returns_empty() {
         let mut state = state_with_three_talkers();
         state.filter = TalkerFilter::ByText("172.16.".to_string());
+        let rows = state.visible_rows(10, 0);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_visible_rows_filter_by_exact_client_matches_only_that_ip() {
+        let mut state = state_with_three_talkers();
+        state.filter = TalkerFilter::ByClient("10.3.0.1".to_string());
+        let rows = state.visible_rows(10, 0);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].total_requests, 30);
+    }
+
+    #[test]
+    fn test_visible_rows_filter_by_exact_client_excludes_prefix_matches() {
+        // "10.3.0" is a prefix of all three IPs — strict match should return none.
+        let mut state = state_with_three_talkers();
+        state.filter = TalkerFilter::ByClient("10.3.0".to_string());
+        let rows = state.visible_rows(10, 0);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_visible_rows_filter_by_exact_hostname_matches_only_exact() {
+        let mut state = TalkersState::new();
+        let ip1 = ipv4(10, 4, 0, 1);
+        let ip2 = ipv4(10, 4, 0, 2);
+        store_hostname(ip1, "web.office.local".to_string());
+        store_hostname(ip2, "db.office.local".to_string());
+        state.push_event(&ev(100, ip1, StatAction::Allowed));
+        state.push_event(&ev(100, ip2, StatAction::Allowed));
+
+        state.filter = TalkerFilter::ByHostname("web.office.local".to_string());
+        let rows = state.visible_rows(10, 0);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].display_name, "web.office.local");
+    }
+
+    #[test]
+    fn test_visible_rows_filter_by_exact_hostname_excludes_substring_matches() {
+        let mut state = TalkersState::new();
+        let ip = ipv4(10, 4, 0, 3);
+        store_hostname(ip, "my-printer.office.local".to_string());
+        state.push_event(&ev(100, ip, StatAction::Allowed));
+
+        // "printer" is a substring but not the exact hostname.
+        state.filter = TalkerFilter::ByHostname("printer".to_string());
+        let rows = state.visible_rows(10, 0);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_visible_rows_filter_by_exact_hostname_excludes_unresolved_entries() {
+        let mut state = TalkersState::new();
+        let ip = ipv4(10, 4, 0, 4); // no hostname stored
+        state.push_event(&ev(100, ip, StatAction::Allowed));
+
+        state.filter = TalkerFilter::ByHostname("anything.local".to_string());
         let rows = state.visible_rows(10, 0);
         assert!(rows.is_empty());
     }
