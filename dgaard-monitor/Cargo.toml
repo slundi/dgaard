@@ -38,6 +38,10 @@ axum = { version = "0.8.1", features = ["ws"] }
 # Reverse-DNS resolution for the Talkers tab (PTR lookups)
 hickory-resolver = { version = "0.24", features = ["tokio-runtime"] }
 
+# Terminal UI rendering
+ratatui = "0.30"
+crossterm = "0.29"
+
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
