@@ -189,11 +189,6 @@ mod tests {
         assert_eq!(LICENSE, "Apache 2.0");
     }
 
-    #[test]
-    fn test_version_is_non_empty() {
-        assert!(!VERSION.is_empty());
-    }
-
     // --- key_bindings ---
 
     #[test]

@@ -277,10 +277,11 @@ impl TimelinesState {
         }
         let zoom_secs = self.zoom.seconds();
         let key = (event.timestamp / zoom_secs) * zoom_secs;
-        if !self.buckets.contains_key(&key) && self.buckets.len() >= MAX_BUCKETS {
-            if let Some(&oldest) = self.buckets.keys().min() {
-                self.buckets.remove(&oldest);
-            }
+        if !self.buckets.contains_key(&key)
+            && self.buckets.len() >= MAX_BUCKETS
+            && let Some(&oldest) = self.buckets.keys().min()
+        {
+            self.buckets.remove(&oldest);
         }
         self.buckets.entry(key).or_default().record(event);
     }
