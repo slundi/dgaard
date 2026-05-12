@@ -288,7 +288,12 @@ fn to_ratatui_color(color: DomainColor) -> ratatui::style::Color {
 /// Render the Dashboard tab body into `area`.
 ///
 /// `scroll` is the vertical scroll offset for the left Recent-Domains panel.
-pub fn render(state: &DashboardState, scroll: usize, area: ratatui::layout::Rect, frame: &mut ratatui::Frame) {
+pub fn render(
+    state: &DashboardState,
+    scroll: usize,
+    area: ratatui::layout::Rect,
+    frame: &mut ratatui::Frame,
+) {
     use ratatui::{
         layout::{Constraint, Layout},
         style::{Modifier, Style},
@@ -389,11 +394,7 @@ pub fn render(state: &DashboardState, scroll: usize, area: ratatui::layout::Rect
             Line::from(tf.count.to_string()),
             Line::from(format!("{:.1} %", tf.pct)),
         ],
-        None => vec![
-            Line::from("—"),
-            Line::from("0"),
-            Line::from("0.0 %"),
-        ],
+        None => vec![Line::from("—"), Line::from("0"), Line::from("0.0 %")],
     };
 
     frame.render_widget(
