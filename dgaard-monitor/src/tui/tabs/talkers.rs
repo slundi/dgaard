@@ -418,14 +418,12 @@ impl TalkersState {
             .collect();
 
         match self.sort {
-            TalkerSortBy::Requests => {
-                rows.sort_by(|a, b| b.total_requests.cmp(&a.total_requests));
-            }
+            TalkerSortBy::Requests => rows.sort_by_key(|b| std::cmp::Reverse(b.total_requests)),
             TalkerSortBy::LastSeen => {
-                rows.sort_by(|a, b| b.last_seen_ts.cmp(&a.last_seen_ts));
+                rows.sort_by_key(|b| std::cmp::Reverse(b.last_seen_ts));
             }
             TalkerSortBy::FirstSeen => {
-                rows.sort_by(|a, b| a.first_seen_ts.cmp(&b.first_seen_ts));
+                rows.sort_by_key(|a| a.first_seen_ts);
             }
             TalkerSortBy::BlockedPct => {
                 rows.sort_by(|a, b| {

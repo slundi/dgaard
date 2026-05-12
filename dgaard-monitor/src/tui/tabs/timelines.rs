@@ -334,11 +334,9 @@ impl TimelinesState {
 
         match self.sort {
             TimelineSort::NewestFirst => {
-                rows.sort_unstable_by(|a, b| b.bucket_ts.cmp(&a.bucket_ts))
+                rows.sort_unstable_by_key(|b| std::cmp::Reverse(b.bucket_ts))
             }
-            TimelineSort::OldestFirst => {
-                rows.sort_unstable_by(|a, b| a.bucket_ts.cmp(&b.bucket_ts))
-            }
+            TimelineSort::OldestFirst => rows.sort_unstable_by_key(|a| a.bucket_ts),
         }
 
         rows.into_iter().skip(scroll).take(height).collect()
