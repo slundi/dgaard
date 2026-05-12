@@ -34,6 +34,12 @@ pub static STATS_COUNTERS: StatsCounters = StatsCounters::new();
 pub static STATS_SENDER: std::sync::OnceLock<StatsSender> = std::sync::OnceLock::new();
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // rustls 0.23 requires an explicit process-level crypto provider.
+    // hyper-rustls is built with the "ring" feature, so install that provider.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls ring crypto provider");
+
     let opts = cli::parse();
 
     let config_path = config::discover_path(opts.config.as_deref()).ok_or("Configuration file not found. Please provide one via --config or place it in /etc/dgaard/config.toml")?;
