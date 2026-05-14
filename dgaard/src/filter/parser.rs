@@ -1,5 +1,5 @@
 use core::sync::atomic::Ordering;
-use hickory_resolver::Name;
+use hickory_resolver::proto::rr::Name;
 use std::str::FromStr;
 
 use crate::{

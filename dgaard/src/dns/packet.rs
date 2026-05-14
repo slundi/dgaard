@@ -18,7 +18,7 @@ impl DnsPacket {
         let message = Message::from_vec(bytes).ok()?;
 
         // DNS packets usually have 1 question. We take the first one.
-        let query = message.queries().first()?;
+        let query = message.queries.first()?;
         let domain = query.name().to_string().to_lowercase();
 
         // Remove trailing dot if present (e.g., "example.com." -> "example.com")
@@ -37,10 +37,10 @@ impl DnsPacket {
     pub fn build_nxdomain_response(query_msg: &Message) -> Vec<u8> {
         let mut response = query_msg.clone();
 
-        response.set_message_type(MessageType::Response);
-        response.set_response_code(ResponseCode::NXDomain);
-        response.set_recursion_available(true);
-        response.set_authoritative(true);
+        response.metadata.message_type = MessageType::Response;
+        response.metadata.response_code = ResponseCode::NXDomain;
+        response.metadata.recursion_available = true;
+        response.metadata.authoritative = true;
 
         response.to_vec().unwrap_or_default()
     }
@@ -49,9 +49,9 @@ impl DnsPacket {
     pub fn build_servfail_response(query_msg: &Message) -> Vec<u8> {
         let mut response = query_msg.clone();
 
-        response.set_message_type(MessageType::Response);
-        response.set_response_code(ResponseCode::ServFail);
-        response.set_recursion_available(true);
+        response.metadata.message_type = MessageType::Response;
+        response.metadata.response_code = ResponseCode::ServFail;
+        response.metadata.recursion_available = true;
 
         response.to_vec().unwrap_or_default()
     }
@@ -87,14 +87,14 @@ impl InspectedAnswer {
         let message = Message::from_vec(bytes).ok()?;
         let mut result = Self::default();
 
-        for record in message.answers() {
-            let ttl = record.ttl();
+        for record in &message.answers {
+            let ttl = record.ttl;
             result.min_ttl = Some(match result.min_ttl {
                 Some(current) => current.min(ttl),
                 None => ttl,
             });
 
-            match record.data() {
+            match &record.data {
                 RData::A(a) => result.a_records.push(a.0),
                 RData::AAAA(aaaa) => result.aaaa_records.push(aaaa.0),
                 RData::CNAME(cname) => {
@@ -104,7 +104,7 @@ impl InspectedAnswer {
                         .push(cname.0.to_string().trim_end_matches('.').to_string());
                 }
                 RData::TXT(txt) => {
-                    for segment in txt.txt_data() {
+                    for segment in &txt.txt_data {
                         result.txt_records.push(segment.to_vec());
                     }
                 }
@@ -202,8 +202,8 @@ mod tests {
 
         // Parse response to verify it's NXDOMAIN
         let response_msg = Message::from_vec(&response).unwrap();
-        assert_eq!(response_msg.message_type(), MessageType::Response);
-        assert_eq!(response_msg.response_code(), ResponseCode::NXDomain);
+        assert_eq!(response_msg.metadata.message_type, MessageType::Response);
+        assert_eq!(response_msg.metadata.response_code, ResponseCode::NXDomain);
     }
 
     #[test]
@@ -218,8 +218,8 @@ mod tests {
         let response = DnsPacket::build_servfail_response(&dns_packet.message);
 
         let response_msg = Message::from_vec(&response).unwrap();
-        assert_eq!(response_msg.message_type(), MessageType::Response);
-        assert_eq!(response_msg.response_code(), ResponseCode::ServFail);
+        assert_eq!(response_msg.metadata.message_type, MessageType::Response);
+        assert_eq!(response_msg.metadata.response_code, ResponseCode::ServFail);
     }
 }
 
@@ -236,9 +236,9 @@ mod tests_inspector {
     // --- helpers ---
 
     fn build_response(answers: Vec<Record>) -> Vec<u8> {
-        let mut msg = Message::new();
-        msg.set_message_type(MessageType::Response);
-        msg.set_response_code(ResponseCode::NoError);
+        let mut msg = Message::query();
+        msg.metadata.message_type = MessageType::Response;
+        msg.metadata.response_code = ResponseCode::NoError;
         for record in answers {
             msg.add_answer(record);
         }

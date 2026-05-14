@@ -7,7 +7,7 @@ license = "Apache-2.0"
 repository = "https://codeberg.org/slundi/dgaard"
 keywords = ["dns", "proxy", "security", "filter", "heuristics"]
 categories = ["network-programming", "embedded-software", "cryptography"]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
@@ -18,7 +18,7 @@ num_cpus = "1.17.0"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "time"] }
 
 # DNS Protocol handling and for Domain/TLD parsing logic
-hickory-resolver = "0.25.2"
+hickory-resolver = "0.26.1"
 # to handle multiple socket on the same port
 socket2 = "0.6.3"
 
@@ -58,10 +58,10 @@ log = "0.4.29"
 env_logger = "0.11"
 
 # Binary serialization: manual implementation for stats (no serde overhead)
-rkyv = "0.8.15"
+rkyv = "0.8.16"
 
 # Used for the 'Hot Cache' / Favorites
-lru = "0.16"
+lru = "0.18"
 
 dashmap = "6.1.0"
 arc-swap = "1.9.0"

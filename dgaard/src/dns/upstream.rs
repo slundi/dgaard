@@ -128,7 +128,7 @@ mod tests {
         assert_eq!(dns_packet.domain, "example.com");
 
         // Verify the query type is preserved
-        let query = dns_packet.message.queries().first().unwrap();
+        let query = dns_packet.message.queries.first().unwrap();
         assert_eq!(
             query.query_type(),
             hickory_resolver::proto::rr::RecordType::AAAA
