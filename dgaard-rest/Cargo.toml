@@ -4,3 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+arc-swap.workspace = true
+argh.workspace = true
+axum.workspace = true
+dgaard-engine.workspace = true
+env_logger.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "signal", "time"] }
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tower.workspace = true

@@ -1,0 +1,113 @@
+use serde::Deserialize;
+
+fn default_listen_addr() -> String {
+    String::from("127.0.0.1:8080")
+}
+
+fn default_config_file() -> String {
+    String::from("/etc/dgaard/dgaard.toml")
+}
+
+fn default_log_level() -> String {
+    String::from("info")
+}
+
+fn default_blocked_status_code() -> u16 {
+    200
+}
+
+/// Runtime configuration for dgaard-rest.
+///
+/// Maps to `dgaard-rest.toml`. All fields have sensible defaults so the
+/// server can start without a configuration file.
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)] // fields consumed by Phase R2 route handlers
+pub struct RestConfig {
+    /// Address and port the HTTP server binds to.
+    #[serde(default = "default_listen_addr")]
+    pub listen_addr: String,
+
+    /// Path to the dgaard-engine configuration file (`dgaard.toml`).
+    #[serde(default = "default_config_file")]
+    pub config_file: String,
+
+    /// `env_logger`-compatible log level filter (e.g. `"info"`, `"debug"`).
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+
+    /// HTTP status code returned for blocked domains: `200` or `403`.
+    #[serde(default = "default_blocked_status_code")]
+    pub blocked_status_code: u16,
+}
+
+impl Default for RestConfig {
+    fn default() -> Self {
+        Self {
+            listen_addr: default_listen_addr(),
+            config_file: default_config_file(),
+            log_level: default_log_level(),
+            blocked_status_code: default_blocked_status_code(),
+        }
+    }
+}
+
+impl RestConfig {
+    pub fn load(content: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(content)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_listen_addr_is_localhost_8080() {
+        assert_eq!(RestConfig::default().listen_addr, "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn default_config_file_is_etc_dgaard() {
+        assert_eq!(RestConfig::default().config_file, "/etc/dgaard/dgaard.toml");
+    }
+
+    #[test]
+    fn default_log_level_is_info() {
+        assert_eq!(RestConfig::default().log_level, "info");
+    }
+
+    #[test]
+    fn default_blocked_status_code_is_200() {
+        assert_eq!(RestConfig::default().blocked_status_code, 200);
+    }
+
+    #[test]
+    fn load_partial_toml_applies_defaults_for_missing_fields() {
+        let toml = r#"listen_addr = "0.0.0.0:9090""#;
+        let cfg = RestConfig::load(toml).unwrap();
+        assert_eq!(cfg.listen_addr, "0.0.0.0:9090");
+        assert_eq!(cfg.config_file, "/etc/dgaard/dgaard.toml");
+        assert_eq!(cfg.log_level, "info");
+        assert_eq!(cfg.blocked_status_code, 200);
+    }
+
+    #[test]
+    fn load_full_toml_overrides_all_fields() {
+        let toml = r#"
+listen_addr = "0.0.0.0:8443"
+config_file = "/etc/custom/engine.toml"
+log_level = "debug"
+blocked_status_code = 403
+"#;
+        let cfg = RestConfig::load(toml).unwrap();
+        assert_eq!(cfg.listen_addr, "0.0.0.0:8443");
+        assert_eq!(cfg.config_file, "/etc/custom/engine.toml");
+        assert_eq!(cfg.log_level, "debug");
+        assert_eq!(cfg.blocked_status_code, 403);
+    }
+
+    #[test]
+    fn load_invalid_toml_returns_error() {
+        assert!(RestConfig::load("not = [valid toml").is_err());
+    }
+}

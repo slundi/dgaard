@@ -792,6 +792,20 @@ dependencies = [
 [[package]]
 name = "dgaard-rest"
 version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "argh",
+ "axum",
+ "dgaard-engine",
+ "env_logger",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tower",
+]
 
 [[package]]
 name = "digest"
