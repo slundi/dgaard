@@ -26,7 +26,7 @@ struct Args {
 }
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const HASH_SEED: u64 = 42;
+pub(crate) const HASH_SEED: u64 = 42;
 
 /// Directories searched in order for `dgaard-rest.toml` when `--config` is absent.
 const CONFIG_SEARCH_DIRS: &[&str] = &["/etc/dgaard-rest", "."];
@@ -81,7 +81,12 @@ async fn main() {
     });
 
     let engine = FilterEngine::build_from_files(&engine_config, HASH_SEED);
-    let state = AppState::new(engine, engine_config);
+    let state = AppState::new(
+        engine,
+        engine_config,
+        rest_cfg.config_file.clone(),
+        rest_cfg.blocked_status_code,
+    );
 
     let app = routes::router().with_state(state);
 
