@@ -18,16 +18,16 @@ ignored = []
 thiserror = "2.0.18"
 
 # Async runtime (version only; each member selects the features it needs)
-tokio = { version = "1" }
+tokio = { version = "1.52.3" }
 
 # CLI argument parsing
 gumdrop = "0.8"
 
 # Bitflags
-bitflags = "2.11.0"
+bitflags = "2.13.0"
 
 # HTTP client stack (identical across all members)
-hyper = { version = "1.9.0", features = ["client", "http1"] }
+hyper = { version = "1.10.1", features = ["client", "http1"] }
 hyper-rustls = { version = "0.27.7", default-features = false, features = ["http1", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1.20", features = ["client-legacy", "http1", "tokio"] }
 http-body-util = "0.1.3"
@@ -39,7 +39,7 @@ hickory-resolver = "0.26.1"
 url = "2.5.8"
 
 # Logging
-log = "0.4.29"
+log = "0.4.32"
 env_logger = "0.11"
 
 # Hashing
@@ -58,24 +58,24 @@ dgaard-engine = { path = "dgaard-engine" }
 # ── dgaard ───────────────────────────────────────────────────────────────────
 getrandom = "0.4.2"
 num_cpus = "1.17.0"
-socket2 = "0.6.3"
+socket2 = "0.6.4"
 rustls = { version = "0.23.40", default-features = false, features = ["ring"] }
 fst = "0.4.7"
 bloom = "0.3.2"
 rkyv = "0.8.16"
 lru = "0.18"
-dashmap = "6.1.0"
+dashmap = "6.2.1"
 arc-swap = "1.9.0"
 
 # ── dgaard-monitor ───────────────────────────────────────────────────────────
-inotify = "0.11"
+inotify = "0.11.2"
 serde = { version = "1", features = ["derive"] }
-toml = "0.9"
+toml = "0.9.8"
 async-trait = "0.1"
-serde_json = "1.0"
+serde_json = "1.0.150"
 rust-mcp-sdk = "0.9"
 axum = { version = "0.8.1", features = ["ws"] }
-ratatui = "0.30"
+ratatui = "0.30.1"
 crossterm = "0.29"
 
 # ── dev ──────────────────────────────────────────────────────────────────────
