@@ -1,7 +1,7 @@
 mod packet;
 mod upstream;
 
-pub(crate) use packet::InspectedAnswer;
+pub(crate) use dgaard_engine::model::InspectedAnswer;
 
 use std::sync::Arc;
 

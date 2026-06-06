@@ -352,17 +352,15 @@ pub async fn resolve_and_cache(ip: [u8; 16]) {
     };
 
     let ptr_name = hickory_resolver::proto::rr::Name::from(addr);
-    if let Ok(lookup) = resolver.reverse_lookup(ptr_name).await {
-        if let Some(hostname) = lookup.answers().iter().find_map(|r| {
-            match &r.data {
-                hickory_resolver::proto::rr::RData::PTR(n) => {
-                    Some(n.to_string().trim_end_matches('.').to_string())
-                }
-                _ => None,
+    if let Ok(lookup) = resolver.reverse_lookup(ptr_name).await
+        && let Some(hostname) = lookup.answers().iter().find_map(|r| match &r.data {
+            hickory_resolver::proto::rr::RData::PTR(n) => {
+                Some(n.to_string().trim_end_matches('.').to_string())
             }
-        }) {
-            store_hostname(ip, hostname);
-        }
+            _ => None,
+        })
+    {
+        store_hostname(ip, hostname);
     }
 }
 

@@ -1,33 +1,13 @@
-//! Configuration module for Dgaard DNS proxy.
-//!
-//! This module provides:
-//! - [`Config`]: The complete runtime configuration
-//! - [`discover_path`]: Configuration file discovery
-//! - [`ConfigError`]: Error types for parsing and loading
-
-mod model;
-mod parser;
-
-pub use model::*;
-#[allow(unused_imports)]
-pub use parser::ConfigError;
+pub use dgaard_engine::config::*;
 
 use std::path::{Path, PathBuf};
 
-// ---------------------------------------------------------------------------
-// Path discovery
-// ---------------------------------------------------------------------------
-
-/// System-wide configuration path (e.g., installed via package manager).
 const SYSTEM_PATH: &str = "/etc/dgaard/config.toml";
-
-/// Local development / working-directory configuration path.
 const LOCAL_PATH: &str = "dgaard.toml";
 
 /// Resolve the configuration file path using the following priority:
 ///
-/// 1. Explicit `--config <FILE>` CLI override — returned as-is, no existence
-///    check (the caller is responsible for the path being valid).
+/// 1. Explicit `--config <FILE>` CLI override.
 /// 2. System path: `/etc/dgaard/config.toml`.
 /// 3. Local path: `./dgaard.toml` (relative to CWD).
 ///
@@ -36,26 +16,18 @@ pub fn discover_path(override_path: Option<&str>) -> Option<PathBuf> {
     discover_from_candidates(override_path, &[SYSTEM_PATH, LOCAL_PATH])
 }
 
-/// Inner implementation that accepts an explicit candidate list so tests can
-/// inject temporary paths without touching the real filesystem locations.
 fn discover_from_candidates(override_path: Option<&str>, candidates: &[&str]) -> Option<PathBuf> {
     if let Some(path) = override_path {
         return Some(PathBuf::from(path));
     }
-
     for candidate in candidates {
         let path = Path::new(candidate);
         if path.exists() {
             return Some(path.to_path_buf());
         }
     }
-
     None
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -72,10 +44,6 @@ mod tests {
     fn cleanup(dir: &Path) {
         let _ = fs::remove_dir_all(dir);
     }
-
-    // -----------------------------------------------------------------------
-    // Path discovery
-    // -----------------------------------------------------------------------
 
     #[test]
     fn explicit_override_is_returned_unconditionally() {
@@ -110,12 +78,9 @@ mod tests {
         fs::write(&first, "").unwrap();
         fs::write(&second, "").unwrap();
 
-        let first_str = first.to_str().unwrap();
-        let second_str = second.to_str().unwrap();
-
-        let result = discover_from_candidates(None, &[first_str, second_str]);
-        assert_eq!(result, Some(first.clone()));
-
+        let result =
+            discover_from_candidates(None, &[first.to_str().unwrap(), second.to_str().unwrap()]);
+        assert_eq!(result, Some(first));
         cleanup(&dir);
     }
 
@@ -127,12 +92,11 @@ mod tests {
 
         fs::write(&present, "").unwrap();
 
-        let missing_str = missing.to_str().unwrap();
-        let present_str = present.to_str().unwrap();
-
-        let result = discover_from_candidates(None, &[missing_str, present_str]);
-        assert_eq!(result, Some(present.clone()));
-
+        let result = discover_from_candidates(
+            None,
+            &[missing.to_str().unwrap(), present.to_str().unwrap()],
+        );
+        assert_eq!(result, Some(present));
         cleanup(&dir);
     }
 
@@ -147,7 +111,6 @@ mod tests {
             &[candidate.to_str().unwrap()],
         );
         assert_eq!(result, Some(PathBuf::from("/explicit/override.toml")));
-
         cleanup(&dir);
     }
 

@@ -1,6 +1,5 @@
 mod cli;
 mod config;
-mod dga;
 mod dns;
 mod filter;
 mod model;
