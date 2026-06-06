@@ -1,12 +1,5 @@
-set show-recipe-help := true
-
 # --- Variables ---
-binary_name := "rust_template" # Change this to your project name
-
-# --- Default ---
-[help]
-default:
-    @just --list
+binary_name := "MY_PROJECT" # Change this to your project name
 
 # --- Development ---
 
@@ -41,6 +34,9 @@ lint:
 # Format all code
 fmt:
     cargo fmt --all
+    dprint fmt
+    find . -name '*.nix' -not -path './target/*' | xargs --no-run-if-empty nixfmt
+    yamlfmt -exclude "target/**" .
 
 # Run all pre-commit hooks manually on all files
 check:
@@ -54,47 +50,15 @@ update-hooks:
 scan-secrets:
     gitleaks detect --verbose --redact
 
-# --- Coverage ---
-
-# Generate HTML coverage report and open it
+# Generate lcov.info for editor coverage display (vscode-coverage-gutters)
 coverage:
-    cargo llvm-cov --html --open
-
-# Generate LCOV coverage report
-coverage-lcov:
     cargo llvm-cov --lcov --output-path lcov.info
 
-# Check that newly added .rs files have >= 80% line coverage
-# Usage: just coverage-check          (compares against master)
-#        just coverage-check main      (compares against a different base)
-coverage-check base="master":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    NEW_FILES=$(git diff --name-only --diff-filter=A "origin/{{base}}...HEAD" -- '*.rs' 2>/dev/null \
-        || git diff --name-only --diff-filter=A HEAD~1 -- '*.rs' 2>/dev/null || true)
-    if [ -z "$NEW_FILES" ]; then
-        echo "No new Rust files detected, skipping coverage check."
-        exit 0
-    fi
-    echo "Checking coverage for new files:"
-    echo "$NEW_FILES"
-    cargo llvm-cov --json --output-path /tmp/llvm-cov-report.json
-    FAILED=0
-    while IFS= read -r FILE; do
-        [ -z "$FILE" ] && continue
-        COVERAGE=$(jaq -r --arg f "$FILE" \
-            '.data[0].files[] | select(.filename | endswith($f)) | .summary.lines.percent' \
-            /tmp/llvm-cov-report.json | head -1)
-        if [ -z "$COVERAGE" ] || [ "$COVERAGE" = "null" ]; then
-            echo "⚠  No coverage data for $FILE (skipping)"
-        elif awk "BEGIN { exit ($COVERAGE < 80) }"; then
-            echo "✅ $FILE: ${COVERAGE}%"
-        else
-            echo "❌ $FILE: ${COVERAGE}% (minimum: 80%)"
-            FAILED=1
-        fi
-    done <<< "$NEW_FILES"
-    exit $FAILED
+# Check that overall line coverage meets the 80% threshold
+# BASE is accepted for interface compatibility with CI (e.g.: just coverage-check master)
+coverage-check BASE="master":
+    cargo llvm-cov --lcov --output-path lcov.info
+    cargo llvm-cov report --fail-under-lines 80
 
 # --- Cleanup ---
 
@@ -102,8 +66,51 @@ coverage-check base="master":
 clean:
     cargo clean
 
-# --- CI Simulation ---
+# --- CI ---
 
-# Run the full pipeline as it would run in CI
+# Run the complete CI pipeline (use this when already inside `nix develop`)
+ci-all: fmt lint test health-check scan-secrets
+
+# Run the complete CI pipeline via Nix devshell — no docker/podman needed
+# Equivalent to what Woodpecker and Forgejo Actions run in containers
+ci-local:
+    nix develop --command just fmt
+    nix develop --command just lint
+    nix develop --command just test
+    nix develop --command just health-check
+    nix develop --command just scan-secrets
+    @echo "All CI checks passed!"
+
+# Run a quick subset (format + lint + test) — fast feedback loop
 ci: fmt lint test
-    @echo "✅ All checks passed!"
+    @echo "Quick checks passed!"
+
+# --- Changelog ---
+
+# Generate or update CHANGELOG.md from conventional commits
+changelog:
+    git cliff -o CHANGELOG.md
+    @echo "CHANGELOG.md updated — commit it before tagging"
+
+# Preview changelog entries for commits not yet in a release
+changelog-unreleased:
+    git cliff --unreleased
+
+# --- Release ---
+
+# Create and push an annotated release tag, triggering the release workflow
+# Usage: just tag v1.2.3
+tag VERSION:
+    git tag -a {{VERSION}} -m "Release {{VERSION}}"
+    git push origin {{VERSION}}
+    @echo "Pushed tag {{VERSION}} — release workflow will start on Codeberg"
+
+# Build a release binary for the current platform
+build-release:
+    cargo build --release
+
+# Build a release binary for a specific cross-compilation target
+# Requires `cross` in your PATH (included in flake.nix devShell)
+# Usage: just build-release-cross aarch64-unknown-linux-gnu
+build-release-cross TARGET:
+    cross build --release --target {{TARGET}}
