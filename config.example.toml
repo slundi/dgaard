@@ -8,7 +8,7 @@ listen_addr = "192.168.1.1:53"
 # Networks allowed to use this proxy (Access Control List)
 allowed_networks = ["127.0.0.1/32", "192.168.1.0/24"]
 # Port for the Unix Socket stats stream
-stats_socket_path = "/tmp/dgaard_stats.sock"
+stats_socket_path = "/var/run/dgaard/stats.sock"
 
 # Reject any domain containing non-ANSI characters (Punycode)
 block_idn = true

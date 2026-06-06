@@ -7,10 +7,10 @@
 # ---------------------------------------------------------------------------
 [input]
 # Unix Domain Socket exposed by the dgaard DNS proxy.
-socket = "/tmp/dns.sock"
+socket = "/var/run/dgaard/stats.sock"
 
 # Binary host-index file produced by dgaard (hash → domain mapping).
-index = "/var/lib/dns/hosts.bin"
+index = "/var/dgaard/host_mapping.bin"
 
 # ---------------------------------------------------------------------------
 # Persistence — local SQLite storage
