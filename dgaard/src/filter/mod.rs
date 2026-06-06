@@ -25,6 +25,7 @@ type HttpsClient = Client<
 >;
 
 pub(crate) fn build_https_client() -> HttpsClient {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let https = hyper_rustls::HttpsConnectorBuilder::new()
         .with_webpki_roots()
         .https_or_http()

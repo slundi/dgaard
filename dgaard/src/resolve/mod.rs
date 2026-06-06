@@ -39,11 +39,16 @@ pub mod tests {
     use dgaard_engine::filter::engine::FilterEngine;
     use dgaard_engine::model::{Action, DomainEntry, DomainEntryFlags};
     use std::collections::{HashMap, HashSet};
-    use std::sync::Arc;
+    use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
     use std::sync::atomic::Ordering;
 
-    pub fn init_test_env() {
+    // Serialise all tests that mutate shared globals (CURRENT_ENGINE, CONFIG).
+    static TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(Mutex::default);
+
+    pub fn init_test_env() -> MutexGuard<'static, ()> {
+        let guard = TEST_MUTEX.lock().unwrap();
         GLOBAL_SEED.store(42, Ordering::Relaxed);
+        guard
     }
 
     pub fn create_test_engine(
@@ -171,7 +176,7 @@ pub mod tests {
 
     #[test]
     fn test_resolve_blocked_domain() {
-        init_test_env();
+        let _guard = init_test_env();
         let engine = create_test_engine(&["ads.tracker.com"], &[], &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
@@ -184,7 +189,7 @@ pub mod tests {
 
     #[test]
     fn test_resolve_whitelisted_domain() {
-        init_test_env();
+        let _guard = init_test_env();
         let engine = create_test_engine(&[], &["trusted.example.com"], &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
@@ -194,7 +199,7 @@ pub mod tests {
 
     #[test]
     fn test_resolve_unknown_domain_proxied() {
-        init_test_env();
+        let _guard = init_test_env();
         let engine = create_test_engine(&[], &[], &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
@@ -204,7 +209,7 @@ pub mod tests {
 
     #[test]
     fn test_resolve_invalid_structure_blocked() {
-        init_test_env();
+        let _guard = init_test_env();
         let engine = create_test_engine(&[], &[], &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
@@ -217,7 +222,7 @@ pub mod tests {
 
     #[test]
     fn test_resolve_idn_blocked() {
-        init_test_env();
+        let _guard = init_test_env();
         let engine = create_test_engine(&[], &[], &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
@@ -227,7 +232,7 @@ pub mod tests {
 
     #[test]
     fn test_resolve_tld_blocked_domain() {
-        init_test_env();
+        let _guard = init_test_env();
         let engine = create_engine_with_tld_block(&["xyz"]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
@@ -241,7 +246,7 @@ pub mod tests {
 
     #[test]
     fn test_resolve_wildcard_pattern_blocked() {
-        init_test_env();
+        let _guard = init_test_env();
         let engine = create_engine_with_wildcard_patterns(&["ads*.example.com"]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
@@ -255,7 +260,7 @@ pub mod tests {
 
     #[test]
     fn test_resolve_lexical_blocked() {
-        init_test_env();
+        let _guard = init_test_env();
         let mut config = dgaard_engine::config::Config::default();
         config.security.lexical.enabled = true;
         config.security.lexical.banned_keywords = vec!["porno".to_string()];
@@ -274,7 +279,7 @@ pub mod tests {
 
     #[test]
     fn test_resolve_with_score_normal_domain() {
-        init_test_env();
+        let _guard = init_test_env();
         let engine = create_test_engine(&[], &[], &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
@@ -285,7 +290,7 @@ pub mod tests {
 
     #[test]
     fn test_resolve_with_score_whitelisted() {
-        init_test_env();
+        let _guard = init_test_env();
         let engine = create_test_engine(&[], &["trusted.example.com"], &[]);
         CURRENT_ENGINE.store(Arc::new(engine));
 
@@ -296,7 +301,7 @@ pub mod tests {
 
     #[test]
     fn test_resolve_with_score_high_entropy() {
-        init_test_env();
+        let _guard = init_test_env();
         CONFIG.store(Arc::new(dgaard_engine::config::Config::default()));
         let engine = create_test_engine(&[], &[], &[]);
         CURRENT_ENGINE.store(Arc::new(engine));

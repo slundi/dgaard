@@ -34,9 +34,13 @@ mod tests {
     use super::*;
     use std::env;
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn create_temp_dir() -> PathBuf {
-        let dir = env::temp_dir().join(format!("dgaard_test_{}", std::process::id()));
+        let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = env::temp_dir().join(format!("dgaard_test_{}_{}", std::process::id(), id));
         fs::create_dir_all(&dir).expect("failed to create temp dir");
         dir
     }

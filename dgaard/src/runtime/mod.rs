@@ -279,6 +279,10 @@ pub(crate) fn init_global_seed() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{LazyLock, Mutex};
+
+    // Serialise tests that mutate the global CONFIG via reload_config_from_path.
+    static TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(Mutex::default);
 
     // -----------------------------------------------------------------------
     // Hot reload tests
@@ -306,6 +310,7 @@ mod tests {
 
     #[tokio::test]
     async fn reload_config_from_path_succeeds_with_valid_config() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         use std::env;
         use std::fs;
 
@@ -358,6 +363,7 @@ mod tests {
 
     #[tokio::test]
     async fn reload_config_from_path_updates_global_config() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         use std::env;
         use std::fs;
 
