@@ -71,6 +71,12 @@ async fn main() {
             println!("Loaded {} domains from index", map.len());
             map
         }
+        Err(error::MonitorError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "Warning: host index not found at {index_path}, starting without domain names"
+            );
+            std::collections::HashMap::new()
+        }
         Err(e) => {
             eprintln!("Warning: could not load host index: {e}");
             std::collections::HashMap::new()

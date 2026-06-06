@@ -33,7 +33,13 @@ pub async fn watch_index(
             .watches()
             .add(&watch_path, WatchMask::CLOSE_WRITE | WatchMask::MOVED_TO)
         {
-            eprintln!("inotify: failed to watch {watch_path}: {e}");
+            if e.kind() == std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "Warning: host index not found at {watch_path}, index changes will not be tracked"
+                );
+            } else {
+                eprintln!("inotify: failed to watch {watch_path}: {e}");
+            }
             return;
         }
 
