@@ -1,0 +1,14 @@
+[package]
+name = "dgaard-daemon"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dgaard-engine.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "signal"] }
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+env_logger.workspace = true
+argh.workspace = true
+toml.workspace = true

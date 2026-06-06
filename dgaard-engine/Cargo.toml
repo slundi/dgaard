@@ -1,14 +1,14 @@
 [package]
 name = "dgaard-engine"
-authors = ["Sébastien LUNDI"]
-description = "Embeddable DNS filtering engine: blocklists, DGA detection, entropy analysis, heuristics and policy checks. No async runtime — suitable for MTA, HTTP services, or any Rust application."
-readme = "README.md"
-license = "Apache-2.0"
-repository = "https://codeberg.org/slundi/dgaard"
-keywords = ["dns", "filter", "security", "dga", "heuristics"]
-categories = ["network-programming", "embedded-software"]
 version = "0.2.0"
+authors = ["Sébastien LUNDI"]
+categories = ["network-programming", "embedded-software"]
 edition = "2024"
+keywords = ["dns", "filter", "security", "dga", "heuristics"]
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://codeberg.org/slundi/dgaard"
+description = "Embeddable DNS filtering engine: blocklists, DGA detection, entropy analysis, heuristics and policy checks. No async runtime — suitable for MTA, HTTP services, or any Rust application."
 
 [lib]
 name = "dgaard_engine"
