@@ -1,5 +1,5 @@
 [workspace]
-members = ["dgaard", "dgaard-engine", "dgaard-monitor", "adblockptimize"]
+members = ["dgaard", "dgaard-daemon", "dgaard-engine", "dgaard-monitor", "dgaard-rest", "adblockptimize"]
 resolver = "2"
 
 [profile.release]
