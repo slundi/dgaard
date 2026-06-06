@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,6 +9,29 @@ use dgaard_engine::{Config, FilterEngine};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+
+// ---------------------------------------------------------------------------
+// Engine construction helpers for D4 tests
+// ---------------------------------------------------------------------------
+
+/// `DomainEntryFlags::NONE.bits()` — present in blocklist, not whitelisted.
+const FLAG_BLOCKLIST: u8 = 0b0000_0000;
+/// `DomainEntryFlags::WHITELIST.bits()`.
+const FLAG_WHITELIST: u8 = 0b0000_0001;
+
+/// Build a `FilterEngine` (seed 0) with `domain` inserted in the fast_map
+/// under the given `flags`.  All other engine fields are empty.
+fn engine_with_domain(domain: &str, flags: u8) -> Arc<ArcSwap<FilterEngine>> {
+    let seed = 0u64; // FilterEngine::empty() uses seed 0
+    let hash = twox_hash::XxHash64::oneshot(seed, domain.as_bytes());
+    let mut fast_map = HashMap::new();
+    fast_map.insert(hash, flags);
+    Arc::new(ArcSwap::from_pointee(FilterEngine {
+        fast_map,
+        seed,
+        ..FilterEngine::empty()
+    }))
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -242,4 +266,88 @@ async fn handle_connection_reflects_swapped_config() {
         json_after["blocked"], false,
         "should be allowed after config swap"
     );
+}
+
+// ---------------------------------------------------------------------------
+// D4.2 — known-blocked and known-clean domain via static blocklist/whitelist
+// ---------------------------------------------------------------------------
+
+/// Build an engine that contains `ads.tracker.com` in the static blocklist,
+/// send it through the socket, and assert `StaticBlacklist` is the reason.
+#[tokio::test]
+async fn domain_on_static_blocklist_is_blocked_with_correct_reason() {
+    let dir = TempDir::new().unwrap();
+    let socket_path = dir.path().join("static_block.sock");
+
+    const BLOCKED_DOMAIN: &str = "ads.tracker.com";
+    let engine = engine_with_domain(BLOCKED_DOMAIN, FLAG_BLOCKLIST);
+
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let server = tokio::spawn(serve_one(listener, engine, make_config()));
+
+    let json = query(&socket_path, BLOCKED_DOMAIN).await;
+    server.await.unwrap();
+
+    assert_eq!(json["blocked"], true, "domain should be blocked");
+    assert!(
+        json["action"].as_str().unwrap().contains("StaticBlacklist"),
+        "expected StaticBlacklist action, got: {}",
+        json["action"]
+    );
+    assert_eq!(json["score"].as_u64().unwrap(), 0);
+    assert!(json["reasons"].is_array());
+}
+
+/// Build an engine that contains `safe.example.com` in the whitelist, send
+/// it through the socket, and assert the action is `Allow`.
+#[tokio::test]
+async fn domain_on_whitelist_is_allowed() {
+    let dir = TempDir::new().unwrap();
+    let socket_path = dir.path().join("whitelist.sock");
+
+    const SAFE_DOMAIN: &str = "safe.example.com";
+    let engine = engine_with_domain(SAFE_DOMAIN, FLAG_WHITELIST);
+
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let server = tokio::spawn(serve_one(listener, engine, make_config()));
+
+    let json = query(&socket_path, SAFE_DOMAIN).await;
+    server.await.unwrap();
+
+    assert_eq!(
+        json["blocked"], false,
+        "whitelisted domain should not be blocked"
+    );
+    assert_eq!(json["action"], "Allow");
+    assert!(json["reasons"].is_array());
+}
+
+/// Verify the response JSON always contains the four required fields
+/// (`score`, `blocked`, `action`, `reasons`) for every block/allow/proxy case.
+#[tokio::test]
+async fn response_json_always_contains_all_required_fields() {
+    let dir = TempDir::new().unwrap();
+
+    let cases: &[(&str, &str)] = &[
+        ("google.com", "proxied"),
+        ("a.b.c.d.e.f.g.example.com", "structural-block"),
+    ];
+
+    for (domain, label) in cases {
+        let socket_path = dir.path().join(format!("fields_{label}.sock"));
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let server = tokio::spawn(serve_one(listener, make_engine(), make_config()));
+
+        let json = query(&socket_path, domain).await;
+        server.await.unwrap();
+
+        assert!(json.get("score").is_some(), "[{label}] missing 'score'");
+        assert!(json.get("blocked").is_some(), "[{label}] missing 'blocked'");
+        assert!(json.get("action").is_some(), "[{label}] missing 'action'");
+        assert!(json.get("reasons").is_some(), "[{label}] missing 'reasons'");
+        assert!(
+            json["reasons"].is_array(),
+            "[{label}] 'reasons' must be an array"
+        );
+    }
 }

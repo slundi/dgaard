@@ -239,30 +239,30 @@ dgaard-daemon/
 
 ### Phase D1: Project Setup
 
-- [ ] D1.1. **Workspace member**: Add `dgaard-daemon` to `Cargo.toml` workspace `members`.
-- [ ] D1.2. **Cargo.toml**: Declare dependencies — `dgaard-engine` (workspace), `tokio` (with `net`, `io-util`, `signal`, `macros`, `rt-multi-thread` features), `serde_json`, `serde`, `log`, `env_logger`, `argh` for CLI.
-- [ ] D1.3. **CLI**: Parse `--config <path>` and `--version` with `argh`. Config discovery: check `/etc/dgaard-daemon/` then current directory for `dgaard-daemon.toml`.
-- [ ] D1.4. **Config struct**: TOML fields — `socket_path` (default `/run/dgaard-daemon.sock`), `config_file` (path to the `dgaard-engine` config), `log_level`.
-- [ ] D1.5. **Engine init**: Load `dgaard_engine::Config` from the configured path, call `FilterEngine::build_from_files`, wrap both in `Arc` for sharing across tasks.
+- [x] D1.1. **Workspace member**: Add `dgaard-daemon` to `Cargo.toml` workspace `members`.
+- [x] D1.2. **Cargo.toml**: Declare dependencies — `dgaard-engine` (workspace), `tokio` (with `net`, `io-util`, `signal`, `macros`, `rt-multi-thread` features), `serde_json`, `serde`, `log`, `env_logger`, `argh` for CLI.
+- [x] D1.3. **CLI**: Parse `--config <path>` and `--version` with `argh`. Config discovery: check `/etc/dgaard-daemon/` then current directory for `dgaard-daemon.toml`.
+- [x] D1.4. **Config struct**: TOML fields — `socket_path` (default `/run/dgaard-daemon.sock`), `config_file` (path to the `dgaard-engine` config), `log_level`.
+- [x] D1.5. **Engine init**: Load `dgaard_engine::Config` from the configured path, call `FilterEngine::build_from_files`, wrap both in `Arc` for sharing across tasks.
 
 ### Phase D2: Socket Listener
 
-- [ ] D2.1. **Unix socket bind**: Use `tokio::net::UnixListener::bind`. Remove stale socket file on startup if it exists. Set restrictive permissions (`0o600`) via `std::fs::set_permissions` after binding.
-- [ ] D2.2. **Accept loop**: `loop { listener.accept().await }` — spawn a `tokio::task` per connection, passing `Arc<FilterEngine>` and `Arc<Config>` clones.
-- [ ] D2.3. **Connection handler**: Read bytes until `\n` with `tokio::io::AsyncBufReadExt::read_line`. Trim whitespace. Reject empty or oversized input (max 253 bytes per RFC 1035).
-- [ ] D2.4. **Engine call**: Call `dgaard_engine::resolve_with_score(domain, &engine, &config)`. Serialize `ResolveResult` to JSON: `{"score": u8, "blocked": bool, "action": str, "reasons": [str]}`.
-- [ ] D2.5. **Write response**: Write the JSON line followed by `\n` back to the socket. Close the connection.
+- [x] D2.1. **Unix socket bind**: Use `tokio::net::UnixListener::bind`. Remove stale socket file on startup if it exists. Set restrictive permissions (`0o600`) via `std::fs::set_permissions` after binding.
+- [x] D2.2. **Accept loop**: `loop { listener.accept().await }` — spawn a `tokio::task` per connection, passing `Arc<FilterEngine>` and `Arc<Config>` clones.
+- [x] D2.3. **Connection handler**: Read bytes until `\n` with `tokio::io::AsyncBufReadExt::read_line`. Trim whitespace. Reject empty or oversized input (max 253 bytes per RFC 1035).
+- [x] D2.4. **Engine call**: Call `dgaard_engine::resolve_with_score(domain, &engine, &config)`. Serialize `ResolveResult` to JSON: `{"score": u8, "blocked": bool, "action": str, "reasons": [str]}`.
+- [x] D2.5. **Write response**: Write the JSON line followed by `\n` back to the socket. Close the connection.
 
 ### Phase D3: Reliability
 
-- [ ] D3.1. **Graceful shutdown**: Listen for `SIGTERM` and `SIGINT` via `tokio::signal`. Stop accepting new connections; let in-flight tasks complete.
-- [ ] D3.2. **SIGHUP reload**: On `SIGHUP`, reload `dgaard_engine::Config` and rebuild `FilterEngine`, atomically swap the `Arc` with `arc-swap`.
-- [ ] D3.3. **Error handling**: Log malformed input and IO errors with `log::warn!`. Never crash on a bad domain string — return `{"error": "..."}` JSON line instead.
+- [x] D3.1. **Graceful shutdown**: Listen for `SIGTERM` and `SIGINT` via `tokio::signal`. Stop accepting new connections; let in-flight tasks complete.
+- [x] D3.2. **SIGHUP reload**: On `SIGHUP`, reload `dgaard_engine::Config` and rebuild `FilterEngine`, atomically swap the `Arc` with `arc-swap`.
+- [x] D3.3. **Error handling**: Log malformed input and IO errors with `log::warn!`. Never crash on a bad domain string — return `{"error": "..."}` JSON line instead.
 
 ### Phase D4: Tests
 
-- [ ] D4.1. **Unit tests** (`src/handler.rs`): test JSON serialization for each `Action` variant (`Block`, `Allow`, `ProxyToUpstream`).
-- [ ] D4.2. **Integration test** (`tests/socket.rs`): spawn the daemon with a temp socket path, connect with `tokio::net::UnixStream`, send a known blocked domain and a clean domain, assert response fields.
+- [x] D4.1. **Unit tests** (`src/handler.rs`): test JSON serialization for each `Action` variant (`Block`, `Allow`, `ProxyToUpstream`).
+- [x] D4.2. **Integration test** (`tests/socket.rs`): spawn the daemon with a temp socket path, connect with `tokio::net::UnixStream`, send a known blocked domain and a clean domain, assert response fields.
 
 ---
 
