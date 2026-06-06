@@ -23,8 +23,8 @@ When an event arrives:
 1. **Lookup**: `domain_hash` → `domain_name` (via host index).
 2. **Bitmask Decoding**: u16 reasons → Human-readable labels.
 3. **Severity Scoring**: * `Allowed` -> Info
-    * `Suspicious` -> Warning
-    * `Blocked` -> Alert
+   - `Suspicious` -> Warning
+   - `Blocked` -> Alert
 
 ## 💾 Storage Strategy (SQLite)
 
@@ -34,15 +34,15 @@ The agent maintains two tiers of data to balance visibility with disk usage:
 
 Stores every single query.
 
-* **Retention**: 24–72 hours (configurable).
-* **Purpose**: Detailed forensics and the TUI "Live Feed."
+- **Retention**: 24–72 hours (configurable).
+- **Purpose**: Detailed forensics and the TUI "Live Feed."
 
 ### Tier 2: Hourly Aggregates (`dns_stats_hourly`)
 
 Stores pre-computed counts: (`hour, domain_hash, client_ip, action_bits, count`).
 
-* **Retention**: 30–90 days.
-* **Purpose**: Long-term trend charts and "Top 10" reports.
+- **Retention**: 30–90 days.
+- **Purpose**: Long-term trend charts and "Top 10" reports.
 
 ## 🚀 Integration Hooks (SOAR / Webhooks)
 
@@ -59,10 +59,10 @@ method = "POST"
 
 ## 🛠️ Implementation Roadmap (Agent Specific)
 
-* [ ] Asynchronous Runtime: Use `tokio` for non-blocking socket handling.
-* [ ] Graceful Shutdown: Ensure the SQLite WAL is checkpointed and the Unix Socket is cleaned up on `SIGTERM`.
-* [ ] Backpressure: Implement a bounded mpsc channel. If the DB or Webhook sinks fall behind, the agent should drop the oldest events rather than crashing the proxy.
-* [ ] Self-Monitoring: The agent should export its own metrics (e.g., `events_processed_total`, `buffer_usage_percent`).
+- [ ] Asynchronous Runtime: Use `tokio` for non-blocking socket handling.
+- [ ] Graceful Shutdown: Ensure the SQLite WAL is checkpointed and the Unix Socket is cleaned up on `SIGTERM`.
+- [ ] Backpressure: Implement a bounded mpsc channel. If the DB or Webhook sinks fall behind, the agent should drop the oldest events rather than crashing the proxy.
+- [ ] Self-Monitoring: The agent should export its own metrics (e.g., `events_processed_total`, `buffer_usage_percent`).
 
 ## 🏃 Running the Agent
 

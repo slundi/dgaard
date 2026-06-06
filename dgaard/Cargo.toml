@@ -1,20 +1,20 @@
 [package]
 name = "dgaard"
-authors = ["Sébastien LUNDI"]
-description = "A high-performance, stratified DNS security proxy for OpenWrt and SME networks. Featuring DGA detection, Shannon entropy analysis, multi-language N-Gram models, and zero-copy filtering. Built for speed and privacy."
-readme = "README.md"
-license = "Apache-2.0"
-repository = "https://codeberg.org/slundi/dgaard"
-keywords = ["dns", "proxy", "security", "filter", "heuristics"]
-categories = ["network-programming", "embedded-software", "cryptography"]
 version = "0.2.0"
+authors = ["Sébastien LUNDI"]
+categories = ["network-programming", "embedded-software", "cryptography"]
 edition = "2024"
+keywords = ["dns", "proxy", "security", "filter", "heuristics"]
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://codeberg.org/slundi/dgaard"
+description = "A high-performance, stratified DNS security proxy for OpenWrt and SME networks. Featuring DGA detection, Shannon entropy analysis, multi-language N-Gram models, and zero-copy filtering. Built for speed and privacy."
 
 [dependencies]
 dgaard-engine.workspace = true
-thiserror.workspace = true
 getrandom.workspace = true
 num_cpus.workspace = true
+thiserror.workspace = true
 # Async runtime - 'rt' and 'macros' only to keep binary size small for OpenWrt
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "time"] }
 
@@ -39,11 +39,11 @@ aho-corasick.workspace = true
 url.workspace = true
 
 # to have an HTTP client availble to download lists
+http-body-util.workspace = true
 hyper.workspace = true
 hyper-rustls.workspace = true
-rustls.workspace = true
 hyper-util.workspace = true
-http-body-util.workspace = true
+rustls.workspace = true
 
 # Finite State Transducers for memory-efficient suffix/wildcard matching
 fst.workspace = true
@@ -55,8 +55,8 @@ bloom.workspace = true
 gumdrop.workspace = true
 
 # Logging (Lightweight)
-log.workspace = true
 env_logger.workspace = true
+log.workspace = true
 
 # Binary serialization: manual implementation for stats (no serde overhead)
 rkyv.workspace = true
@@ -64,6 +64,6 @@ rkyv.workspace = true
 # Used for the 'Hot Cache' / Favorites
 lru.workspace = true
 
-dashmap.workspace = true
 arc-swap.workspace = true
 bitflags.workspace = true
+dashmap.workspace = true

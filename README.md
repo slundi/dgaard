@@ -6,7 +6,7 @@ A suite of Rust tools for high-performance, privacy-first DNS filtering and netw
 
 ## Packages
 
-### [dgaard](./dgaard) — DNS Security Proxy *(main project)*
+### [dgaard](./dgaard) — DNS Security Proxy _(main project)_
 
 [![Crates.io](https://img.shields.io/crates/v/dgaard)](https://crates.io/crates/dgaard)
 
@@ -31,7 +31,7 @@ See the [dgaard README](./dgaard/README.md) and [example configuration](./dgaard
 
 ---
 
-### [dgaard-engine](./dgaard-engine) — Embeddable Filtering Engine *(library)*
+### [dgaard-engine](./dgaard-engine) — Embeddable Filtering Engine _(library)_
 
 The pure-Rust filtering engine extracted from `dgaard` as a standalone `[lib]` crate. It contains the complete analysis and decision pipeline — blocklists, DGA detection, entropy/N-Gram scoring, lexical heuristics, and policy checks — with **no async runtime and no networking dependencies**. Any Rust application can embed it directly.
 
@@ -52,7 +52,7 @@ The pure-Rust filtering engine extracted from `dgaard` as a standalone `[lib]` c
 ```toml
 # Cargo.toml
 [dependencies]
-dgaard-engine = { path = "../dgaard-engine" }   # or version from crates.io
+dgaard-engine = { path = "../dgaard-engine" } # or version from crates.io
 ```
 
 ```rust

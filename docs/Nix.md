@@ -20,11 +20,11 @@ You must have Nix installed on your system with Flakes and Nix Command enabled.
 }
 ```
 
-After *updating*, run `sudo nixos-rebuild switch`.
+After _updating_, run `sudo nixos-rebuild switch`.
 
 ### On another Linux distrib
 
-* Install Nix:
+- Install Nix:
 
 ```bash
 curl -L https://nixos.org/nix/install | sh
@@ -46,10 +46,11 @@ nix develop
 ```
 
 **What happens next?**
-* **Toolchain**: The specific Rust version defined in `rust-toolchain.toml` is downloaded.
-* **Dependencies**: Build tools (linker, pkg-config, etc.) are added to your `$PATH`.
-* **Hooks**: The `pre-commit` hooks are automatically installed into your `.git/` folder using `prek` (faster implementation).
-* **Isolation**: These tools are only available while you are in this shell; they won't clutter your system.
+
+- **Toolchain**: The specific Rust version defined in `rust-toolchain.toml` is downloaded.
+- **Dependencies**: Build tools (linker, pkg-config, etc.) are added to your `$PATH`.
+- **Hooks**: The `pre-commit` hooks are automatically installed into your `.git/` folder using `prek` (faster implementation).
+- **Isolation**: These tools are only available while you are in this shell; they won't clutter your system.
 
 ## 3. Automatic Activation (Optional but Recommended)
 
@@ -69,12 +70,12 @@ Now, your shell will **automatically** load the Rust environment the moment you 
 
 Once inside the shell, you have access to:
 
-| Tool | Purpose |
-|:-----|:--------|
-| `cargo` | Rust package manager and build tool.
-| `just` | Command runner (see justfile for shortcuts).
-| `gitleaks` | Compiled secret scanner for security.
-| `prek` | Manages git hooks for linting/formatting.
+| Tool       | Purpose                                      |
+| :--------- | :------------------------------------------- |
+| `cargo`    | Rust package manager and build tool.         |
+| `just`     | Command runner (see justfile for shortcuts). |
+| `gitleaks` | Compiled secret scanner for security.        |
+| `prek`     | Manages git hooks for linting/formatting.    |
 
 ## 5. Publishing package
 
@@ -86,12 +87,15 @@ Since you already have a flake.nix, other users don't need to wait for a central
 
 1. **Commit and Push** your changes to your git remote.
 2. **Run remotely**: Anyone can now run your binary without installing anything:
-Bash
+   Bash
+
 ```bash
 nix run git+https://codeberg.org/slundi/rust_template.git
 ```
+
 3. **Add as an Input**: Other Nix users can add your project to their own flakes:
-Nix
+   Nix
+
 ```nix
 inputs.my-rust-app.url = "git+https://codeberg.org/slundi/rust_template.git";
 ```
@@ -102,7 +106,8 @@ To get your package into the official [NixOS/nixpkgs](https://github.com/NixOS/n
 
 1. **Check Criteria**: Ensure your project has a clear license and a tagged release (e.g., `v0.1.0`).
 2. **Create a Derivation**: Use `buildRustPackage`. It requires a `cargoHash` (which you get by running the build once and letting it fail with the correct hash).
-Nix
+   Nix
+
 ```nix
 # Example snippet for nixpkgs
 rust_template = rustPlatform.buildRustPackage {
@@ -112,6 +117,7 @@ rust_template = rustPlatform.buildRustPackage {
     cargoHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 };
 ```
+
 3. **Submit a Pull Request**: Follow the [Nixpkgs Contributing Guide](https://github.com/NixOS/nixpkgs/blob/master/CONTRIBUTING.md). Once merged, your project will be searchable at [search.nixos.org](https://search.nixos.org/packages).
 
 ## 6. Troubleshooting

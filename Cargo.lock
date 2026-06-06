@@ -700,6 +700,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dgaard-daemon"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "dgaard-engine"
 version = "0.2.0"
 dependencies = [
@@ -738,6 +745,10 @@ dependencies = [
  "toml",
  "tower",
 ]
+
+[[package]]
+name = "dgaard-rest"
+version = "0.1.0"
 
 [[package]]
 name = "digest"

@@ -22,14 +22,17 @@ You are a senior code reviewer. Your role is to examine code changes and provide
 ## Output Format
 
 ### Critical Issues
+
 Items that must be fixed before merging.
 
 ### Warnings
+
 Items that should be addressed but are not blockers.
 
 ### Suggestions
+
 Optional improvements for code quality.
 
 ### Summary
-One-paragraph overall assessment with a clear approve/request-changes recommendation.
 
+One-paragraph overall assessment with a clear approve/request-changes recommendation.

@@ -4,7 +4,7 @@ Dgaard includes a lightweight, high-performance "Smart Keyword" engine. Unlike t
 
 ## 1. The Principle: Label-Aware Matching
 
-Traditional "wildcard" filters are often too aggressive (the *Scunthorpe Problem*), blocking legitimate sites because a forbidden word is hidden inside a longer, innocent word.
+Traditional "wildcard" filters are often too aggressive (the _Scunthorpe Problem_), blocking legitimate sites because a forbidden word is hidden inside a longer, innocent word.
 
 Dgaard uses **Label-Aware** Matching. A keyword only triggers a block if:
 
@@ -37,9 +37,9 @@ suspicious_tlds = [".com", ".net", ".org", ".biz"]
 
 ## 3. Comparison with Other Systems
 
-| Feature | Dgaard (Smart Keywords) | Pi-hole / AdGuard Home |
-|:--------|:------------------------|:-----------------------|
-| **RAM Usage** | **Ultra Low** (~KBs). Uses `Aho-Corasick` automaton. | **High** (MBs). Requires loading millions of domains. |
-| **Proactivity** | **Instant**. Blocks new domains the second they are registered. | **Reactive**. Must wait for the domain to be added to a list. |
-| **Maintenance** | **Set & Forget**. 10 keywords cover millions of sites. | **Constant**. Requires daily list updates. |
-| **False Positives** | **Low**. Thanks to Label-Aware logic. | **Low**. But only for known sites. |
+| Feature             | Dgaard (Smart Keywords)                                         | Pi-hole / AdGuard Home                                        |
+| :------------------ | :-------------------------------------------------------------- | :------------------------------------------------------------ |
+| **RAM Usage**       | **Ultra Low** (~KBs). Uses `Aho-Corasick` automaton.            | **High** (MBs). Requires loading millions of domains.         |
+| **Proactivity**     | **Instant**. Blocks new domains the second they are registered. | **Reactive**. Must wait for the domain to be added to a list. |
+| **Maintenance**     | **Set & Forget**. 10 keywords cover millions of sites.          | **Constant**. Requires daily list updates.                    |
+| **False Positives** | **Low**. Thanks to Label-Aware logic.                           | **Low**. But only for known sites.                            |

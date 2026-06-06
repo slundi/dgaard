@@ -4,34 +4,23 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bitflags.workspace = true
 gumdrop.workspace = true
 inotify.workspace = true
-thiserror.workspace = true
-tokio = { workspace = true, features = [
-    "rt",
-    "rt-multi-thread",
-    "macros",
-    "net",
-    "io-util",
-    "io-std",
-    "sync",
-    "time",
-    "signal",
-    "fs",
-] }
-bitflags.workspace = true
 serde.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "time", "signal", "fs"] }
 toml.workspace = true
 
 # to have an HTTP client availble to download lists
+http-body-util.workspace = true
 hyper.workspace = true
 hyper-rustls.workspace = true
 hyper-util.workspace = true
-http-body-util.workspace = true
 
 async-trait.workspace = true
-serde_json.workspace = true
 rust-mcp-sdk.workspace = true
+serde_json.workspace = true
 
 axum.workspace = true
 
@@ -39,8 +28,8 @@ axum.workspace = true
 hickory-resolver.workspace = true
 
 # Terminal UI rendering
-ratatui.workspace = true
 crossterm.workspace = true
+ratatui.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

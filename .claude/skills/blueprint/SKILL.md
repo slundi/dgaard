@@ -16,7 +16,6 @@ Generate a structured YAML plan for the given goal. The plan will be executed by
 
 2. **Identify checks**: Determine which validation commands should run after each task. Look at the project's package.json scripts, Makefile, CI config, etc. Common checks include linting, type-checking, and testing. These must be commands that return exit code 0 on success.
 
-
 3. **Ripple analysis — what else is affected?** Before writing any tasks, trace the full impact of the change:
    - **Grep for references**: Search for every type, function, constant, schema, and pattern you plan to modify. Who calls it? Who imports it? Who documents it?
    - **Check for parallel representations**: If you're changing a data structure, look for schemas, validation, serialization, documentation, skills, templates, and tests that describe the same shape. All of them need updating.
@@ -69,4 +68,3 @@ steps:
 - Check commands must work from the project root.
 - The `summary` field is a short description used as context when auto-generating commit messages — keep it concise and descriptive.
 - Do NOT set `done: true` on tasks — `plan-run` sets this automatically when a task passes all checks. On re-run, tasks with `done: true` are skipped.
-

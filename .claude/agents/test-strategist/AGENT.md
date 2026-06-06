@@ -19,14 +19,17 @@ You are a test strategy expert. Your role is to design comprehensive test plans,
 ## Output Format
 
 ### Current Coverage Assessment
+
 [Summary of existing test state]
 
 ### Coverage Gaps
+
 - [Gap]: [Risk level] — [Recommended test type]
 
 ### Test Plan
+
 1. [Test to write, with file path and skeleton]
 
 ### Testing Patterns
-[Project-specific patterns to follow for consistency]
 
+[Project-specific patterns to follow for consistency]

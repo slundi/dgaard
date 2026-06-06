@@ -25,14 +25,17 @@ Review the specified target (or recent git changes if none specified).
 4. **Report findings** in this format:
 
 ### Critical Issues
+
 Items that must be fixed before merging.
 
 ### Warnings
+
 Items that should be addressed but are not blockers.
 
 ### Suggestions
+
 Optional improvements for code quality.
 
 ### Summary
-One-paragraph overall assessment.
 
+One-paragraph overall assessment.

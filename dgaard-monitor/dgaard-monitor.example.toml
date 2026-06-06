@@ -32,9 +32,9 @@ aggregates_retention_days = 90
 tick_ms = 250
 
 # Key bindings (single character or named key: "space", "up", "down", …).
-key_quit        = "q"
-key_pause       = "space"
-key_scroll_up   = "up"
+key_quit = "q"
+key_pause = "space"
+key_scroll_up = "up"
 key_scroll_down = "down"
 
 # ---------------------------------------------------------------------------
@@ -59,28 +59,28 @@ filter = ["Blocked", "Suspicious", "HighlySuspicious"]
 # Connectivity — REST API
 # ---------------------------------------------------------------------------
 [api]
-enabled   = false
-listen    = "127.0.0.1"
-port      = 8080
-token     = "changeme"
+enabled = false
+listen = "127.0.0.1"
+port = 8080
+token = "changeme"
 root_path = "/api"
 
 # ---------------------------------------------------------------------------
 # Connectivity — WebSocket
 # ---------------------------------------------------------------------------
 [websocket]
-enabled   = false
-listen    = "127.0.0.1"
-port      = 8081
-token     = "changeme"
+enabled = false
+listen = "127.0.0.1"
+port = 8081
+token = "changeme"
 root_path = "/ws"
 
 # ---------------------------------------------------------------------------
 # Connectivity — MCP (Model Context Protocol)
 # ---------------------------------------------------------------------------
 [mcp]
-enabled   = false
-listen    = "127.0.0.1"
-port      = 8082
-token     = "changeme"
+enabled = false
+listen = "127.0.0.1"
+port = 8082
+token = "changeme"
 root_path = "/mcp"

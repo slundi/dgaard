@@ -20,26 +20,25 @@ Refine a feature idea through structured critical thinking before it becomes a p
    a. **Restate** the idea in your own words to verify understanding. Expose any ambiguity.
 
    b. **Ask hard questions** (2-4 at a time, not a wall of 10):
-      - Why this approach? What's the simpler version?
-      - What breaks? What's the failure mode?
-      - Who uses this and what's their mental model?
-      - What's the scope — is this one feature or three?
-      - What existing code/patterns does this conflict with?
+   - Why this approach? What's the simpler version?
+   - What breaks? What's the failure mode?
+   - Who uses this and what's their mental model?
+   - What's the scope — is this one feature or three?
+   - What existing code/patterns does this conflict with?
 
    c. **Wait for answers.** Don't move forward until the user responds.
 
    d. **Push back** when answers reveal:
-      - Over-engineering ("Do you actually need this abstraction?")
-      - Scope creep ("That's a second feature — defer it")
-      - Wrong problem ("The real issue is X, not Y")
-      - Missing edge cases ("What happens when Z?")
+   - Over-engineering ("Do you actually need this abstraction?")
+   - Scope creep ("That's a second feature — defer it")
+   - Wrong problem ("The real issue is X, not Y")
+   - Missing edge cases ("What happens when Z?")
 
    e. **Propose alternatives** when you see a better path. Compare trade-offs concretely.
 
 4. **Spawn the brainstorm agent** (via Task tool with `subagent_type: brainstorm`) if deeper analysis is needed — for example, when the feature touches many files and you need a thorough risk assessment before continuing the conversation.
 
 5. **Converge**: When the idea is well-defined, produce a summary:
-
 
 ### Feature Summary
 

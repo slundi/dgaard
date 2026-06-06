@@ -9,58 +9,60 @@ Dgaard acts as a Heuristic Sentry. While traditional DNS filters are "reactive" 
 ## 🔄 The Decision Loop (Per Query)
 
 Dgaard operates on a **Stratified Inference Loop**. For every incoming packet, the agent executes the following steps in order of computational cost:
+
 ### 1. The Sanity Check (Gatekeeper)
 
 Before any heavy lifting, the agent validates the "Physical" structure of the request.
-* **Action**: Enforce `max_subdomain_depth` and `force_lowercase_ascii`.
-* **Goal**: Instant drop of malformed or obvious tunneling attempts.
+
+- **Action**: Enforce `max_subdomain_depth` and `force_lowercase_ascii`.
+- **Goal**: Instant drop of malformed or obvious tunneling attempts.
 
 ### 2. The Memory Match (Reflexes)
 
 The agent checks its "Long-term Memory" (Static Lists) and "Short-term Memory" (LRU Cache).
 
-* **Zero-Copy Lookup**: Uses `rkyv` to query millions of domains in sub-millisecond time.
-* **Bloom Filter**: Provides a probabilistic "Quick No" to save CPU cycles.
+- **Zero-Copy Lookup**: Uses `rkyv` to query millions of domains in sub-millisecond time.
+- **Bloom Filter**: Provides a probabilistic "Quick No" to save CPU cycles.
 
 ### 3. Lexical Inference (The Brain)
 
 If the domain is unknown, the agent performs active analysis:
 
-* **Shannon Entropy**: Calculates the randomness of the string. High entropy (>4.0) suggests an Algorithmically Generated Domain (DGA).
-* **N-Gram Probability**: Checks the domain against multiple language models (English, French, etc.). If a domain has a low probability in all models, it is flagged as "non-human readable."
-* **Consonant Clustering**: Detects "impossible" phonetic structures (e.g., `vbx-rtz91`).
+- **Shannon Entropy**: Calculates the randomness of the string. High entropy (>4.0) suggests an Algorithmically Generated Domain (DGA).
+- **N-Gram Probability**: Checks the domain against multiple language models (English, French, etc.). If a domain has a low probability in all models, it is flagged as "non-human readable."
+- **Consonant Clustering**: Detects "impossible" phonetic structures (e.g., `vbx-rtz91`).
 
 ### 4. Behavioral Monitoring (Context Awareness)
 
 The agent looks at the Client behavior, not just the domain.
 
-* **NXDOMAIN Hunting**: If a client triggers multiple "Not Found" responses in a short window, the agent flags the client as potentially infected with a botnet scanner.
-* **Tunneling Detection**: Monitors the volume of unique subdomains per minute to block DNS exfiltration.
+- **NXDOMAIN Hunting**: If a client triggers multiple "Not Found" responses in a short window, the agent flags the client as potentially infected with a botnet scanner.
+- **Tunneling Detection**: Monitors the volume of unique subdomains per minute to block DNS exfiltration.
 
 ## 🛠️ Internal State & Capabilities
 
-| Capability | Model / Implementation | Target |
-|:-----------|:-----------------------|:-------|
-| **DGA Detection** | Shannon Entropy (Custom Rust Impl) | Malware C2 |
-| **Phishing Defense** | Smart-IDN / Punycode Analysis | Homograph Attacks |
-| **Exfiltration Block** | TXT Length & Subdomain Depth | DNS Tunneling |
-| **Scaling** | Multi-threaded Tokio Runtime | High Concurrency |
-| **Communication** | Postcard-encoded Unix Socket | Dashboard/TUI |
+| Capability             | Model / Implementation             | Target            |
+| :--------------------- | :--------------------------------- | :---------------- |
+| **DGA Detection**      | Shannon Entropy (Custom Rust Impl) | Malware C2        |
+| **Phishing Defense**   | Smart-IDN / Punycode Analysis      | Homograph Attacks |
+| **Exfiltration Block** | TXT Length & Subdomain Depth       | DNS Tunneling     |
+| **Scaling**            | Multi-threaded Tokio Runtime       | High Concurrency  |
+| **Communication**      | Postcard-encoded Unix Socket       | Dashboard/TUI     |
 
 ## 📡 Output Actions
 
 Based on its inference, the agent returns one of the following to the main runtime:
 
-* `Action::LocalResolve`: Instant success from memory.
-* `Action::ProxyToUpstream`: Domain is clean; forward via UDP/DoH.
-* `Action::Block(Reason)`: Execution of a block with a specific heuristic signature.
+- `Action::LocalResolve`: Instant success from memory.
+- `Action::ProxyToUpstream`: Domain is clean; forward via UDP/DoH.
+- `Action::Block(Reason)`: Execution of a block with a specific heuristic signature.
 
 ## 📈 Evolution
 
 The Dgaard agent is designed to be Model-Agnostic. Future versions will support:
 
-* ML-Inference: Loading lightweight .tflite models for more complex threat detection.
-* DoQ Upstream: Support for DNS-over-QUIC to reduce latency in agent-to-cloud communication.
+- ML-Inference: Loading lightweight .tflite models for more complex threat detection.
+- DoQ Upstream: Support for DNS-over-QUIC to reduce latency in agent-to-cloud communication.
 
 ## 🛠️ Development Stack & Constraints
 
@@ -68,12 +70,12 @@ To maintain a footprint under 5MB and support MIPS/ARM architectures, we use a s
 
 ### Rust crates
 
-* **Runtime**: `tokio` (Multi-threaded with custom `Builder`).
-* **CLI Parsing**: `gumdrop` (Zero-cost macro-based parsing).
-* **Configuration**: `toml-span` (Low-dependency, span-aware parsing).
-* **Serialization**: `rkyv` (Zero-copy) and `postcard` (Compact binary).
-* **Hashing**: `xxhash-rust` (XXH3_64) for O(1) lookups.
-* **DNS Protocol**: `trust-dns-proto` for low-level packet manipulation.
+- **Runtime**: `tokio` (Multi-threaded with custom `Builder`).
+- **CLI Parsing**: `gumdrop` (Zero-cost macro-based parsing).
+- **Configuration**: `toml-span` (Low-dependency, span-aware parsing).
+- **Serialization**: `rkyv` (Zero-copy) and `postcard` (Compact binary).
+- **Hashing**: `xxhash-rust` (XXH3_64) for O(1) lookups.
+- **DNS Protocol**: `trust-dns-proto` for low-level packet manipulation.
 
 ### 📂 File Tree Structure
 
@@ -114,9 +116,10 @@ After coding (implementing feature, refactoring, fixing) you must ends with the 
 ### 🧪 Testing Strategy
 
 We use `cargo nextest` for a faster, parallelized test execution environment.
-* **Unit Tests**: Every filter (Entropy, TLD, Structure) must have a unit test in its respective file.
-* **Integration Tests**: Located in `/tests`, simulating real DNS queries against a local Dgaard instance.
-* **Benchmarking**: Use `criterion` to ensure that new filters do not push the "Processing Time" over 1ms per query.
+
+- **Unit Tests**: Every filter (Entropy, TLD, Structure) must have a unit test in its respective file.
+- **Integration Tests**: Located in `/tests`, simulating real DNS queries against a local Dgaard instance.
+- **Benchmarking**: Use `criterion` to ensure that new filters do not push the "Processing Time" over 1ms per query.
 
 Command: `cargo nextest run`
 
@@ -126,11 +129,11 @@ Command: `cargo nextest run`
 
 We follow the Conventional Commits specification. This allows for automated changelog generation and easier auditing of the security pipeline.
 
-* `feat`: New filter or capability.
-* `fix`: Bug in DNS parsing or logic error.
-* `perf`: Optimization (e.g., switching from HashSet to sorted Vec).
-* `refactor`: Internal code changes with no logic impact.
-* `docs`: Changes to README, AGENT, or code comments.
+- `feat`: New filter or capability.
+- `fix`: Bug in DNS parsing or logic error.
+- `perf`: Optimization (e.g., switching from HashSet to sorted Vec).
+- `refactor`: Internal code changes with no logic impact.
+- `docs`: Changes to README, AGENT, or code comments.
 
 #### 2. No-Std & Alloc Philosophy
 

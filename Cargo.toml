@@ -1,14 +1,14 @@
 [workspace]
-members = ["dgaard", "dgaard-daemon", "dgaard-engine", "dgaard-monitor", "dgaard-rest", "adblockptimize"]
+members = ["adblockptimize", "dgaard", "dgaard-daemon", "dgaard-engine", "dgaard-monitor", "dgaard-rest"]
 resolver = "2"
 
 [profile.release]
 # Optimization settings for OpenWrt's limited storage and CPU
-opt-level = "z"   # Optimize for size
-lto = true        # Enable Link Time Optimization
+opt-level = "z" # Optimize for size
+lto = true # Enable Link Time Optimization
 codegen-units = 1 # Maximize optimization at the cost of compile time
-panic = "abort"   # Remove stack unwinding to save binary space
-strip = true      # Automatically strip symbols from the binary
+panic = "abort" # Remove stack unwinding to save binary space
+strip = true # Automatically strip symbols from the binary
 
 [workspace.metadata.cargo-machete]
 ignored = []
@@ -27,10 +27,10 @@ gumdrop = "0.8"
 bitflags = "2.13.0"
 
 # HTTP client stack (identical across all members)
+http-body-util = "0.1.3"
 hyper = { version = "1.10.1", features = ["client", "http1"] }
 hyper-rustls = { version = "0.27.7", default-features = false, features = ["http1", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1.20", features = ["client-legacy", "http1", "tokio"] }
-http-body-util = "0.1.3"
 
 # DNS resolution
 hickory-resolver = "0.26.1"
@@ -39,8 +39,8 @@ hickory-resolver = "0.26.1"
 url = "2.5.8"
 
 # Logging
-log = "0.4.32"
 env_logger = "0.11"
+log = "0.4.32"
 
 # Hashing
 twox-hash = "2.1.2"
@@ -49,34 +49,34 @@ twox-hash = "2.1.2"
 toml-span = "0.7.1"
 
 # High-performance matching
-regex = { version = "1.12.3", default-features = false, features = ["std", "perf", "unicode-perl"] }
 aho-corasick = "1.1.4"
+regex = { version = "1.12.3", default-features = false, features = ["std", "perf", "unicode-perl"] }
 
 # ── workspace crates ─────────────────────────────────────────────────────────
 dgaard-engine = { path = "dgaard-engine" }
 
 # ── dgaard ───────────────────────────────────────────────────────────────────
-getrandom = "0.4.2"
-num_cpus = "1.17.0"
-socket2 = "0.6.4"
-rustls = { version = "0.23.40", default-features = false, features = ["ring"] }
-fst = "0.4.7"
-bloom = "0.3.2"
-rkyv = "0.8.16"
-lru = "0.18"
-dashmap = "6.2.1"
 arc-swap = "1.9.0"
+bloom = "0.3.2"
+dashmap = "6.2.1"
+fst = "0.4.7"
+getrandom = "0.4.2"
+lru = "0.18"
+num_cpus = "1.17.0"
+rkyv = "0.8.16"
+rustls = { version = "0.23.40", default-features = false, features = ["ring"] }
+socket2 = "0.6.4"
 
 # ── dgaard-monitor ───────────────────────────────────────────────────────────
-inotify = "0.11.2"
-serde = { version = "1", features = ["derive"] }
-toml = "0.9.8"
 async-trait = "0.1"
-serde_json = "1.0.150"
-rust-mcp-sdk = "0.9"
 axum = { version = "0.8.1", features = ["ws"] }
-ratatui = "0.30.1"
 crossterm = "0.29"
+inotify = "0.11.2"
+ratatui = "0.30.1"
+rust-mcp-sdk = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.150"
+toml = "0.9.8"
 
 # ── dev ──────────────────────────────────────────────────────────────────────
 tempfile = "3"

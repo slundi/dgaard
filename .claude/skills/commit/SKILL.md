@@ -15,7 +15,6 @@ Create a git commit for staged or recent changes. If `$ARGUMENTS` is provided, u
 
 2. **Run pre-commit checks**: Before committing, run the project's lint and test commands to catch issues early.
 
-
 3. **Review the diff**: Run `git diff --cached` (or `git diff` if nothing is staged) to understand what changed. Read modified files if needed for full context.
 
 4. **Check for unrelated changes**: Analyze the diff for logically distinct units of work. Changes are unrelated if they have **different purposes** (e.g. a bug fix and a new feature, a refactor and a test addition, two independent features). Signs of unrelated changes:
@@ -40,7 +39,6 @@ Create a git commit for staged or recent changes. If `$ARGUMENTS` is provided, u
    - **NEVER reference Claude, AI, assistant, language model, or any AI tool in the commit message** — the message must read as if written by the developer
    - **NEVER add `Co-Authored-By` lines referencing any AI**
    - Match the project's existing commit message style (check `git log --oneline -10`)
-
 
 6. **Create the commit**: Use a HEREDOC to pass the message:
    ```bash

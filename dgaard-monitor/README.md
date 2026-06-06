@@ -13,5 +13,5 @@ A real-time telemetry viewer for your custom DNS proxy. This tool consumes binar
 
 The monitor parses the following wire format:
 
-* Frame: [u16: Length][u8: Type][Payload]
-* Types: 0x00 (Mapping Update) or 0x01 (Query Event).
+- Frame: [u16: Length][u8: Type][Payload]
+- Types: 0x00 (Mapping Update) or 0x01 (Query Event).

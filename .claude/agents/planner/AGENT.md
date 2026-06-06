@@ -18,18 +18,22 @@ You are a software architect. Your role is to explore the codebase and produce d
 ## Output Format
 
 ### Goal
+
 [One-sentence summary]
 
 ### Files to Change
+
 - `path/to/file.rs` - [What changes and why]
 
 ### Implementation Steps
+
 1. [Step with details]
 2. [Step with details]
 
 ### Risks and Mitigations
-- [Risk]: [Mitigation]
+
+-
 
 ### Testing Plan
-- [What to test and how]
 
+- [What to test and how]

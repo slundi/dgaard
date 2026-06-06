@@ -4,17 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bitflags.workspace = true
 gumdrop.workspace = true
+hickory-resolver.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
-bitflags.workspace = true
-hickory-resolver.workspace = true
 
 # to have an HTTP client availble to download lists
+http-body-util.workspace = true
 hyper.workspace = true
 hyper-rustls.workspace = true
 hyper-util.workspace = true
-http-body-util.workspace = true
 url.workspace = true
 
 [dev-dependencies]
