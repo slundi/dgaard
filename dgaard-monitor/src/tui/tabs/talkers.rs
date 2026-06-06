@@ -324,8 +324,7 @@ pub fn store_hostname(ip: [u8; 16], hostname: String) {
 /// production deployments the system config is preferred because private PTR
 /// records are only served by the local nameserver.
 pub async fn resolve_and_cache(ip: [u8; 16]) {
-    use hickory_resolver::TokioAsyncResolver;
-    use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+    use hickory_resolver::TokioResolver;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     // Skip if already cached.
@@ -345,13 +344,25 @@ pub async fn resolve_and_cache(ip: [u8; 16]) {
     };
 
     // Build the resolver; prefer system config so local PTR records resolve.
-    let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+    let Ok(resolver) = TokioResolver::builder_tokio().map(|b| b.build()) else {
+        return;
+    };
+    let Ok(resolver) = resolver else {
+        return;
+    };
 
-    if let Ok(lookup) = resolver.reverse_lookup(addr).await
-        && let Some(name) = lookup.iter().next()
-    {
-        let hostname = name.to_string().trim_end_matches('.').to_string();
-        store_hostname(ip, hostname);
+    let ptr_name = hickory_resolver::proto::rr::Name::from(addr);
+    if let Ok(lookup) = resolver.reverse_lookup(ptr_name).await {
+        if let Some(hostname) = lookup.answers().iter().find_map(|r| {
+            match &r.data {
+                hickory_resolver::proto::rr::RData::PTR(n) => {
+                    Some(n.to_string().trim_end_matches('.').to_string())
+                }
+                _ => None,
+            }
+        }) {
+            store_hostname(ip, hostname);
+        }
     }
 }
 

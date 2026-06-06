@@ -4,17 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gumdrop = "0.8"
-thiserror = "2.0"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
-bitflags = "2.11"
-hickory-resolver = "0.25"
+gumdrop.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+bitflags.workspace = true
+hickory-resolver.workspace = true
 
 # to have an HTTP client availble to download lists
-hyper = { version = "1.9", features = ["client", "http1"] }
-hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "ring", "tls12", "webpki-tokio"] }
-hyper-util = { version = "0.1.20", features = ["client-legacy", "http1", "tokio"] }
-http-body-util = "0.1.3"
-url ="2.5"
+hyper.workspace = true
+hyper-rustls.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+url.workspace = true
 
 [dev-dependencies]

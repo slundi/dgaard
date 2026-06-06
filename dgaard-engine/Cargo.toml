@@ -15,24 +15,24 @@ name = "dgaard_engine"
 path = "src/lib.rs"
 
 [dependencies]
-thiserror = "2.0.18"
+thiserror.workspace = true
 
 # DNS Protocol handling (for domain validation)
-hickory-resolver = "0.26.1"
+hickory-resolver.workspace = true
 
 # Fast hashing for the u64 fingerprints
-twox-hash = "2.1.2"
+twox-hash.workspace = true
 
 # Configuration parsing
-toml-span = "0.7.1"
+toml-span.workspace = true
 
 # High-performance matching
-regex = { version = "1.12.3", default-features = false, features = ["std", "perf", "unicode-perl"] }
+regex.workspace = true
 
 # For lexical analysis
-aho-corasick = "1.1.4"
+aho-corasick.workspace = true
 
 # Logging (Lightweight)
-log = "0.4.29"
+log.workspace = true
 
-bitflags = "2.11.0"
+bitflags.workspace = true

@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use hickory_resolver::Name;
+use hickory_resolver::proto::rr::Name;
 
 use crate::{
     error::ListError,
