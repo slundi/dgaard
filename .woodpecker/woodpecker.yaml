@@ -10,7 +10,6 @@ steps:
       - cargo clippy -- -D warnings
       - cargo test -- --nocapture
       - cargo build --locked
-
   build:
     image: rust
     environment:
@@ -20,11 +19,11 @@ steps:
     commands:
       - cargo build --release
 
-  # deploy:
-  #   image: rust
-  #   environment:
-  #     CARGO_TERM_COLOR: always
-  #   when:
-  #     event: [tag, release]
-  #   commands:
-  #     - TODO
+# deploy:
+#   image: rust
+#   environment:
+#     CARGO_TERM_COLOR: always
+#   when:
+#     event: [tag, release]
+#   commands:
+#     - TODO
