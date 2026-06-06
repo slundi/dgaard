@@ -203,3 +203,101 @@ println!("{}[OK]{} Dgaard is running", GREEN, RESET);
     * **Average Entropy of Blocked Domains**: What is the average entropy score of blocked domains? This will help you adjust your entropy_threshold (e.g., if all your blocks are > 4.2, you might want to lower the threshold to 4.0).
   * **Record Type** (QType)
     * **Breakdown by A vs. AAAA vs. TXT**: Are the blocks occurring on IPv4 or IPv6 requests? Note: A spike in blocked requests for **TXT** records is almost always a sign of an attempt at data exfiltration (DNS tunneling).
+
+---
+
+## Project: dgaard-daemon
+
+A lightweight Unix socket daemon wrapping `dgaard-engine`. It listens for domain queries on a local socket and returns a suspicion score with reasons. Designed to integrate with external tools such as MTAs (Postfix, Rspamd), spam filters, or any process that can write to a socket.
+
+The daemon does **not** perform DNS resolution — it evaluates the domain string only through the engine's static filters and heuristics. This makes it synchronous-friendly and suitable as a sidecar process.
+
+**Wire protocol (per connection):**
+- Input: newline-terminated UTF-8 domain string (e.g. `domaine-suspect.xyz\n`)
+- Output: newline-terminated JSON object (e.g. `{"score":7,"blocked":true,"reasons":["HighEntropy","SuspiciousTld"]}\n`)
+- One domain per connection (stateless, reconnect each time)
+
+**Project tree:**
+```
+dgaard-daemon/
+├── Cargo.toml
+└── src/
+    ├── main.rs          # CLI entry, config loading, socket listener loop
+    ├── config.rs        # TOML config: socket_path, config_file, log level
+    └── handler.rs       # Per-connection logic: parse domain, call engine, serialize response
+```
+
+### Phase D1: Project Setup
+
+* [ ] D1.1. **Workspace member**: Add `dgaard-daemon` to `Cargo.toml` workspace `members`.
+* [ ] D1.2. **Cargo.toml**: Declare dependencies — `dgaard-engine` (workspace), `tokio` (with `net`, `io-util`, `signal`, `macros`, `rt-multi-thread` features), `serde_json`, `serde`, `log`, `env_logger`, `argh` for CLI.
+* [ ] D1.3. **CLI**: Parse `--config <path>` and `--version` with `argh`. Config discovery: check `/etc/dgaard-daemon/` then current directory for `dgaard-daemon.toml`.
+* [ ] D1.4. **Config struct**: TOML fields — `socket_path` (default `/run/dgaard-daemon.sock`), `config_file` (path to the `dgaard-engine` config), `log_level`.
+* [ ] D1.5. **Engine init**: Load `dgaard_engine::Config` from the configured path, call `FilterEngine::build_from_files`, wrap both in `Arc` for sharing across tasks.
+
+### Phase D2: Socket Listener
+
+* [ ] D2.1. **Unix socket bind**: Use `tokio::net::UnixListener::bind`. Remove stale socket file on startup if it exists. Set restrictive permissions (`0o600`) via `std::fs::set_permissions` after binding.
+* [ ] D2.2. **Accept loop**: `loop { listener.accept().await }` — spawn a `tokio::task` per connection, passing `Arc<FilterEngine>` and `Arc<Config>` clones.
+* [ ] D2.3. **Connection handler**: Read bytes until `\n` with `tokio::io::AsyncBufReadExt::read_line`. Trim whitespace. Reject empty or oversized input (max 253 bytes per RFC 1035).
+* [ ] D2.4. **Engine call**: Call `dgaard_engine::resolve_with_score(domain, &engine, &config)`. Serialize `ResolveResult` to JSON: `{"score": u8, "blocked": bool, "action": str, "reasons": [str]}`.
+* [ ] D2.5. **Write response**: Write the JSON line followed by `\n` back to the socket. Close the connection.
+
+### Phase D3: Reliability
+
+* [ ] D3.1. **Graceful shutdown**: Listen for `SIGTERM` and `SIGINT` via `tokio::signal`. Stop accepting new connections; let in-flight tasks complete.
+* [ ] D3.2. **SIGHUP reload**: On `SIGHUP`, reload `dgaard_engine::Config` and rebuild `FilterEngine`, atomically swap the `Arc` with `arc-swap`.
+* [ ] D3.3. **Error handling**: Log malformed input and IO errors with `log::warn!`. Never crash on a bad domain string — return `{"error": "..."}` JSON line instead.
+
+### Phase D4: Tests
+
+* [ ] D4.1. **Unit tests** (`src/handler.rs`): test JSON serialization for each `Action` variant (`Block`, `Allow`, `ProxyToUpstream`).
+* [ ] D4.2. **Integration test** (`tests/socket.rs`): spawn the daemon with a temp socket path, connect with `tokio::net::UnixStream`, send a known blocked domain and a clean domain, assert response fields.
+
+---
+
+## Project: dgaard-rest
+
+An HTTP REST API wrapping `dgaard-engine`. Exposes domain scoring over HTTP/JSON for integration with web services, dashboards, or any tool that speaks HTTP. Uses `axum` (already in workspace deps).
+
+**Project tree:**
+```
+dgaard-rest/
+├── Cargo.toml
+└── src/
+    ├── main.rs          # CLI entry, config loading, axum router, server startup
+    ├── config.rs        # TOML config: listen_addr, config_file, blocked_response_code
+    ├── state.rs         # AppState: Arc<FilterEngine>, Arc<Config>
+    └── routes/
+        ├── mod.rs
+        ├── health.rs    # GET /api/v1/health
+        ├── blocklists.rs# GET + POST /api/v1/blocklists
+        └── check.rs     # POST /api/v1/check
+```
+
+### Phase R1: Project Setup
+
+* [ ] R1.1. **Workspace member**: Add `dgaard-rest` to `Cargo.toml` workspace `members`.
+* [ ] R1.2. **Cargo.toml**: Declare dependencies — `dgaard-engine` (workspace), `tokio` (full), `axum`, `serde`, `serde_json`, `tower`, `log`, `env_logger`, `argh`.
+* [ ] R1.3. **CLI**: Parse `--config <path>` and `--version` with `argh`. Config discovery: check `/etc/dgaard-rest/` then current directory for `dgaard-rest.toml`.
+* [ ] R1.4. **Config struct**: TOML fields — `listen_addr` (default `127.0.0.1:8080`), `config_file` (path to `dgaard-engine` config), `blocked_status_code` (`200` or `403`, default `200`).
+* [ ] R1.5. **Engine init**: Load `dgaard_engine::Config`, call `FilterEngine::build_from_files`, store both in `AppState` behind `Arc`. Register `AppState` as axum shared state.
+
+### Phase R2: Endpoints
+
+* [ ] R2.1. **`GET /api/v1/health`**: Return HTTP 204 No Content. No body. Used by load balancers and monitoring.
+* [ ] R2.2. **`GET /api/v1/blocklists`**: Return JSON array of blocklist metadata objects. Each object: `{"name": str, "last_updated": unix_timestamp_or_null, "count": u64}`. Data sourced from `FilterEngine`'s loaded list metadata.
+* [ ] R2.3. **`POST /api/v1/blocklists/update`**: Trigger an async blocklist refresh (reload from files on disk). Respond `202 Accepted` immediately. The reload runs in a spawned task and atomically swaps `FilterEngine` via `arc-swap` when done.
+* [ ] R2.4. **`POST /api/v1/check`**: Accept JSON body `{"domain": "example.com"}`. Call `resolve_with_score`. Return response body `{"domain": str, "score": u8, "blocked": bool, "action": str, "reasons": [str]}`. HTTP status code for blocked domains is controlled by `blocked_status_code` config field: `200` returns the body with `"blocked": true`; `403` returns HTTP 403 with the same body.
+* [ ] R2.5. **Input validation**: Reject missing or empty `domain` field with HTTP 400. Reject domains exceeding 253 characters with HTTP 422.
+
+### Phase R3: Reliability
+
+* [ ] R3.1. **Graceful shutdown**: Use `axum::serve(...).with_graceful_shutdown(...)` wired to `SIGTERM`/`SIGINT`.
+* [ ] R3.2. **SIGHUP reload**: On `SIGHUP`, reload config and rebuild `FilterEngine`, atomically swap via `arc-swap` — same pattern as dgaard-daemon.
+* [ ] R3.3. **Error responses**: All errors return JSON body `{"error": "..."}` with appropriate HTTP status. Use an axum `IntoResponse` error type to centralize this.
+
+### Phase R4: Tests
+
+* [ ] R4.1. **Unit tests** (`src/routes/check.rs`): test response serialization for `Block`, `Allow`, `ProxyToUpstream` actions. Test that `blocked_status_code = 403` config produces HTTP 403 for blocked domains.
+* [ ] R4.2. **Integration tests** (`tests/api.rs`): spin up the axum router with `tower::ServiceExt::oneshot`, send HTTP requests to each endpoint, assert status codes and JSON response shapes.
