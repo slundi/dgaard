@@ -3,6 +3,14 @@ name = "dgaard-rest"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "dgaard_rest"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dgaard-rest"
+path = "src/main.rs"
+
 [dependencies]
 arc-swap.workspace = true
 argh.workspace = true
@@ -16,5 +24,6 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net"
 toml.workspace = true
 
 [dev-dependencies]
+dgaard-engine.workspace = true
 tempfile.workspace = true
 tower.workspace = true

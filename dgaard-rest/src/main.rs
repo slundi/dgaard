@@ -1,16 +1,9 @@
-mod config;
-mod error;
-mod routes;
-mod state;
-
 use std::path::Path;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use dgaard_engine::{Config as EngineConfig, FilterEngine};
-
-use config::RestConfig;
-use state::AppState;
+use dgaard_rest::{HASH_SEED, config::RestConfig, routes, state::AppState};
 
 /// dgaard-rest — HTTP REST API for domain scoring.
 ///
@@ -29,7 +22,6 @@ struct Args {
 }
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub(crate) const HASH_SEED: u64 = 42;
 
 /// Directories searched in order for `dgaard-rest.toml` when `--config` is absent.
 const CONFIG_SEARCH_DIRS: &[&str] = &["/etc/dgaard-rest", "."];

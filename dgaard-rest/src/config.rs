@@ -21,7 +21,6 @@ fn default_blocked_status_code() -> u16 {
 /// Maps to `dgaard-rest.toml`. All fields have sensible defaults so the
 /// server can start without a configuration file.
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // fields consumed by Phase R2 route handlers
 pub struct RestConfig {
     /// Address and port the HTTP server binds to.
     #[serde(default = "default_listen_addr")]

@@ -310,5 +310,5 @@ dgaard-rest/
 
 ### Phase R4: Tests
 
-- [ ] R4.1. **Unit tests** (`src/routes/check.rs`): test response serialization for `Block`, `Allow`, `ProxyToUpstream` actions. Test that `blocked_status_code = 403` config produces HTTP 403 for blocked domains.
-- [ ] R4.2. **Integration tests** (`tests/api.rs`): spin up the axum router with `tower::ServiceExt::oneshot`, send HTTP requests to each endpoint, assert status codes and JSON response shapes.
+- [x] R4.1. **Unit tests** (`src/routes/check.rs`): test response serialization for `Block`, `Allow`, `ProxyToUpstream` actions. Test that `blocked_status_code = 403` config produces HTTP 403 for blocked domains.
+- [x] R4.2. **Integration tests** (`tests/api.rs`): spin up the axum router with `tower::ServiceExt::oneshot`, send HTTP requests to each endpoint, assert status codes and JSON response shapes.

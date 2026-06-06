@@ -112,7 +112,39 @@ pub fn router() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dgaard_engine::SuspicionScore;
+    use axum::{
+        body::{Body, to_bytes},
+        http::{Method, Request, StatusCode, header},
+    };
+    use dgaard_engine::{Config as EngineConfig, FilterEngine, SuspicionScore};
+    use tower::ServiceExt;
+
+    use crate::state::AppState;
+
+    /// Default state: no lists loaded, default engine config, `blocked_status_code = 200`.
+    fn default_state() -> AppState {
+        let config = EngineConfig::default();
+        let engine = FilterEngine::build_from_files(&config, crate::HASH_SEED);
+        AppState::new(engine, config, String::new(), 200)
+    }
+
+    /// State where every domain is blocked (max_domain_length = 1 forces InvalidStructure
+    /// for any domain longer than one byte).
+    fn all_blocking_state(blocked_status_code: u16) -> AppState {
+        let mut config = EngineConfig::default();
+        config.security.structure.max_domain_length = 1;
+        let engine = FilterEngine::build_from_files(&config, crate::HASH_SEED);
+        AppState::new(engine, config, String::new(), blocked_status_code)
+    }
+
+    fn post_check(body: &str) -> Request<Body> {
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/check")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
 
     fn make_result(action: Action) -> ResolveResult {
         ResolveResult {
@@ -188,5 +220,98 @@ mod tests {
         for (reason, expected) in cases {
             assert_eq!(format_reason(reason), *expected, "failed for {expected}");
         }
+    }
+
+    // ── Handler-level tests (R4.1) ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn handler_clean_domain_returns_200() {
+        let resp = router()
+            .with_state(default_state())
+            .oneshot(post_check(r#"{"domain":"example.com"}"#))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn handler_response_has_all_expected_fields() {
+        let resp = router()
+            .with_state(default_state())
+            .oneshot(post_check(r#"{"domain":"example.com"}"#))
+            .await
+            .unwrap();
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.get("domain").is_some(), "missing 'domain'");
+        assert!(json.get("score").is_some(), "missing 'score'");
+        assert!(json.get("blocked").is_some(), "missing 'blocked'");
+        assert!(json.get("action").is_some(), "missing 'action'");
+        assert!(json.get("reasons").is_some(), "missing 'reasons'");
+        assert_eq!(json["domain"], "example.com");
+        assert!(json["reasons"].is_array());
+    }
+
+    #[tokio::test]
+    async fn handler_blocked_domain_returns_403_when_status_code_is_403() {
+        let resp = router()
+            .with_state(all_blocking_state(403))
+            .oneshot(post_check(r#"{"domain":"example.com"}"#))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["blocked"], true);
+    }
+
+    #[tokio::test]
+    async fn handler_blocked_domain_returns_200_when_status_code_is_200() {
+        let resp = router()
+            .with_state(all_blocking_state(200))
+            .oneshot(post_check(r#"{"domain":"example.com"}"#))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["blocked"], true);
+    }
+
+    #[tokio::test]
+    async fn handler_missing_domain_returns_400() {
+        let resp = router()
+            .with_state(default_state())
+            .oneshot(post_check(r#"{}"#))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.get("error").is_some());
+    }
+
+    #[tokio::test]
+    async fn handler_empty_domain_returns_400() {
+        let resp = router()
+            .with_state(default_state())
+            .oneshot(post_check(r#"{"domain":""}"#))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn handler_too_long_domain_returns_422() {
+        let domain = "a".repeat(254);
+        let resp = router()
+            .with_state(default_state())
+            .oneshot(post_check(&format!(r#"{{"domain":"{domain}"}}"#)))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.get("error").is_some());
     }
 }
