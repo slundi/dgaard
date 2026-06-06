@@ -1,0 +1,38 @@
+[package]
+name = "dgaard-engine"
+authors = ["Sébastien LUNDI"]
+description = "Embeddable DNS filtering engine: blocklists, DGA detection, entropy analysis, heuristics and policy checks. No async runtime — suitable for MTA, HTTP services, or any Rust application."
+readme = "README.md"
+license = "Apache-2.0"
+repository = "https://codeberg.org/slundi/dgaard"
+keywords = ["dns", "filter", "security", "dga", "heuristics"]
+categories = ["network-programming", "embedded-software"]
+version = "0.2.0"
+edition = "2024"
+
+[lib]
+name = "dgaard_engine"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror = "2.0.18"
+
+# DNS Protocol handling (for domain validation)
+hickory-resolver = "0.26.1"
+
+# Fast hashing for the u64 fingerprints
+twox-hash = "2.1.2"
+
+# Configuration parsing
+toml-span = "0.7.1"
+
+# High-performance matching
+regex = { version = "1.12.3", default-features = false, features = ["std", "perf", "unicode-perl"] }
+
+# For lexical analysis
+aho-corasick = "1.1.4"
+
+# Logging (Lightweight)
+log = "0.4.29"
+
+bitflags = "2.11.0"

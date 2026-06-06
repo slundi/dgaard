@@ -31,6 +31,49 @@ See the [dgaard README](./dgaard/README.md) and [example configuration](./dgaard
 
 ---
 
+### [dgaard-engine](./dgaard-engine) — Embeddable Filtering Engine *(library)*
+
+The pure-Rust filtering engine extracted from `dgaard` as a standalone `[lib]` crate. It contains the complete analysis and decision pipeline — blocklists, DGA detection, entropy/N-Gram scoring, lexical heuristics, and policy checks — with **no async runtime and no networking dependencies**. Any Rust application can embed it directly.
+
+**Designed for:**
+
+- **MTA spam filtering** — call `resolve_with_score` from your mail pipeline to score domains in envelope/header/body.
+- **HTTP proxy / web service** — expose the engine as a REST endpoint without pulling in Tokio or Hyper.
+- **Custom tooling** — integrate DNS-level threat intelligence into any Rust binary.
+
+**Key properties:**
+
+- No `tokio`, `hyper`, or `rustls` — sync-friendly, zero async overhead.
+- All state is explicit: `FilterEngine` and `Config` are plain structs passed by reference; no global statics.
+- `FilterEngine` carries its own `seed: u64` so multiple independent instances can coexist safely.
+
+**Quick start:**
+
+```toml
+# Cargo.toml
+[dependencies]
+dgaard-engine = { path = "../dgaard-engine" }   # or version from crates.io
+```
+
+```rust
+use dgaard_engine::{Config, FilterEngine, resolve_with_score};
+use dgaard_engine::model::Action;
+
+let config = Config::default();
+let filter = FilterEngine::new(/* blocklists loaded here */);
+
+let result = resolve_with_score("suspicious-domain.xyz", &filter, &config);
+match result.action {
+    Action::Block(reason) => eprintln!("Blocked: {reason:?}"),
+    Action::ProxyToUpstream => println!("Clean — forward to upstream"),
+    Action::LocalResolve    => println!("Answered from cache/blocklist"),
+}
+```
+
+See the [dgaard-engine README](./dgaard-engine/README.md) for the full API reference.
+
+---
+
 ### [dgaard-monitor](./dgaard-monitor) — Real-Time TUI Dashboard
 
 [![Crates.io](https://img.shields.io/crates/v/dgaard-monitor)](https://crates.io/crates/dgaard-monitor)
@@ -86,15 +129,17 @@ adblockptimize          dgaard-monitor
       |                       |
       | (optimised lists)     | (Unix socket telemetry)
       v                       |
-   dgaard  <-----------------/
-(DNS proxy, port 5353)
-      |
+   dgaard  <-----------------/        your-app (MTA, HTTP proxy…)
+(DNS proxy, port 5353)                      |
+      |                                     | (library embed)
+      +--------- dgaard-engine  <----------/
+      |          (filtering core)
    dnsmasq / router DNS
       |
    LAN clients
 ```
 
-`adblockptimize` pre-processes upstream adblock lists into compact, DNS-ready formats that `dgaard` can ingest. `dgaard-monitor` connects to `dgaard`'s telemetry socket and provides a live view of what is happening on the network — all three tools are designed to work together but can be used independently.
+`adblockptimize` pre-processes upstream adblock lists into compact, DNS-ready formats that `dgaard` can ingest. `dgaard-monitor` connects to `dgaard`'s telemetry socket and provides a live view of what is happening on the network. `dgaard-engine` is the shared filtering library used by `dgaard` internally and available for embedding in any Rust application — all tools are designed to work together but can be used independently.
 
 ---
 
@@ -106,6 +151,13 @@ All packages are published to [crates.io](https://crates.io) and can be installe
 cargo install dgaard
 cargo install dgaard-monitor   # Linux only
 cargo install adblockptimize
+```
+
+To use `dgaard-engine` as a library in your own project:
+
+```toml
+[dependencies]
+dgaard-engine = "0.2"
 ```
 
 Pre-built binaries for Linux (musl), macOS, and Windows are available on the [Releases](../../releases) page. Each package is released independently and tagged `<package>-v<version>`.
@@ -123,6 +175,7 @@ cargo build --release
 
 # build a specific package
 cargo build --release -p dgaard
+cargo build --release -p dgaard-engine
 cargo build --release -p dgaard-monitor
 cargo build --release -p adblockptimize
 ```
