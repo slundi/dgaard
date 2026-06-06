@@ -36,7 +36,7 @@ _Focus: Getting the "Engine" to start and manage threads correctly._
 
 - [x] 1.1. **CLI Entry**: Setup gumdrop and handle `--config` and `--version` flags.
 - [x] 1.2. **Config Discovery**: Logic to check `/etc/dgaard/` then local directory for the file.
-- [x] 1.3. **Congiguration loader**: parse the configuration using `toml-span` and print the listen_addr.
+- [x] 1.3. **Configuration loader**: parse the configuration using `toml-span` and print the listen_addr.
 - [x] 1.4.** Runtime Setup**: Use tokio::runtime::Builder to set thread counts based on the parsed config.
 - [x] 1.5 **UDP Binding**: Bind the initial socket with `UdpSocket`.
 - [x] 1.6 **Socket2 Optimization** (SO_REUSEPORT implementation): Apply set_reuse_port(true) and set_nonblocking(true) using the socket2 crate.
@@ -117,7 +117,7 @@ if let Some(entry) = self.bypass_map.get(&client_ip) {
 }
 ```
 
-- [ ] 7.2. **Stat filtering**: Filter what data are written on the UNIX socket to match the log strategy. Do not log some domains for GDPR purposes (health website, ...) or personnal (lottery, adult, ...).
+- [ ] 7.2. **Stat filtering**: Filter what data are written on the UNIX socket to match the log strategy. Do not log some domains for GDPR purposes (health website, ...) or personal (lottery, adult, ...).
 
 ```rust
 pub enum LogStrategy {
@@ -144,7 +144,7 @@ _Focus: Analysing DNS payloads and response records._
 - [x] 8.3. **CNAME Unmasking**: recursive check of CNAME targets against blacklists (Cloaking defense) (ie: `track.domain.tld` is referring to `ad-server.net`).
 - [x] 8.4. **DNS Rebinding Shield**: reject public queries resolving to private IP ranges (RFC 1918).
 - [x] 8.5. **QType Warden**: policy-based blocking for suspicious types (NULL almost only used by DNS tunneling, HINFO for system information, ANY, etc.).
-- [x] 8.6. **Low TTL**: if TTL is very low (like less than 10s but configurable) and not a known CDN (like Akamai) it should increase suspisious score.
+- [x] 8.6. **Low TTL**: if TTL is very low (like less than 10s but configurable) and not a known CDN (like Akamai) it should increase suspicious score.
 - [ ] 8.7. **DNS Rebinding Shield (known hosted malware)**: from a list of IPs or using geoIP or known range for hosted malware.
 - [x] 8.8. **ASN Filtering**: for crypto mining autonomous systems?
 
@@ -288,25 +288,25 @@ dgaard-rest/
 
 ### Phase R1: Project Setup
 
-- [ ] R1.1. **Workspace member**: Add `dgaard-rest` to `Cargo.toml` workspace `members`.
-- [ ] R1.2. **Cargo.toml**: Declare dependencies — `dgaard-engine` (workspace), `tokio` (full), `axum`, `serde`, `serde_json`, `tower`, `log`, `env_logger`, `argh`.
-- [ ] R1.3. **CLI**: Parse `--config <path>` and `--version` with `argh`. Config discovery: check `/etc/dgaard-rest/` then current directory for `dgaard-rest.toml`.
-- [ ] R1.4. **Config struct**: TOML fields — `listen_addr` (default `127.0.0.1:8080`), `config_file` (path to `dgaard-engine` config), `blocked_status_code` (`200` or `403`, default `200`).
-- [ ] R1.5. **Engine init**: Load `dgaard_engine::Config`, call `FilterEngine::build_from_files`, store both in `AppState` behind `Arc`. Register `AppState` as axum shared state.
+- [x] R1.1. **Workspace member**: Add `dgaard-rest` to `Cargo.toml` workspace `members`.
+- [x] R1.2. **Cargo.toml**: Declare dependencies — `dgaard-engine` (workspace), `tokio` (full), `axum`, `serde`, `serde_json`, `tower`, `log`, `env_logger`, `argh`.
+- [x] R1.3. **CLI**: Parse `--config <path>` and `--version` with `argh`. Config discovery: check `/etc/dgaard-rest/` then current directory for `dgaard-rest.toml`.
+- [x] R1.4. **Config struct**: TOML fields — `listen_addr` (default `127.0.0.1:8080`), `config_file` (path to `dgaard-engine` config), `blocked_status_code` (`200` or `403`, default `200`).
+- [x] R1.5. **Engine init**: Load `dgaard_engine::Config`, call `FilterEngine::build_from_files`, store both in `AppState` behind `Arc`. Register `AppState` as axum shared state.
 
 ### Phase R2: Endpoints
 
-- [ ] R2.1. **`GET /api/v1/health`**: Return HTTP 204 No Content. No body. Used by load balancers and monitoring.
-- [ ] R2.2. **`GET /api/v1/blocklists`**: Return JSON array of blocklist metadata objects. Each object: `{"name": str, "last_updated": unix_timestamp_or_null, "count": u64}`. Data sourced from `FilterEngine`'s loaded list metadata.
-- [ ] R2.3. **`POST /api/v1/blocklists/update`**: Trigger an async blocklist refresh (reload from files on disk). Respond `202 Accepted` immediately. The reload runs in a spawned task and atomically swaps `FilterEngine` via `arc-swap` when done.
-- [ ] R2.4. **`POST /api/v1/check`**: Accept JSON body `{"domain": "example.com"}`. Call `resolve_with_score`. Return response body `{"domain": str, "score": u8, "blocked": bool, "action": str, "reasons": [str]}`. HTTP status code for blocked domains is controlled by `blocked_status_code` config field: `200` returns the body with `"blocked": true`; `403` returns HTTP 403 with the same body.
-- [ ] R2.5. **Input validation**: Reject missing or empty `domain` field with HTTP 400. Reject domains exceeding 253 characters with HTTP 422.
+- [x] R2.1. **`GET /api/v1/health`**: Return HTTP 204 No Content. No body. Used by load balancers and monitoring.
+- [x] R2.2. **`GET /api/v1/blocklists`**: Return JSON array of blocklist metadata objects. Each object: `{"name": str, "last_updated": unix_timestamp_or_null, "count": u64}`. Data sourced from `FilterEngine`'s loaded list metadata.
+- [x] R2.3. **`POST /api/v1/blocklists/update`**: Trigger an async blocklist refresh (reload from files on disk). Respond `202 Accepted` immediately. The reload runs in a spawned task and atomically swaps `FilterEngine` via `arc-swap` when done.
+- [x] R2.4. **`POST /api/v1/check`**: Accept JSON body `{"domain": "example.com"}`. Call `resolve_with_score`. Return response body `{"domain": str, "score": u8, "blocked": bool, "action": str, "reasons": [str]}`. HTTP status code for blocked domains is controlled by `blocked_status_code` config field: `200` returns the body with `"blocked": true`; `403` returns HTTP 403 with the same body.
+- [x] R2.5. **Input validation**: Reject missing or empty `domain` field with HTTP 400. Reject domains exceeding 253 characters with HTTP 422.
 
 ### Phase R3: Reliability
 
-- [ ] R3.1. **Graceful shutdown**: Use `axum::serve(...).with_graceful_shutdown(...)` wired to `SIGTERM`/`SIGINT`.
-- [ ] R3.2. **SIGHUP reload**: On `SIGHUP`, reload config and rebuild `FilterEngine`, atomically swap via `arc-swap` — same pattern as dgaard-daemon.
-- [ ] R3.3. **Error responses**: All errors return JSON body `{"error": "..."}` with appropriate HTTP status. Use an axum `IntoResponse` error type to centralize this.
+- [x] R3.1. **Graceful shutdown**: Use `axum::serve(...).with_graceful_shutdown(...)` wired to `SIGTERM`/`SIGINT`.
+- [x] R3.2. **SIGHUP reload**: On `SIGHUP`, reload config and rebuild `FilterEngine`, atomically swap via `arc-swap` — same pattern as dgaard-daemon.
+- [x] R3.3. **Error responses**: All errors return JSON body `{"error": "..."}` with appropriate HTTP status. Use an axum `IntoResponse` error type to centralize this.
 
 ### Phase R4: Tests
 

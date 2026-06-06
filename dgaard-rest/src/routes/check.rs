@@ -1,7 +1,8 @@
-use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
+use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
 use dgaard_engine::{Action, BlockReason, ResolveResult, resolve_with_score};
 use serde::{Deserialize, Serialize};
 
+use crate::error::ApiError;
 use crate::state::AppState;
 
 const MAX_DOMAIN_LEN: usize = 253;
@@ -70,34 +71,22 @@ fn result_to_response(domain: &str, result: ResolveResult) -> CheckResponse {
 /// Request body:  `{"domain": "example.com"}`
 /// Response body: `{"domain": str, "score": u8, "blocked": bool, "action": str, "reasons": [str]}`
 ///
-/// HTTP 400 if `domain` is missing or empty.
-/// HTTP 422 if `domain` exceeds 253 characters.
-/// HTTP 200 (or 403 if `blocked_status_code = 403`) for normal results.
+/// Returns `ApiError::BadRequest` if `domain` is missing or empty (HTTP 400).
+/// Returns `ApiError::UnprocessableEntity` if `domain` exceeds 253 characters (HTTP 422).
+/// Returns HTTP 200 (or 403 when `blocked_status_code = 403`) for normal results.
 async fn check_domain(
     State(state): State<AppState>,
     Json(body): Json<CheckRequest>,
-) -> (StatusCode, Json<serde_json::Value>) {
-    let domain = match body.domain {
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "missing or empty domain"})),
-            );
-        }
-        Some(ref s) if s.trim().is_empty() => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "missing or empty domain"})),
-            );
-        }
-        Some(s) => s.trim().to_string(),
+) -> Result<impl IntoResponse, ApiError> {
+    let domain = match body.domain.as_deref().map(str::trim) {
+        None | Some("") => return Err(ApiError::BadRequest("missing or empty domain")),
+        Some(s) => s.to_string(),
     };
 
     if domain.len() > MAX_DOMAIN_LEN {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"error": "domain exceeds 253 characters"})),
-        );
+        return Err(ApiError::UnprocessableEntity(
+            "domain exceeds 253 characters",
+        ));
     }
 
     let engine_guard = state.engine.load();
@@ -113,7 +102,7 @@ async fn check_domain(
 
     let body = serde_json::to_value(&response)
         .unwrap_or_else(|_| serde_json::json!({"error": "internal serialization error"}));
-    (status, Json(body))
+    Ok((status, Json(body)))
 }
 
 pub fn router() -> Router<AppState> {
