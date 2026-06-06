@@ -735,6 +735,7 @@ dependencies = [
 name = "dgaard-daemon"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "argh",
  "dgaard-engine",
  "env_logger",

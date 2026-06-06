@@ -1,10 +1,12 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use dgaard_daemon::config::DaemonConfig;
-use dgaard_daemon::handler::handle_connection;
+use dgaard_daemon::server::{
+    HASH_SEED, bind_listener, run_accept_loop, shutdown_signal, sighup_reload_task,
+};
 use dgaard_engine::{Config as EngineConfig, FilterEngine};
-use tokio::net::UnixListener;
 
 /// dgaard-daemon — Unix socket domain scoring daemon.
 ///
@@ -23,7 +25,6 @@ struct Args {
 }
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const HASH_SEED: u64 = 42;
 
 /// Directories searched in order for `dgaard-daemon.toml` when `--config` is absent.
 const CONFIG_SEARCH_DIRS: &[&str] = &["/etc/dgaard-daemon", "."];
@@ -54,20 +55,6 @@ fn load_daemon_config(path: Option<String>) -> DaemonConfig {
     }
 }
 
-/// Bind the Unix socket, removing any stale socket file first, then restrict
-/// permissions to owner-only (`0o600`).
-fn bind_listener(socket_path: &str) -> std::io::Result<UnixListener> {
-    if Path::new(socket_path).exists() {
-        std::fs::remove_file(socket_path)?;
-    }
-    let listener = UnixListener::bind(socket_path)?;
-    std::fs::set_permissions(
-        socket_path,
-        std::os::unix::fs::PermissionsExt::from_mode(0o600),
-    )?;
-    Ok(listener)
-}
-
 #[tokio::main]
 async fn main() {
     let args: Args = argh::from_env();
@@ -92,8 +79,11 @@ async fn main() {
             EngineConfig::default()
         });
 
-    let engine = Arc::new(FilterEngine::build_from_files(&engine_config, HASH_SEED));
-    let config = Arc::new(engine_config);
+    let engine = Arc::new(ArcSwap::from_pointee(FilterEngine::build_from_files(
+        &engine_config,
+        HASH_SEED,
+    )));
+    let config = Arc::new(ArcSwap::from_pointee(engine_config));
 
     let listener = bind_listener(&daemon_cfg.socket_path).unwrap_or_else(|e| {
         log::error!("Failed to bind {}: {e}", daemon_cfg.socket_path);
@@ -106,18 +96,12 @@ async fn main() {
         daemon_cfg.socket_path
     );
 
-    loop {
-        match listener.accept().await {
-            Ok((stream, _addr)) => {
-                let engine = Arc::clone(&engine);
-                let config = Arc::clone(&config);
-                tokio::spawn(async move {
-                    handle_connection(stream, engine, config).await;
-                });
-            }
-            Err(e) => {
-                log::error!("Accept error: {e}");
-            }
-        }
-    }
+    // Reload engine atomically on SIGHUP
+    tokio::spawn(sighup_reload_task(
+        Arc::clone(&engine),
+        Arc::clone(&config),
+        daemon_cfg.config_file.clone(),
+    ));
+
+    run_accept_loop(listener, engine, config, shutdown_signal()).await;
 }

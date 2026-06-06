@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use dgaard_engine::{
     Action, BlockReason, Config as EngineConfig, FilterEngine, ResolveResult, resolve_with_score,
 };
@@ -72,12 +73,15 @@ pub fn format_reason(reason: &BlockReason) -> String {
 /// Input:  newline-terminated UTF-8 domain string (`"example.com\n"`)
 /// Output: newline-terminated JSON (`{"score":0,"blocked":false,"action":"ProxyToUpstream","reasons":[]}\n`)
 ///
-/// On invalid input (empty or > 253 bytes) returns `{"error":"..."}`.
-/// On IO errors the connection is silently dropped.
+/// The engine and config are loaded from the `ArcSwap` at the start of the
+/// connection, so SIGHUP reloads are visible to new connections immediately.
+///
+/// Malformed input (empty or > 253 bytes) returns `{"error":"..."}`.
+/// IO errors are logged with `log::warn!` and the connection is dropped.
 pub async fn handle_connection(
     stream: UnixStream,
-    engine: Arc<FilterEngine>,
-    config: Arc<EngineConfig>,
+    engine: Arc<ArcSwap<FilterEngine>>,
+    config: Arc<ArcSwap<EngineConfig>>,
 ) {
     let (reader, mut writer) = stream.into_split();
     let mut buf_reader = BufReader::new(reader);
@@ -99,7 +103,11 @@ pub async fn handle_connection(
     } else if domain.len() > MAX_DOMAIN_LEN {
         String::from(r#"{"error":"domain exceeds 253 bytes"}"#)
     } else {
-        let result = resolve_with_score(domain, &engine, &config);
+        // Load current engine and config snapshots for this connection.
+        // arc-swap ensures we see a consistent pair even during a reload.
+        let engine_guard = engine.load();
+        let config_guard = config.load();
+        let result = resolve_with_score(domain, &engine_guard, &config_guard);
         match serde_json::to_string(&DomainResponse::from(result)) {
             Ok(json) => json,
             Err(e) => {
