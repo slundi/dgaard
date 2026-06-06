@@ -10,23 +10,23 @@ For any changes you wish to make to the project (bug fixes, feature additions, d
 
 Here are the steps to follow:
 
-1.  **Fork the repository (if you are not a direct collaborator).** Create a copy of the repository on your own account.
-2.  **Create a dedicated branch for your modification.** Give your branch a clear and descriptive name of the feature or fix you are implementing (e.g., `fix-login-bug`, `feat-new-feature`).
-    ```bash
-    git checkout -b my-descriptive-branch
-    ```
-3.  **Make your changes and commit them.** Ensure you follow the Conventional Commits convention (see the section below).
-4.  **Push your branch to your fork (or the main repository if you are a collaborator).**
-    ```bash
-    git push origin my-descriptive-branch
-    ```
-5.  **Create a Merge Request (or Pull Request).** From your source code management interface (e.g., GitLab, GitHub), create a new Merge Request.
-    * **Source Branch:** Select the branch you just pushed.
-    * **Target Branch:** Select the main branch of the project (usually `main` or `master`).
-    * **Title:** Give your Merge Request a clear and concise title that summarizes your change. Also, use the Conventional Commits convention for the title.
-    * **Description:** Provide a detailed description of your modification. Explain the problem you are solving, the feature you are adding, or the improvement you are making. Include steps to test your changes if necessary.
-    * **Assign a reviewer (if applicable).**
-    * **Add labels (if applicable).**
+1. **Fork the repository (if you are not a direct collaborator).** Create a copy of the repository on your own account.
+2. **Create a dedicated branch for your modification.** Give your branch a clear and descriptive name of the feature or fix you are implementing (e.g., `fix-login-bug`, `feat-new-feature`).
+   ```bash
+   git checkout -b my-descriptive-branch
+   ```
+3. **Make your changes and commit them.** Ensure you follow the Conventional Commits convention (see the section below).
+4. **Push your branch to your fork (or the main repository if you are a collaborator).**
+   ```bash
+   git push origin my-descriptive-branch
+   ```
+5. **Create a Merge Request (or Pull Request).** From your source code management interface (e.g., GitLab, GitHub), create a new Merge Request.
+   - **Source Branch:** Select the branch you just pushed.
+   - **Target Branch:** Select the main branch of the project (usually `main` or `master`).
+   - **Title:** Give your Merge Request a clear and concise title that summarizes your change. Also, use the Conventional Commits convention for the title.
+   - **Description:** Provide a detailed description of your modification. Explain the problem you are solving, the feature you are adding, or the improvement you are making. Include steps to test your changes if necessary.
+   - **Assign a reviewer (if applicable).**
+   - **Add labels (if applicable).**
 
 ## Types
 
@@ -34,17 +34,17 @@ Here are the steps to follow:
 
 Those types will be included in the changelog because user may want to know.
 
-* `feat` for new feature
-* `fix` for bug fix only when there is an issue created on the repository, if no issue it is a `chore`
+- `feat` for new feature
+- `fix` for bug fix only when there is an issue created on the repository, if no issue it is a `chore`
 
 ### Never included in changelog
 
-* `build`, `chore`, `ci`, `refactor`, `test`
+- `build`, `chore`, `ci`, `refactor`, `test`
 
 ### Unsure
 
-* `docs`: depending if users are complaining or often asking the same thing.
-* `perf`: may be relevent for user with big networks
+- `docs`: depending if users are complaining or often asking the same thing.
+- `perf`: may be relevent for user with big networks
 
 The project team will review your Merge Request, may ask for clarifications or modifications, and will merge it once it is approved.
 
