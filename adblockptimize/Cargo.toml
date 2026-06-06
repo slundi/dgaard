@@ -14,8 +14,8 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net"
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-rustls.workspace = true
-rustls.workspace = true
 hyper-util.workspace = true
+rustls.workspace = true
 url.workspace = true
 
 [dev-dependencies]

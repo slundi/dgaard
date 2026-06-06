@@ -375,7 +375,9 @@ mod tests {
     use super::*;
     use crate::{
         protocol::{StatAction, StatBlockReason, StatEvent},
-        tui::util::{INDICATOR_ALLOWED, INDICATOR_BLOCKED, INDICATOR_PROXIED, INDICATOR_SUSPICIOUS},
+        tui::util::{
+            INDICATOR_ALLOWED, INDICATOR_BLOCKED, INDICATOR_PROXIED, INDICATOR_SUSPICIOUS,
+        },
     };
 
     fn ev(ts: u64, ip: [u8; 16], action: StatAction) -> StatEvent {

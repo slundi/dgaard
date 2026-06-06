@@ -12,14 +12,14 @@ name = "dgaard-daemon"
 path = "src/main.rs"
 
 [dependencies]
-dgaard-engine.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "time"] }
 arc-swap.workspace = true
+argh.workspace = true
+dgaard-engine.workspace = true
+env_logger.workspace = true
+log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-log.workspace = true
-env_logger.workspace = true
-argh.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "time"] }
 toml.workspace = true
 
 [dev-dependencies]

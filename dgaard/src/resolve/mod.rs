@@ -39,8 +39,8 @@ pub mod tests {
     use dgaard_engine::filter::engine::FilterEngine;
     use dgaard_engine::model::{Action, DomainEntry, DomainEntryFlags};
     use std::collections::{HashMap, HashSet};
-    use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
     use std::sync::atomic::Ordering;
+    use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
     // Serialise all tests that mutate shared globals (CURRENT_ENGINE, CONFIG).
     static TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(Mutex::default);

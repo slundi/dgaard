@@ -16,8 +16,8 @@ toml.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-rustls.workspace = true
-rustls.workspace = true
 hyper-util.workspace = true
+rustls.workspace = true
 
 async-trait.workspace = true
 rust-mcp-sdk.workspace = true
