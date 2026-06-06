@@ -122,3 +122,109 @@ pub enum Resource {
     HttpUrl(Url),
     FilePath(PathBuf),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Rule methods ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn rule_is_network_for_network_variants() {
+        assert!(Rule::NetworkDomain("example.com".into()).is_network());
+        assert!(Rule::NetworkWildcard("*.example.com".into()).is_network());
+        assert!(Rule::NetworkRegex("^ads".into()).is_network());
+    }
+
+    #[test]
+    fn rule_is_network_false_for_other_variants() {
+        assert!(!Rule::Whitelist("example.com".into()).is_network());
+        assert!(!Rule::Browser("##.banner".into()).is_network());
+    }
+
+    #[test]
+    fn rule_is_browser() {
+        assert!(Rule::Browser("##.banner".into()).is_browser());
+        assert!(!Rule::NetworkDomain("example.com".into()).is_browser());
+    }
+
+    #[test]
+    fn rule_is_whitelist() {
+        assert!(Rule::Whitelist("safe.com".into()).is_whitelist());
+        assert!(!Rule::NetworkDomain("example.com".into()).is_whitelist());
+    }
+
+    #[test]
+    fn rule_value_returns_inner_string() {
+        assert_eq!(
+            Rule::NetworkDomain("example.com".into()).value(),
+            "example.com"
+        );
+        assert_eq!(
+            Rule::NetworkWildcard("*.example.com".into()).value(),
+            "*.example.com"
+        );
+        assert_eq!(Rule::NetworkRegex("^ads".into()).value(), "^ads");
+        assert_eq!(Rule::Whitelist("safe.com".into()).value(), "safe.com");
+        assert_eq!(Rule::Browser("##.banner".into()).value(), "##.banner");
+    }
+
+    // ── DnsTarget FromStr / Display ───────────────────────────────────────────
+
+    #[test]
+    fn dns_target_from_str_all_variants() {
+        assert_eq!("plain".parse::<DnsTarget>().unwrap(), DnsTarget::Plain);
+        assert_eq!("hosts".parse::<DnsTarget>().unwrap(), DnsTarget::Hosts);
+        assert_eq!("dnsmasq".parse::<DnsTarget>().unwrap(), DnsTarget::Dnsmasq);
+        assert_eq!("unbound".parse::<DnsTarget>().unwrap(), DnsTarget::Unbound);
+        assert_eq!("pihole".parse::<DnsTarget>().unwrap(), DnsTarget::PiHole);
+        assert_eq!("adguard".parse::<DnsTarget>().unwrap(), DnsTarget::AdGuard);
+    }
+
+    #[test]
+    fn dns_target_from_str_case_insensitive() {
+        assert_eq!("PLAIN".parse::<DnsTarget>().unwrap(), DnsTarget::Plain);
+        assert_eq!("Hosts".parse::<DnsTarget>().unwrap(), DnsTarget::Hosts);
+    }
+
+    #[test]
+    fn dns_target_from_str_unknown_returns_error() {
+        assert!("unknown".parse::<DnsTarget>().is_err());
+        assert!("".parse::<DnsTarget>().is_err());
+    }
+
+    #[test]
+    fn dns_target_display_round_trips() {
+        for (target, expected) in [
+            (DnsTarget::Plain, "plain"),
+            (DnsTarget::Hosts, "hosts"),
+            (DnsTarget::Dnsmasq, "dnsmasq"),
+            (DnsTarget::Unbound, "unbound"),
+            (DnsTarget::PiHole, "pihole"),
+            (DnsTarget::AdGuard, "adguard"),
+        ] {
+            assert_eq!(target.to_string(), expected);
+            // Verify round-trip
+            assert_eq!(expected.parse::<DnsTarget>().unwrap().to_string(), expected);
+        }
+    }
+
+    // ── ListFormat FromStr ────────────────────────────────────────────────────
+
+    #[test]
+    fn list_format_from_str_all_variants() {
+        assert_eq!("hosts".parse::<ListFormat>().unwrap(), ListFormat::Hosts);
+        assert_eq!(
+            "dnsmasq".parse::<ListFormat>().unwrap(),
+            ListFormat::Dnsmasq
+        );
+        assert_eq!("plain".parse::<ListFormat>().unwrap(), ListFormat::Plain);
+        assert_eq!("abp".parse::<ListFormat>().unwrap(), ListFormat::Abp);
+    }
+
+    #[test]
+    fn list_format_from_str_unknown_returns_error() {
+        assert!("csv".parse::<ListFormat>().is_err());
+        assert!("".parse::<ListFormat>().is_err());
+    }
+}

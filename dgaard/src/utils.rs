@@ -24,3 +24,36 @@ pub fn get_socket(addr: &str) -> Result<Arc<tokio::net::UdpSocket>, Box<dyn std:
     let tokio_socket = Arc::new(UdpSocket::from_std(std_socket)?);
     Ok(tokio_socket)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn get_socket_binds_ipv4_ephemeral() {
+        let sock = get_socket("127.0.0.1:0").expect("Should bind to ephemeral port");
+        let addr = sock.local_addr().unwrap();
+        assert!(addr.port() > 0, "Ephemeral port should be non-zero");
+        assert!(addr.ip().is_loopback());
+    }
+
+    #[tokio::test]
+    async fn get_socket_binds_ipv6_ephemeral() {
+        let sock = get_socket("[::1]:0").expect("Should bind to ephemeral IPv6 port");
+        let addr = sock.local_addr().unwrap();
+        assert!(addr.port() > 0);
+    }
+
+    #[tokio::test]
+    async fn get_socket_rejects_invalid_address() {
+        let result = get_socket("not-an-address");
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn get_socket_returns_arc() {
+        let sock = get_socket("127.0.0.1:0").unwrap();
+        // Verify we can clone the Arc
+        let _clone = Arc::clone(&sock);
+    }
+}

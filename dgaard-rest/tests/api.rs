@@ -4,6 +4,8 @@
 //! no TCP listener is required. Each test builds an isolated `AppState` so
 //! tests are fully independent.
 
+use std::io::Write;
+
 use axum::{
     body::{Body, to_bytes},
     http::{Method, Request, StatusCode, header},
@@ -190,6 +192,127 @@ async fn check_blocked_domain_returns_200_when_blocked_status_code_is_200() {
     assert_eq!(resp.status(), StatusCode::OK);
     let json = response_json(resp).await;
     assert_eq!(json["blocked"], true);
+}
+
+// ── GET /api/v1/blocklists — with real files ──────────────────────────────────
+
+fn write_temp_blocklist(tag: &str, content: &str) -> String {
+    let path = format!("/tmp/dgaard_rest_bl_test_{tag}_{}", std::process::id());
+    let mut f = std::fs::File::create(&path).unwrap();
+    f.write_all(content.as_bytes()).unwrap();
+    path
+}
+
+fn empty_sources_config() -> EngineConfig {
+    let mut config = EngineConfig::default();
+    config.sources.blacklists = vec![];
+    config.sources.whitelists = vec![];
+    config.sources.nrd_list_path = String::new();
+    config
+}
+
+fn state_with_blacklist(path: &str) -> AppState {
+    let mut config = empty_sources_config();
+    config.sources.blacklists = vec![path.to_string()];
+    let engine = FilterEngine::build_from_files(&config, HASH_SEED);
+    AppState::new(engine, config, String::new(), 200)
+}
+
+#[tokio::test]
+async fn get_blocklists_with_file_returns_correct_count() {
+    let path = write_temp_blocklist("count", "example.com\n# comment\ngoogle.com\n\nbad.org\n");
+    let state = state_with_blacklist(&path);
+
+    let resp = routes::router()
+        .with_state(state)
+        .oneshot(get("/api/v1/blocklists"))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = response_json(resp).await;
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "One configured blacklist");
+
+    let entry = &arr[0];
+    assert_eq!(entry["name"], path.as_str());
+    // 3 valid lines (comment and blank are not counted)
+    assert_eq!(entry["count"], 3u64);
+    assert!(
+        !entry["last_updated"].is_null(),
+        "last_updated should be set for an existing file"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn get_blocklists_missing_file_has_zero_count() {
+    // Configure a path that does not exist
+    let mut config = empty_sources_config();
+    config.sources.blacklists = vec!["/nonexistent/path/list.txt".to_string()];
+    let engine = FilterEngine::build_from_files(&config, HASH_SEED);
+    let state = AppState::new(engine, config, String::new(), 200);
+
+    let resp = routes::router()
+        .with_state(state)
+        .oneshot(get("/api/v1/blocklists"))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = response_json(resp).await;
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["count"], 0u64);
+    assert!(arr[0]["last_updated"].is_null());
+}
+
+#[tokio::test]
+async fn get_blocklists_nrd_list_included() {
+    let path = write_temp_blocklist("nrd", "nrd1.com\nnrd2.com\n");
+    let mut config = empty_sources_config();
+    config.sources.nrd_list_path = path.clone();
+    let engine = FilterEngine::build_from_files(&config, HASH_SEED);
+    let state = AppState::new(engine, config, String::new(), 200);
+
+    let resp = routes::router()
+        .with_state(state)
+        .oneshot(get("/api/v1/blocklists"))
+        .await
+        .unwrap();
+
+    let json = response_json(resp).await;
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "NRD list should appear as one entry");
+    assert_eq!(arr[0]["count"], 2u64);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn get_blocklists_whitelist_and_blacklist_both_appear() {
+    let bl_path = write_temp_blocklist("bl", "bad.com\nevil.net\n");
+    let wl_path = write_temp_blocklist("wl", "safe.com\n");
+
+    let mut config = empty_sources_config();
+    config.sources.blacklists = vec![bl_path.clone()];
+    config.sources.whitelists = vec![wl_path.clone()];
+    let engine = FilterEngine::build_from_files(&config, HASH_SEED);
+    let state = AppState::new(engine, config, String::new(), 200);
+
+    let resp = routes::router()
+        .with_state(state)
+        .oneshot(get("/api/v1/blocklists"))
+        .await
+        .unwrap();
+
+    let json = response_json(resp).await;
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 2, "Both blacklist and whitelist should appear");
+
+    let _ = std::fs::remove_file(&bl_path);
+    let _ = std::fs::remove_file(&wl_path);
 }
 
 // ── POST /api/v1/check — input validation (R2.5) ─────────────────────────────

@@ -309,6 +309,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn reload_config_from_path_succeeds_with_valid_config() {
         let _guard = TEST_MUTEX.lock().unwrap();
         use std::env;
@@ -362,6 +363,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn reload_config_from_path_updates_global_config() {
         let _guard = TEST_MUTEX.lock().unwrap();
         use std::env;

@@ -104,6 +104,7 @@ mod tests {
 
     const SEED: u64 = 42;
 
+    #[allow(clippy::type_complexity)]
     fn make_collections() -> (
         HashMap<u64, u8>,
         Vec<DomainEntry>,
@@ -138,5 +139,138 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    }
+
+    fn write_temp_list(tag: &str, content: &str) -> String {
+        let path = format!("/tmp/dgaard_engine_io_test_{tag}_{}", std::process::id());
+        std::fs::write(&path, content).expect("write temp file");
+        path
+    }
+
+    #[test]
+    fn test_load_plain_domain_list() {
+        let path = write_temp_list("plain", "example.com\ngoogle.com\n# comment\n\nbad.com\n");
+        let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
+        let result = load_list_file(
+            &path,
+            DomainEntryFlags::NONE,
+            SEED,
+            &mut fm,
+            &mut hl,
+            &mut wp,
+            &mut rp,
+            &mut hi,
+            &mut br,
+        );
+        assert!(result.is_ok());
+        // 3 valid domains (comment and blank line skipped)
+        assert_eq!(fm.len(), 3, "expected 3 entries, got {}", fm.len());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_load_hosts_format_list() {
+        let content = "0.0.0.0 example.com\n0.0.0.0 ads.evil.com\n127.0.0.1 tracker.net\n";
+        let path = write_temp_list("hosts", content);
+        let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
+        let result = load_list_file(
+            &path,
+            DomainEntryFlags::NONE,
+            SEED,
+            &mut fm,
+            &mut hl,
+            &mut wp,
+            &mut rp,
+            &mut hi,
+            &mut br,
+        );
+        assert!(result.is_ok());
+        assert_eq!(fm.len(), 3);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_load_whitelist_file() {
+        let path = write_temp_list("whitelist", "safe.com\nallowed.org\n");
+        let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
+        let result = load_list_file(
+            &path,
+            DomainEntryFlags::WHITELIST,
+            SEED,
+            &mut fm,
+            &mut hl,
+            &mut wp,
+            &mut rp,
+            &mut hi,
+            &mut br,
+        );
+        assert!(result.is_ok());
+        // Whitelist entries are in the hierarchical list
+        assert!(!hl.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_load_abp_format_list() {
+        let content = "||ads.example.com^\n||tracker.net^\n@@||safe.com^\n";
+        let path = write_temp_list("abp", content);
+        let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
+        let result = load_list_file(
+            &path,
+            DomainEntryFlags::NONE,
+            SEED,
+            &mut fm,
+            &mut hl,
+            &mut wp,
+            &mut rp,
+            &mut hi,
+            &mut br,
+        );
+        assert!(result.is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_load_empty_file() {
+        let path = write_temp_list("empty", "");
+        let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
+        let result = load_list_file(
+            &path,
+            DomainEntryFlags::NONE,
+            SEED,
+            &mut fm,
+            &mut hl,
+            &mut wp,
+            &mut rp,
+            &mut hi,
+            &mut br,
+        );
+        assert!(result.is_ok());
+        assert!(fm.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_load_comments_only_file() {
+        let content = "# This is a comment\n! ABP comment\n# Another comment\n";
+        let path = write_temp_list("comments", content);
+        let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
+        let result = load_list_file(
+            &path,
+            DomainEntryFlags::NONE,
+            SEED,
+            &mut fm,
+            &mut hl,
+            &mut wp,
+            &mut rp,
+            &mut hi,
+            &mut br,
+        );
+        assert!(result.is_ok());
+        assert!(
+            fm.is_empty(),
+            "comments-only file should produce no entries"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -695,4 +695,118 @@ mod tests {
         let models: Vec<ExternalNgramModel> = vec![];
         assert!(ngram_check_external("xyzqwrt", &models, -4.0));
     }
+
+    /// Write a minimal valid binary ngram file and return its path.
+    fn write_valid_ngram_file(tag: &str, entries: &[([u8; 2], f32)]) -> String {
+        use std::io::Write;
+        let path = format!("/tmp/dgaard_ngram_test_{tag}_{}", std::process::id());
+        let mut f = std::fs::File::create(&path).unwrap();
+        // Magic
+        f.write_all(b"NGRM").unwrap();
+        // Version
+        f.write_all(&[1u8]).unwrap();
+        // N-gram size (bigrams = 2)
+        f.write_all(&[2u8]).unwrap();
+        // Entry count
+        f.write_all(&(entries.len() as u32).to_le_bytes()).unwrap();
+        // Entries
+        for (ngram, prob) in entries {
+            f.write_all(ngram).unwrap();
+            f.write_all(&prob.to_le_bytes()).unwrap();
+        }
+        path
+    }
+
+    #[test]
+    fn external_ngram_model_load_valid_file() {
+        let entries = [([b'a', b'b'], -1.5f32), ([b'b', b'c'], -2.0f32)];
+        let path = write_valid_ngram_file("valid", &entries);
+        let model = ExternalNgramModel::load_from_file(&path);
+        assert!(model.is_some(), "Should load valid ngram file");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn external_ngram_model_score_known_ngram() {
+        // Entry: 'ab' -> -1.0 (very likely)
+        let entries = [([b'a', b'b'], -1.0f32)];
+        let path = write_valid_ngram_file("score_known", &entries);
+        let model = ExternalNgramModel::load_from_file(&path).unwrap();
+
+        // "ab" has exactly one bigram transition 'a'→'b' which is -1.0
+        let score = model.score("ab");
+        assert!(
+            (score - (-1.0)).abs() < 1e-5,
+            "Expected score ~-1.0, got {score}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn external_ngram_model_score_unknown_ngram_uses_default() {
+        let entries = [([b'a', b'b'], -1.0f32)];
+        let path = write_valid_ngram_file("score_unknown", &entries);
+        let model = ExternalNgramModel::load_from_file(&path).unwrap();
+
+        // 'zz' is not in the model; default_prob is -10.0
+        let score = model.score("zz");
+        assert!(
+            (score - (-10.0)).abs() < 1e-5,
+            "Unknown ngram should use default -10.0, got {score}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn external_ngram_model_score_short_domain_returns_neg_infinity() {
+        let entries = [([b'a', b'b'], -1.0f32)];
+        let path = write_valid_ngram_file("score_short", &entries);
+        let model = ExternalNgramModel::load_from_file(&path).unwrap();
+
+        // Single letter — fewer chars than ngram_size=2
+        let score = model.score("a");
+        assert!(
+            score.is_infinite() && score < 0.0,
+            "Expected -inf, got {score}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn external_ngram_model_load_wrong_magic_returns_none() {
+        use std::io::Write;
+        let path = format!("/tmp/dgaard_ngram_bad_magic_{}", std::process::id());
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(b"BADD").unwrap(); // Wrong magic
+        f.write_all(&[1u8, 2u8, 0u8, 0u8, 0u8, 0u8]).unwrap();
+        let model = ExternalNgramModel::load_from_file(&path);
+        assert!(model.is_none(), "Wrong magic should return None");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn external_ngram_check_with_loaded_model_passes_likely_domain() {
+        // Build a model that considers 'go' a likely bigram
+        let entries = [([b'g', b'o'], -1.0f32), ([b'o', b'o'], -1.5f32)];
+        let path = write_valid_ngram_file("check_likely", &entries);
+        let model = ExternalNgramModel::load_from_file(&path).unwrap();
+        let models = vec![model];
+
+        // "goo" has bigrams 'go'(-1.0) and 'oo'(-1.5), avg = -1.25 > -4.0
+        assert!(ngram_check_external("goo", &models, -4.0));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn external_ngram_check_with_loaded_model_fails_unlikely_domain() {
+        // All entries have low prob; default is -10.0
+        let entries = [([b'a', b'b'], -9.0f32)];
+        let path = write_valid_ngram_file("check_unlikely", &entries);
+        let model = ExternalNgramModel::load_from_file(&path).unwrap();
+        let models = vec![model];
+
+        // "zz" only has unknown bigrams → default -10.0 < -4.0
+        assert!(!ngram_check_external("zz", &models, -4.0));
+        let _ = std::fs::remove_file(&path);
+    }
 }

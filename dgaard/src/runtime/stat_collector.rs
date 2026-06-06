@@ -269,3 +269,192 @@ pub(crate) fn format_client_ip(ip_bytes: &[u8; 16]) -> String {
         None => v6.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{StatAction, StatBlockReason, StatEvent, StatMessage};
+
+    // ── format_client_ip ─────────────────────────────────────────────────────
+
+    #[test]
+    fn format_ipv4_mapped_address() {
+        // 127.0.0.1 mapped to IPv6
+        let ip: std::net::Ipv4Addr = "127.0.0.1".parse().unwrap();
+        let v6 = ip.to_ipv6_mapped();
+        let bytes = v6.octets();
+        assert_eq!(format_client_ip(&bytes), "127.0.0.1");
+    }
+
+    #[test]
+    fn format_ipv4_address_192() {
+        let ip: std::net::Ipv4Addr = "192.168.1.1".parse().unwrap();
+        let bytes = ip.to_ipv6_mapped().octets();
+        assert_eq!(format_client_ip(&bytes), "192.168.1.1");
+    }
+
+    #[test]
+    fn format_pure_ipv6_address() {
+        // Pure IPv6 address (not IPv4-mapped)
+        let ip: std::net::Ipv6Addr = "2001:db8::1".parse().unwrap();
+        let bytes = ip.octets();
+        assert_eq!(format_client_ip(&bytes), "2001:db8::1");
+    }
+
+    #[test]
+    fn format_loopback_ipv6() {
+        let ip: std::net::Ipv6Addr = "::1".parse().unwrap();
+        let bytes = ip.octets();
+        assert_eq!(format_client_ip(&bytes), "::1");
+    }
+
+    // ── stat_block_reason_str ────────────────────────────────────────────────
+
+    #[test]
+    fn reason_str_single_flag() {
+        assert_eq!(
+            stat_block_reason_str(&StatBlockReason::STATIC_BLACKLIST),
+            "blocklist"
+        );
+        assert_eq!(
+            stat_block_reason_str(&StatBlockReason::ABP_RULE),
+            "abp-rule"
+        );
+        assert_eq!(stat_block_reason_str(&StatBlockReason::HIGH_ENTROPY), "dga");
+        assert_eq!(
+            stat_block_reason_str(&StatBlockReason::LEXICAL_ANALYSIS),
+            "lexical"
+        );
+        assert_eq!(
+            stat_block_reason_str(&StatBlockReason::BANNED_KEYWORD),
+            "keyword"
+        );
+        assert_eq!(
+            stat_block_reason_str(&StatBlockReason::INVALID_STRUCTURE),
+            "structure"
+        );
+        assert_eq!(
+            stat_block_reason_str(&StatBlockReason::SUSPICIOUS_IDN),
+            "idn"
+        );
+        assert_eq!(stat_block_reason_str(&StatBlockReason::NRD_LIST), "nrd");
+        assert_eq!(stat_block_reason_str(&StatBlockReason::TLD_EXCLUDED), "tld");
+        assert_eq!(
+            stat_block_reason_str(&StatBlockReason::SUSPICIOUS),
+            "suspicious"
+        );
+        assert_eq!(
+            stat_block_reason_str(&StatBlockReason::CNAME_CLOAKING),
+            "cname-cloaking"
+        );
+        assert_eq!(
+            stat_block_reason_str(&StatBlockReason::FORBIDDEN_QTYPE),
+            "forbidden-qtype"
+        );
+        assert_eq!(
+            stat_block_reason_str(&StatBlockReason::DNS_REBINDING),
+            "dns-rebinding"
+        );
+        assert_eq!(stat_block_reason_str(&StatBlockReason::LOW_TTL), "low-ttl");
+        assert_eq!(
+            stat_block_reason_str(&StatBlockReason::ASN_BLOCKED),
+            "asn-blocked"
+        );
+    }
+
+    #[test]
+    fn reason_str_empty_flags_returns_unknown() {
+        let empty = StatBlockReason::empty();
+        assert_eq!(stat_block_reason_str(&empty), "unknown");
+    }
+
+    #[test]
+    fn reason_str_multiple_flags_joined_with_plus() {
+        let combined = StatBlockReason::HIGH_ENTROPY | StatBlockReason::NRD_LIST;
+        let s = stat_block_reason_str(&combined);
+        assert!(s.contains("dga"), "expected 'dga' in '{s}'");
+        assert!(s.contains("nrd"), "expected 'nrd' in '{s}'");
+        assert!(s.contains('+'), "expected '+' separator in '{s}'");
+    }
+
+    // ── process_stat_message ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn process_domain_mapping_populates_map() {
+        let mut domain_map = std::collections::HashMap::new();
+        let mut clients = Vec::new();
+
+        let msg = StatMessage::DomainMapping {
+            hash: 42,
+            domain: "example.com".to_string(),
+        };
+        process_stat_message(&msg, &mut domain_map, &mut clients).await;
+
+        assert_eq!(domain_map.get(&42), Some(&"example.com".to_string()));
+        assert!(clients.is_empty());
+    }
+
+    #[tokio::test]
+    async fn process_event_uses_domain_map_for_lookup() {
+        let mut domain_map = std::collections::HashMap::new();
+        domain_map.insert(99u64, "blocked.example".to_string());
+        let mut clients = Vec::new();
+
+        let event = StatEvent {
+            timestamp: 0,
+            domain_hash: 99,
+            client_ip: std::net::Ipv4Addr::new(10, 0, 0, 1)
+                .to_ipv6_mapped()
+                .octets(),
+            action: StatAction::Blocked(StatBlockReason::STATIC_BLACKLIST),
+        };
+        let msg = StatMessage::Event(event);
+        // Should not panic even though there are no socket clients
+        process_stat_message(&msg, &mut domain_map, &mut clients).await;
+    }
+
+    #[tokio::test]
+    async fn process_event_unknown_domain_does_not_panic() {
+        let mut domain_map = std::collections::HashMap::new();
+        let mut clients = Vec::new();
+
+        let event = StatEvent {
+            timestamp: 0,
+            domain_hash: 9999, // not in domain_map
+            client_ip: [0u8; 16],
+            action: StatAction::Allowed,
+        };
+        process_stat_message(&StatMessage::Event(event), &mut domain_map, &mut clients).await;
+    }
+
+    // ── setup_unix_socket ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn setup_unix_socket_empty_path_returns_error() {
+        let result = setup_unix_socket("");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn setup_unix_socket_valid_path_creates_listener() {
+        let path = format!("/tmp/dgaard_test_sock_{}", std::process::id());
+        let result = setup_unix_socket(&path);
+        assert!(result.is_ok(), "Should create listener: {result:?}");
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn setup_unix_socket_removes_stale_file() {
+        let path = format!("/tmp/dgaard_test_stale_{}", std::process::id());
+        // Create a stale file
+        std::fs::write(&path, b"stale").unwrap();
+        let result = setup_unix_socket(&path);
+        assert!(
+            result.is_ok(),
+            "Should succeed after removing stale file: {result:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+}

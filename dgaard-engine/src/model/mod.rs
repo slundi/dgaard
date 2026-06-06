@@ -286,3 +286,191 @@ impl SuspicionScore {
         self.reasons.first()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    // ── SuspicionScore ────────────────────────────────────────────────────────
+
+    #[test]
+    fn suspicion_score_new_is_zero() {
+        let s = SuspicionScore::new();
+        assert_eq!(s.total, 0);
+        assert!(s.reasons.is_empty());
+        assert!(s.primary_reason().is_none());
+    }
+
+    #[test]
+    fn suspicion_score_add_accumulates() {
+        let mut s = SuspicionScore::new();
+        s.add(score_points::ENTROPY_HIGH, BlockReason::HighEntropy(4.5));
+        assert_eq!(s.total, score_points::ENTROPY_HIGH);
+        assert_eq!(s.reasons.len(), 1);
+    }
+
+    #[test]
+    fn suspicion_score_add_multiple_reasons() {
+        let mut s = SuspicionScore::new();
+        s.add(score_points::ENTROPY_HIGH, BlockReason::HighEntropy(4.5));
+        s.add(score_points::NRD, BlockReason::NrdList);
+        assert_eq!(s.total, score_points::ENTROPY_HIGH + score_points::NRD);
+        assert_eq!(s.reasons.len(), 2);
+    }
+
+    #[test]
+    fn suspicion_score_primary_reason_is_first() {
+        let mut s = SuspicionScore::new();
+        s.add(score_points::ENTROPY_HIGH, BlockReason::HighEntropy(4.5));
+        s.add(score_points::NRD, BlockReason::NrdList);
+        assert!(matches!(
+            s.primary_reason(),
+            Some(BlockReason::HighEntropy(_))
+        ));
+    }
+
+    #[test]
+    fn suspicion_score_saturates_at_u8_max() {
+        let mut s = SuspicionScore::new();
+        for _ in 0..30 {
+            s.add(10, BlockReason::LexicalAnalysis);
+        }
+        assert_eq!(s.total, 255);
+    }
+
+    // ── StatMessage serialize / deserialize round-trips ───────────────────────
+
+    #[test]
+    fn stat_message_domain_mapping_round_trip() {
+        let msg = StatMessage::DomainMapping {
+            hash: 0xdeadbeef_cafebabe,
+            domain: "example.com".to_string(),
+        };
+        let bytes = msg.serialize();
+        let decoded = StatMessage::deserialize(&bytes);
+        assert_eq!(decoded, Some(msg));
+    }
+
+    #[test]
+    fn stat_message_event_allowed_round_trip() {
+        let event = StatEvent {
+            timestamp: 1_700_000_000,
+            domain_hash: 42,
+            client_ip: Ipv4Addr::new(192, 168, 1, 1).to_ipv6_mapped().octets(),
+            action: StatAction::Allowed,
+        };
+        let msg = StatMessage::Event(event);
+        let bytes = msg.serialize();
+        let decoded = StatMessage::deserialize(&bytes);
+        assert_eq!(decoded, Some(msg));
+    }
+
+    #[test]
+    fn stat_message_event_proxied_round_trip() {
+        let event = StatEvent {
+            timestamp: 0,
+            domain_hash: 1,
+            client_ip: [0u8; 16],
+            action: StatAction::Proxied,
+        };
+        let msg = StatMessage::Event(event);
+        let bytes = msg.serialize();
+        assert_eq!(StatMessage::deserialize(&bytes), Some(msg));
+    }
+
+    #[test]
+    fn stat_message_event_blocked_round_trip() {
+        let event = StatEvent {
+            timestamp: 9999,
+            domain_hash: 77,
+            client_ip: [0u8; 16],
+            action: StatAction::Blocked(StatBlockReason::HIGH_ENTROPY | StatBlockReason::NRD_LIST),
+        };
+        let msg = StatMessage::Event(event);
+        let bytes = msg.serialize();
+        assert_eq!(StatMessage::deserialize(&bytes), Some(msg));
+    }
+
+    #[test]
+    fn stat_message_event_suspicious_round_trip() {
+        let event = StatEvent {
+            timestamp: 1,
+            domain_hash: 2,
+            client_ip: [0u8; 16],
+            action: StatAction::Suspicious(StatBlockReason::LEXICAL_ANALYSIS),
+        };
+        let msg = StatMessage::Event(event);
+        let bytes = msg.serialize();
+        assert_eq!(StatMessage::deserialize(&bytes), Some(msg));
+    }
+
+    #[test]
+    fn stat_message_event_highly_suspicious_round_trip() {
+        let event = StatEvent {
+            timestamp: 1,
+            domain_hash: 2,
+            client_ip: [0u8; 16],
+            action: StatAction::HighlySuspicious(StatBlockReason::CNAME_CLOAKING),
+        };
+        let msg = StatMessage::Event(event);
+        let bytes = msg.serialize();
+        assert_eq!(StatMessage::deserialize(&bytes), Some(msg));
+    }
+
+    #[test]
+    fn stat_message_deserialize_too_short_returns_none() {
+        assert_eq!(StatMessage::deserialize(&[]), None);
+        assert_eq!(StatMessage::deserialize(&[0, 1]), None);
+    }
+
+    #[test]
+    fn stat_message_deserialize_unknown_type_returns_none() {
+        // Length prefix 1 byte of payload, type byte 0xFF (unknown)
+        let bytes = [1, 0, 0xFF];
+        assert_eq!(StatMessage::deserialize(&bytes), None);
+    }
+
+    #[test]
+    fn stat_message_domain_mapping_empty_domain_round_trip() {
+        // Edge case: empty domain string
+        let msg = StatMessage::DomainMapping {
+            hash: 0,
+            domain: String::new(),
+        };
+        let bytes = msg.serialize();
+        assert_eq!(StatMessage::deserialize(&bytes), Some(msg));
+    }
+
+    // ── StatEvent::new ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn stat_event_new_ipv4_address_is_mapped() {
+        let addr: SocketAddr = "10.0.0.1:1234".parse().unwrap();
+        let event = StatEvent::new(1, addr, StatAction::Allowed);
+        assert_eq!(event.domain_hash, 1);
+        // The IP should be stored as IPv4-mapped IPv6
+        let v6 = std::net::Ipv6Addr::from(event.client_ip);
+        assert!(v6.to_ipv4_mapped().is_some());
+        assert_eq!(v6.to_ipv4_mapped().unwrap(), Ipv4Addr::new(10, 0, 0, 1));
+    }
+
+    #[test]
+    fn stat_event_new_ipv6_address_stored_as_is() {
+        let addr: SocketAddr = "[2001:db8::1]:53".parse().unwrap();
+        let event = StatEvent::new(2, addr, StatAction::Proxied);
+        let v6 = std::net::Ipv6Addr::from(event.client_ip);
+        assert_eq!(v6, "2001:db8::1".parse::<std::net::Ipv6Addr>().unwrap());
+    }
+
+    #[test]
+    fn stat_event_new_timestamp_is_nonzero() {
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let event = StatEvent::new(0, addr, StatAction::Allowed);
+        // Timestamp should be a reasonable unix epoch value (after year 2020)
+        assert!(
+            event.timestamp > 1_577_836_800,
+            "timestamp should be > 2020-01-01"
+        );
+    }
+}

@@ -102,3 +102,103 @@ fn parse_line(line: &str) -> Option<Rule> {
 
     result.ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_temp(tag: &str, content: &str) -> String {
+        let path = format!("/tmp/dgaard_abpopt_io_test_{tag}_{}", std::process::id());
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    // ── load_list_content ─────────────────────────────────────────────────────
+
+    #[test]
+    fn load_content_plain_domains() {
+        let rules = load_list_content("example.com\ngoogle.com\n");
+        assert_eq!(rules.len(), 2);
+        assert!(rules.iter().all(|r| matches!(r, Rule::NetworkDomain(_))));
+    }
+
+    #[test]
+    fn load_content_skips_comments_and_blanks() {
+        let content = "# comment\nexample.com\n\n! abp comment\ngoogle.com\n";
+        let rules = load_list_content(content);
+        assert_eq!(rules.len(), 2);
+    }
+
+    #[test]
+    fn load_content_abp_rules() {
+        let content = "||ads.example.com^\n@@||safe.com^\n";
+        let rules = load_list_content(content);
+        assert_eq!(rules.len(), 2);
+        assert!(matches!(&rules[0], Rule::NetworkDomain(d) if d == "ads.example.com"));
+        assert!(matches!(&rules[1], Rule::Whitelist(d) if d == "safe.com"));
+    }
+
+    #[test]
+    fn load_content_hosts_format() {
+        let content = "0.0.0.0 tracker.com\n127.0.0.1 ads.net\n";
+        let rules = load_list_content(content);
+        assert_eq!(rules.len(), 2);
+    }
+
+    #[test]
+    fn load_content_browser_rules_included() {
+        let content = "example.com##.ad-banner\nexample.com#@#.sponsored\n";
+        let rules = load_list_content(content);
+        assert_eq!(rules.len(), 2);
+        assert!(rules.iter().all(|r| r.is_browser()));
+    }
+
+    #[test]
+    fn load_content_empty_string() {
+        let rules = load_list_content("");
+        assert!(rules.is_empty());
+    }
+
+    #[test]
+    fn load_content_unknown_format_skipped() {
+        // Lines with spaces that don't match any known format → Unknown → skipped
+        let content = "some random line with spaces and/slashes\n";
+        let rules = load_list_content(content);
+        assert!(rules.is_empty(), "Unknown format lines should be skipped");
+    }
+
+    // ── load_list_file ────────────────────────────────────────────────────────
+
+    #[test]
+    fn load_list_file_not_found_returns_error() {
+        let result = load_list_file("/nonexistent/path/file.txt");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn load_list_file_plain_domains() {
+        let path = write_temp("plain", "example.com\ngoogle.com\nbad.org\n");
+        let rules = load_list_file(&path).unwrap();
+        assert_eq!(rules.len(), 3);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_list_file_mixed_formats() {
+        let content =
+            "# blocklist\n0.0.0.0 tracker.net\nexample.com\n||ads.evil.com^\n@@||safe.com^\n";
+        let path = write_temp("mixed", content);
+        let rules = load_list_file(&path).unwrap();
+        assert_eq!(rules.len(), 4);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_list_file_empty_file() {
+        let path = write_temp("empty", "");
+        let rules = load_list_file(&path).unwrap();
+        assert!(rules.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+}

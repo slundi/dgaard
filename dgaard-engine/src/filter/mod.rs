@@ -203,6 +203,7 @@ mod tests {
 
     const SEED: u64 = 42;
 
+    #[allow(clippy::type_complexity)]
     fn make_collections() -> (
         HashMap<u64, u8>,
         Vec<DomainEntry>,

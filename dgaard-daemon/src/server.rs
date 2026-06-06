@@ -124,3 +124,79 @@ pub async fn sighup_reload_task(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_socket_path(tag: &str) -> String {
+        format!("/tmp/dgaard_daemon_test_{tag}_{}", std::process::id())
+    }
+
+    // ── bind_listener ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn bind_listener_creates_socket_file() {
+        let path = temp_socket_path("create");
+        let _ = std::fs::remove_file(&path);
+
+        let result = bind_listener(&path);
+        assert!(result.is_ok(), "bind_listener should succeed: {result:?}");
+        assert!(
+            std::path::Path::new(&path).exists(),
+            "Socket file should exist"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn bind_listener_removes_stale_socket_file() {
+        let path = temp_socket_path("stale");
+        // Write a stale file at that path
+        std::fs::write(&path, b"stale socket").unwrap();
+
+        let result = bind_listener(&path);
+        assert!(
+            result.is_ok(),
+            "Should succeed after removing stale file: {result:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn bind_listener_sets_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_socket_path("perms");
+        let _ = std::fs::remove_file(&path);
+
+        let result = bind_listener(&path);
+        assert!(result.is_ok());
+
+        let meta = std::fs::metadata(&path).expect("socket file should exist");
+        let mode = meta.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "Expected 0o600 permissions, got {mode:o}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn bind_listener_twice_same_path_after_cleanup() {
+        let path = temp_socket_path("twice");
+        let _ = std::fs::remove_file(&path);
+
+        // First bind
+        let first = bind_listener(&path);
+        assert!(first.is_ok());
+        drop(first);
+        let _ = std::fs::remove_file(&path);
+
+        // Second bind should also succeed
+        let second = bind_listener(&path);
+        assert!(
+            second.is_ok(),
+            "Second bind after cleanup should succeed: {second:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+}
