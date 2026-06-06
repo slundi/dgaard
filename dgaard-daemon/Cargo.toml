@@ -3,6 +3,14 @@ name = "dgaard-daemon"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "dgaard_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dgaard-daemon"
+path = "src/main.rs"
+
 [dependencies]
 dgaard-engine.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "signal"] }
@@ -12,3 +20,6 @@ log.workspace = true
 env_logger.workspace = true
 argh.workspace = true
 toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,10 +1,10 @@
-mod config;
-mod handler;
-
 use std::path::Path;
 use std::sync::Arc;
 
+use dgaard_daemon::config::DaemonConfig;
+use dgaard_daemon::handler::handle_connection;
 use dgaard_engine::{Config as EngineConfig, FilterEngine};
+use tokio::net::UnixListener;
 
 /// dgaard-daemon — Unix socket domain scoring daemon.
 ///
@@ -38,20 +38,34 @@ fn find_config() -> Option<String> {
     None
 }
 
-fn load_daemon_config(path: Option<String>) -> config::DaemonConfig {
+fn load_daemon_config(path: Option<String>) -> DaemonConfig {
     let Some(p) = path.or_else(find_config) else {
-        return config::DaemonConfig::default();
+        return DaemonConfig::default();
     };
     match std::fs::read_to_string(&p) {
-        Ok(content) => config::DaemonConfig::load(&content).unwrap_or_else(|e| {
+        Ok(content) => DaemonConfig::load(&content).unwrap_or_else(|e| {
             eprintln!("dgaard-daemon: failed to parse {p}: {e}, using defaults");
-            config::DaemonConfig::default()
+            DaemonConfig::default()
         }),
         Err(e) => {
             eprintln!("dgaard-daemon: failed to read {p}: {e}, using defaults");
-            config::DaemonConfig::default()
+            DaemonConfig::default()
         }
     }
+}
+
+/// Bind the Unix socket, removing any stale socket file first, then restrict
+/// permissions to owner-only (`0o600`).
+fn bind_listener(socket_path: &str) -> std::io::Result<UnixListener> {
+    if Path::new(socket_path).exists() {
+        std::fs::remove_file(socket_path)?;
+    }
+    let listener = UnixListener::bind(socket_path)?;
+    std::fs::set_permissions(
+        socket_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )?;
+    Ok(listener)
 }
 
 #[tokio::main]
@@ -78,12 +92,32 @@ async fn main() {
             EngineConfig::default()
         });
 
-    let engine = FilterEngine::build_from_files(&engine_config, HASH_SEED);
+    let engine = Arc::new(FilterEngine::build_from_files(&engine_config, HASH_SEED));
+    let config = Arc::new(engine_config);
 
-    let _engine = Arc::new(engine);
-    let _config = Arc::new(engine_config);
-    let _daemon_cfg = Arc::new(daemon_cfg);
+    let listener = bind_listener(&daemon_cfg.socket_path).unwrap_or_else(|e| {
+        log::error!("Failed to bind {}: {e}", daemon_cfg.socket_path);
+        std::process::exit(1);
+    });
 
-    log::info!("dgaard-daemon {} initialized", VERSION);
-    // Phase D2: Unix socket listener will be wired here
+    log::info!(
+        "dgaard-daemon {} listening on {}",
+        VERSION,
+        daemon_cfg.socket_path
+    );
+
+    loop {
+        match listener.accept().await {
+            Ok((stream, _addr)) => {
+                let engine = Arc::clone(&engine);
+                let config = Arc::clone(&config);
+                tokio::spawn(async move {
+                    handle_connection(stream, engine, config).await;
+                });
+            }
+            Err(e) => {
+                log::error!("Accept error: {e}");
+            }
+        }
+    }
 }

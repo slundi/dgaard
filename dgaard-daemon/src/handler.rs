@@ -1,11 +1,19 @@
-use dgaard_engine::{Action, BlockReason, ResolveResult};
+use std::sync::Arc;
+
+use dgaard_engine::{
+    Action, BlockReason, Config as EngineConfig, FilterEngine, ResolveResult, resolve_with_score,
+};
 use serde::Serialize;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
+
+/// Maximum domain length per RFC 1035.
+const MAX_DOMAIN_LEN: usize = 253;
 
 /// JSON response written back to the Unix socket client.
 ///
 /// Wire format: `{"score": u8, "blocked": bool, "action": str, "reasons": [str]}\n`
 #[derive(Debug, Serialize)]
-#[allow(dead_code)] // constructed by Phase D2 connection handler
 pub struct DomainResponse {
     pub score: u8,
     pub blocked: bool,
@@ -26,7 +34,6 @@ impl From<ResolveResult> for DomainResponse {
     }
 }
 
-#[allow(dead_code)] // called by Phase D2 connection handler
 fn action_to_fields(action: &Action) -> (bool, String) {
     match action {
         Action::Block(reason) => (true, format!("Block({})", format_reason(reason))),
@@ -57,6 +64,55 @@ pub fn format_reason(reason: &BlockReason) -> String {
         BlockReason::DnsRebinding => String::from("DnsRebinding"),
         BlockReason::LowTtl(ttl) => format!("LowTtl({})", ttl),
         BlockReason::AsnBlocked => String::from("AsnBlocked"),
+    }
+}
+
+/// Handle one Unix socket connection: read a domain, score it, write JSON response.
+///
+/// Input:  newline-terminated UTF-8 domain string (`"example.com\n"`)
+/// Output: newline-terminated JSON (`{"score":0,"blocked":false,"action":"ProxyToUpstream","reasons":[]}\n`)
+///
+/// On invalid input (empty or > 253 bytes) returns `{"error":"..."}`.
+/// On IO errors the connection is silently dropped.
+pub async fn handle_connection(
+    stream: UnixStream,
+    engine: Arc<FilterEngine>,
+    config: Arc<EngineConfig>,
+) {
+    let (reader, mut writer) = stream.into_split();
+    let mut buf_reader = BufReader::new(reader);
+    let mut line = String::new();
+
+    match buf_reader.read_line(&mut line).await {
+        Ok(0) => return, // EOF with no data
+        Ok(_) => {}
+        Err(e) => {
+            log::warn!("Connection read error: {e}");
+            return;
+        }
+    }
+
+    let domain = line.trim();
+
+    let response = if domain.is_empty() {
+        String::from(r#"{"error":"empty domain"}"#)
+    } else if domain.len() > MAX_DOMAIN_LEN {
+        String::from(r#"{"error":"domain exceeds 253 bytes"}"#)
+    } else {
+        let result = resolve_with_score(domain, &engine, &config);
+        match serde_json::to_string(&DomainResponse::from(result)) {
+            Ok(json) => json,
+            Err(e) => {
+                log::warn!("Serialization error: {e}");
+                String::from(r#"{"error":"internal serialization error"}"#)
+            }
+        }
+    };
+
+    let mut response_line = response;
+    response_line.push('\n');
+    if let Err(e) = writer.write_all(response_line.as_bytes()).await {
+        log::warn!("Connection write error: {e}");
     }
 }
 
