@@ -472,8 +472,12 @@ impl Default for TalkersState {
 ///
 /// TODO: signature becomes
 /// `render(state: &TalkersState, scroll: usize, area: Area, frame: &mut Frame)`.
-pub fn render() {
-    // TODO: implement with ratatui Table + Block
+pub fn render(area: ratatui::layout::Rect, frame: &mut ratatui::Frame) {
+    use ratatui::widgets::{Block, Paragraph};
+    frame.render_widget(
+        Paragraph::new("Coming soon").block(Block::bordered().title("Talkers")),
+        area,
+    );
 }
 
 /// Render the Talker detail popup over the current frame.

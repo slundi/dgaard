@@ -155,12 +155,18 @@ pub fn content_lines(keymap: &KeyMap) -> Vec<String> {
     lines
 }
 
-/// Render the About tab body.
-///
-/// TODO: signature becomes `render(app: &TuiApp, area: Area, frame: &mut Frame)`.
-/// Body will use `content_lines(&app.keymap)` as the data source.
-pub fn render() {
-    // TODO: implement with ratatui Paragraph + Table
+pub fn render(keymap: &KeyMap, area: ratatui::layout::Rect, frame: &mut ratatui::Frame) {
+    use ratatui::{
+        text::Line,
+        widgets::{Block, Paragraph, Wrap},
+    };
+    let lines: Vec<Line> = content_lines(keymap).into_iter().map(Line::from).collect();
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::bordered().title("About"))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 #[cfg(test)]

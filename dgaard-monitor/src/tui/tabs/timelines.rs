@@ -389,8 +389,12 @@ impl Default for TimelinesState {
 /// Bar cells are built by splitting a fixed-width cell into coloured spans
 /// proportional to `allowed / total`, `proxied / total`, etc., using
 /// `DomainColor` constants from `crate::tui::util`.
-pub fn render() {
-    // TODO: implement with ratatui Table + Block
+pub fn render(area: ratatui::layout::Rect, frame: &mut ratatui::Frame) {
+    use ratatui::widgets::{Block, Paragraph};
+    frame.render_widget(
+        Paragraph::new("Coming soon").block(Block::bordered().title("Timelines")),
+        area,
+    );
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

@@ -364,8 +364,12 @@ impl QueriesState {
 ///
 /// TODO: signature becomes
 /// `render(state: &QueriesState, scroll: usize, area: Area, frame: &mut Frame)`.
-pub fn render() {
-    // TODO: implement with ratatui Table + Block
+pub fn render(area: ratatui::layout::Rect, frame: &mut ratatui::Frame) {
+    use ratatui::widgets::{Block, Paragraph};
+    frame.render_widget(
+        Paragraph::new("Coming soon").block(Block::bordered().title("Queries")),
+        area,
+    );
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
