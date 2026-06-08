@@ -62,6 +62,17 @@
 
 Should be doable with forwarding feature, needs further testing.
 
+## Phase 7: Misc
+
+- [ ] 7.1 add tab `List` that list blocked domains/TLD/regex and whitelist. Key bindings:
+  - `/` to search a string
+  - `l` to toggle filter on: whitelist or blacklist or both
+  - `*` wildcard or not or both
+  - `r` regex or not or both
+  - `a` anonymous or not or both
+  - `g` log or not or both
+  - `s` to show a sort popup
+
 ## Ideas
 
 - **Workflow**:
