@@ -14,7 +14,7 @@
 ## Phase 2: TUI Implementation (Ratatui)
 
 - [ ] Main Loop: Setup terminal raw mode and tick rate (e.g., 250ms).
-- [ ] Input Handling: Support `q` or `Ctrl+c` to quit and `c` to clear current session stats in a separete file since we will support custom key mapping later.
+- [ ] Input Handling: Support `q` or `Ctrl+c` to quit and `c` to clear current session stats in a separate file since we will support custom key mapping later.
 - [x] TUI layout:
   - [x] Top bar, with 3 rows:
   - [x] Row 1 Header: contain tabs `Dashboard`, `Queries`, `Talkers`, `Timelines`, `About`. And some state indicator (active filter 🕵, frozen view ❄️, connectivity status)
@@ -75,6 +75,7 @@ Should be doable with forwarding feature, needs further testing.
 
 ## Ideas
 
+- MaxMind DB format to solve IP country from MaxMind or Ip2location or IP-DB
 - **Workflow**:
   1. **Detect** change via `inotify` (Linux).
   2. **Read** the new file into a _new_ temporary `HashMap`.
@@ -124,7 +125,7 @@ impl WindowedStats {
 ## Wonders
 
 - Use [lnav](https://lnav.org/): for a Kibana of the terminal. So write JSON to stdout. (last queries and ad-hoc analysis)
-- Use [Dashbrew](https://rasjonell.github.io/dashbrew/): TUI dashboard builder specifically designed to visualize data from scripts and APIs. So JSON genration here too.
+- Use [Dashbrew](https://rasjonell.github.io/dashbrew/): TUI dashboard builder specifically designed to visualize data from scripts and APIs. So JSON generation here too.
 - Use [GoAccess](https://goaccess.io/): While primarily built for web logs (Nginx/Apache), it is a highly optimized real-time visualizer. Write data in log format. https://goaccess.io/man#custom-log (talkers, top domains)
 - https://github.com/dimonomid/nerdlog
 - https://wtfutil.com/

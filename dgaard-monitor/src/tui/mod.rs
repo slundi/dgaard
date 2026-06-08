@@ -14,22 +14,22 @@ use std::time::Duration;
 use crossterm::{
     event::{Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::Line,
     widgets::Tabs,
-    Terminal,
 };
 use tokio::sync::watch;
 
 use app::TuiApp;
 use keys::Action;
-use tabs::dashboard::DashboardState;
 use tabs::Tab;
+use tabs::dashboard::DashboardState;
 
 use crate::config::TuiConfig;
 use crate::state::AppState;
@@ -51,20 +51,22 @@ pub async fn run(config: TuiConfig, state: Arc<AppState>, mut shutdown: watch::R
     let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel::<KeyEvent>();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = Arc::clone(&stop);
-    std::thread::spawn(move || loop {
-        if stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
-            break;
-        }
-        match crossterm::event::poll(Duration::from_millis(50)) {
-            Ok(true) => {
-                if let Ok(Event::Key(key)) = crossterm::event::read() {
-                    if key_tx.send(key).is_err() {
-                        break;
+    std::thread::spawn(move || {
+        loop {
+            if stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            match crossterm::event::poll(Duration::from_millis(50)) {
+                Ok(true) => {
+                    if let Ok(Event::Key(key)) = crossterm::event::read() {
+                        if key_tx.send(key).is_err() {
+                            break;
+                        }
                     }
                 }
+                Ok(false) => {}
+                Err(_) => break,
             }
-            Ok(false) => {}
-            Err(_) => break,
         }
     });
 
@@ -162,11 +164,16 @@ fn render_frame(frame: &mut ratatui::Frame, app: &TuiApp, dashboard: &DashboardS
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
 
     let titles: Vec<Line> = Tab::ALL.iter().map(|t| Line::from(t.label())).collect();
-    let active_idx = Tab::ALL.iter().position(|t| *t == app.active_tab).unwrap_or(0);
+    let active_idx = Tab::ALL
+        .iter()
+        .position(|t| *t == app.active_tab)
+        .unwrap_or(0);
     frame.render_widget(
-        Tabs::new(titles)
-            .select(active_idx)
-            .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Tabs::new(titles).select(active_idx).highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
         tab_bar_area,
     );
 

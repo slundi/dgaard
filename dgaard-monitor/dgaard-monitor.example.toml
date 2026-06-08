@@ -84,3 +84,17 @@ listen = "127.0.0.1"
 port = 8082
 token = "changeme"
 root_path = "/mcp"
+
+# ---------------------------------------------------------------------------
+# Connectivity — Web UI (embedded axum server)
+# ---------------------------------------------------------------------------
+[web]
+enabled = false
+listen = "127.0.0.1"
+port = 8083
+
+# Static bearer token required on every /api/v1/* and /ws request.
+token = "changeme"
+
+# Maximum number of DNS events kept in the in-memory rolling log.
+history_size = 1000
