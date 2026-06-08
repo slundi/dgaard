@@ -162,6 +162,21 @@ _Focus: Turning raw block data into actionable insights._
 
 ## Unsorted
 
+- [ ] **Geoip blocking**: using MaxMind format (`mmdb` file). Crate `maxminddb` with `mmap` support to save RAM on OpenWRT. Only perform the test on successful DNS resolve. Add a bitflag for suspicious GEOIP.
+
+```toml
+[security.geo_ip]
+enabled = true
+# Path to MaxMind GeoLite2-Country.mmdb or equivalent ip2location or DB-IP
+database_path = "/etc/dgaard/GeoLite2-Country.mmdb"
+
+# List of country codes (ISO 3166-1 alpha-2) considered suspicious
+suspicious_countries = ["RU", "CN", "KP", "IR"]
+
+# Points to add SuspicionScore if response IP is in suspicious list
+suspicious_country_score = 3
+```
+
 - [x] **Multi-Thread Spawn**: A loop that spawns a `tokio::spawn` task for every incoming packet (`src/runtime.rs`).
 - [x] **Host index**: when building whitelists and blocklist, generate `/var/dgaard/host_mapping.bin` (or `.txt`) so external application can retrieve the domain, the list type from the xxh3_64 hash.
 - [x] **Browser black/whitelist**: when parsing ABP list only put the ignored rule in another text file so the user can use it for its browser since it will mainly be CSS/JS/HTML blocking.
