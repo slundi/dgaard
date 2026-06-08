@@ -50,6 +50,7 @@ _Focus: Converting various file formats into your internal memory format (`rkyv`
 - [x] 2.3. **Dnsmasq Parser**: Use a Regex or `split('/')` to extract the domain from `address=/domain/0.0.0.0`.
 - [x] 2.4. **AdGuard/ABP** "Fast Path" Parser: Identify simple `||domain^` rules and "promote" them to the exact-match list to avoid the Regex engine.
 - [ ] 2.5. **Archive Builder**: A commit for the logic that takes all parsed lists and serializes them into an `rkyv` Zero-Copy binary file for instant loading.
+- [ ] 2.6. **Bitmask Compiler**: Extend the Archive Builder to embed the mapping between config files, their source flags, and the final `rkyv` binary identifier.
 
 ## Phase 3: The Stratified Logic (The "Funnel")
 
@@ -86,10 +87,12 @@ _Focus: Adding the "Brain" features that differentiate Dgaard from Pi-hole._
 
 _Focus: Sharing the internal state with the outside world._
 
-- [x] 5.1. **StatEvent Definition**: Define the `StatEvent` struct with BlockReason.
+- [x] 5.1a. **StatEvent Definition**: Define the `StatEvent` struct with BlockReason.
+- [ ] 5.1b. **Struct Update**: Update `StatEvent` to replace `BlockReason` (a plain enum) with a compact `u16` bitmask representing accumulated `ThreatKind` flags.
 - [x] 5.2. **MPSC Channel**: Setup the `tokio::sync::mpsc` channel to pass events from the Resolver to the Stats task.
 - [x] 5.3. **Unix Domain Socket** (UDS) Server: Implement the listener that streams `Postcard`-encoded events.
 - [ ] 5.4. **Basic CLI Logger**: Create a small internal function that prints blocks to `stdout` (for initial debugging).
+- [ ] 5.5. **Client Decoder**: Add to the CLI tool the logic to decode the bitflags received over the Unix socket into human-readable strings based on the active configuration.
 
 ## Phase 6: Reliability & Advanced Networking
 
