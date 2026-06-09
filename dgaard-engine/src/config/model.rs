@@ -158,6 +158,18 @@ pub struct StructureConfig {
     /// Excessive records in a single response are unusual and may indicate
     /// exfiltration.
     pub max_answers_per_query: u8,
+
+    /// Block DNS CHAOS class (qclass=3) queries.
+    ///
+    /// CHAOS class is a legacy DNS class repurposed by authoritative servers
+    /// to serve metadata such as `version.bind` and `id.server`. A forwarding
+    /// proxy has no reason to forward these queries upstream — they are a
+    /// standard reconnaissance tool and return no useful information to LAN
+    /// clients.
+    ///
+    /// When `true` (default), the proxy responds with `REFUSED`. Set to
+    /// `false` only if you have a specific need to forward CHAOS queries.
+    pub block_chaos_class: bool,
 }
 
 impl Default for StructureConfig {
@@ -168,6 +180,7 @@ impl Default for StructureConfig {
             force_lowercase_ascii: true,
             max_txt_record_length: 128,
             max_answers_per_query: 10,
+            block_chaos_class: true,
         }
     }
 }

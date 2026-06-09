@@ -11,7 +11,7 @@ use crate::config::ScoringConfig;
 use crate::dns::packet::DnsPacket;
 use crate::dns::upstream::forward_to_upstream;
 use crate::model::{Action, StatAction, StatBlockReason, SuspicionScore};
-use crate::resolve::{check_qtype, resolve_with_score, score_answer};
+use crate::resolve::{check_qclass, check_qtype, resolve_with_score, score_answer};
 use crate::{CONFIG, STATS_COUNTERS, STATS_SENDER};
 
 /// Map a suspicion score to a stat action using the configured thresholds.
@@ -79,7 +79,21 @@ pub(crate) async fn handle_query(
         return Ok(());
     }
 
-    // 2b. Run domain through the filter pipeline
+    // 2b. QClass Warden: refuse CHAOS class (qclass=3) reconnaissance queries.
+    //     Responds with REFUSED rather than NXDOMAIN — the request is rejected
+    //     by policy, not because the domain is non-existent.
+    if let Some(reason) = check_qclass(dns_packet.qclass) {
+        STATS_COUNTERS.increment_blocked();
+        let stat_reason = StatBlockReason::from(&reason);
+        let response = DnsPacket::build_refused_response(&dns_packet.message);
+        socket.send_to(&response, peer).await?;
+        if let Some(sender) = STATS_SENDER.get() {
+            sender.send_event(&dns_packet.domain, peer, StatAction::Blocked(stat_reason));
+        }
+        return Ok(());
+    }
+
+    // 2c. Run domain through the filter pipeline
     let resolve_result = resolve_with_score(&dns_packet.domain);
     let action = resolve_result.action;
     let mut score = resolve_result.score;

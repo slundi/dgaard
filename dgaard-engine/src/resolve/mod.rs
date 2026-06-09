@@ -12,7 +12,7 @@ pub use heuristics::{check_dga_heuristics, check_lexical, is_illegal_idn};
 pub use matcher::{is_blocked, is_nrd, is_suffix_blocked, is_whitelisted};
 pub use patterns::{is_regex_blocked, is_wildcard_pattern_blocked};
 pub use ptr_leak::is_ptr_leak_domain;
-pub use qtype::check_qtype;
+pub use qtype::{check_qclass, check_qtype};
 pub use scoring::{compute_score, score_answer};
 pub use special_use::is_special_use_domain;
 

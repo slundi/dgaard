@@ -339,6 +339,9 @@ fn parse_structure(table: &toml_span::value::Table<'_>) -> Result<StructureConfi
     if let Some(n) = get_integer(table, "max_answers_per_query")? {
         cfg.max_answers_per_query = n as u8;
     }
+    if let Some(b) = get_bool(table, "block_chaos_class")? {
+        cfg.block_chaos_class = b;
+    }
 
     Ok(cfg)
 }
@@ -973,6 +976,7 @@ mod tests {
             force_lowercase_ascii = false
             max_txt_record_length = 200
             max_answers_per_query = 5
+            block_chaos_class = false
         "#;
         let cfg = Config::parse(toml).unwrap();
         assert_eq!(cfg.security.structure.max_subdomain_depth, 3);
@@ -980,6 +984,13 @@ mod tests {
         assert!(!cfg.security.structure.force_lowercase_ascii);
         assert_eq!(cfg.security.structure.max_txt_record_length, 200);
         assert_eq!(cfg.security.structure.max_answers_per_query, 5);
+        assert!(!cfg.security.structure.block_chaos_class);
+    }
+
+    #[test]
+    fn parse_security_structure_defaults() {
+        let cfg = Config::parse("").unwrap();
+        assert!(cfg.security.structure.block_chaos_class);
     }
 
     #[test]

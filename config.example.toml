@@ -46,6 +46,12 @@ max_domain_length = 128
 # Reject domains that do not contain only a-z, 0-9, ‘.’, ‘-’, and ‘_’
 force_lowercase_ascii = true
 
+# Refuse DNS CHAOS class (qclass=3) queries with REFUSED instead of forwarding
+# them upstream. Tools like `dig CH TXT version.bind` use CHAOS queries to
+# fingerprint the resolver software — a forwarding proxy should never answer
+# these on behalf of its upstream.
+block_chaos_class = true
+
 # --- Response Filtering (Inbound) ---
 # Maximum length of a TXT field.
 # SPF/DKIM records are often < 200 bytes.

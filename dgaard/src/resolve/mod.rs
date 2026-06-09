@@ -3,8 +3,8 @@ pub use dgaard_engine::resolve::ResolveResult;
 
 use dgaard_engine::model::InspectedAnswer;
 use dgaard_engine::resolve::{
-    check_qtype as engine_check_qtype, resolve_with_score as engine_resolve,
-    score_answer as engine_score_answer,
+    check_qclass as engine_check_qclass, check_qtype as engine_check_qtype,
+    resolve_with_score as engine_resolve, score_answer as engine_score_answer,
 };
 
 use crate::{CONFIG, CURRENT_ENGINE};
@@ -23,6 +23,12 @@ pub fn resolve_with_score(domain: &str) -> ResolveResult {
 pub fn check_qtype(qtype: u16) -> Option<BlockReason> {
     let config = CONFIG.load();
     engine_check_qtype(qtype, &config)
+}
+
+/// Check if a query class should be blocked (e.g. CHAOS class reconnaissance).
+pub fn check_qclass(qclass: u16) -> Option<BlockReason> {
+    let config = CONFIG.load();
+    engine_check_qclass(qclass, &config)
 }
 
 /// Score the upstream DNS answer, accumulating DPI signals into the score.

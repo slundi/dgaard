@@ -123,6 +123,9 @@ impl From<&BlockReason> for StatBlockReason {
             // PtrLeak is the outbound counterpart of DnsRebinding (both protect the
             // private/public IP boundary). Shares the bit until u32 widening.
             BlockReason::PtrLeak => StatBlockReason::DNS_REBINDING,
+            // ChaosClass is a forbidden query class, same category as ForbiddenQType.
+            // Shares the bit until u32 widening.
+            BlockReason::ChaosClass => StatBlockReason::FORBIDDEN_QTYPE,
         }
     }
 }
@@ -200,6 +203,10 @@ mod tests {
         assert_eq!(
             StatBlockReason::from(&BlockReason::PtrLeak),
             StatBlockReason::DNS_REBINDING
+        );
+        assert_eq!(
+            StatBlockReason::from(&BlockReason::ChaosClass),
+            StatBlockReason::FORBIDDEN_QTYPE
         );
     }
 

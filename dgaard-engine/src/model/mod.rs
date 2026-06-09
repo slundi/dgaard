@@ -74,6 +74,11 @@ pub enum BlockReason {
     /// loopback / link-local addresses exposes the internal network topology
     /// to the public upstream resolver.
     PtrLeak,
+
+    /// DNS CHAOS class (qclass=3) query. Blocked because forwarding CH queries
+    /// to a public upstream resolver serves no purpose for LAN clients and
+    /// returns version/identity metadata that aids attacker reconnaissance.
+    ChaosClass,
 }
 
 /// Messages sent over the stats channel to the collector.

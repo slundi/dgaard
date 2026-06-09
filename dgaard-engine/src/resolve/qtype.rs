@@ -1,7 +1,10 @@
-//! QType Warden — policy-based DNS query-type filtering.
+//! QType and QClass Warden — policy-based DNS query filtering.
 
 use crate::config::Config;
 use crate::model::BlockReason;
+
+/// DNS CHAOS class numeric value (RFC 1035 §3.2.4).
+const QCLASS_CHAOS: u16 = 3;
 
 /// Check whether the given DNS record type should be blocked by policy.
 ///
@@ -18,6 +21,17 @@ pub fn check_qtype(qtype: u16, config: &Config) -> Option<BlockReason> {
         return Some(BlockReason::ForbiddenQType(qtype));
     }
 
+    None
+}
+
+/// Check whether the given DNS query class should be blocked by policy.
+///
+/// Returns `Some(BlockReason::ChaosClass)` if `qclass` is CHAOS (3) and
+/// `security.structure.block_chaos_class` is `true`, `None` otherwise.
+pub fn check_qclass(qclass: u16, config: &Config) -> Option<BlockReason> {
+    if config.security.structure.block_chaos_class && qclass == QCLASS_CHAOS {
+        return Some(BlockReason::ChaosClass);
+    }
     None
 }
 
@@ -65,5 +79,38 @@ mod tests {
             Some(BlockReason::ForbiddenQType(code)) => assert_eq!(code, 13),
             other => panic!("Expected ForbiddenQType(13), got {:?}", other),
         }
+    }
+
+    // --- check_qclass ---
+
+    #[test]
+    fn test_check_qclass_chaos_blocked_by_default() {
+        let config = Config::default();
+        assert!(matches!(
+            check_qclass(3, &config),
+            Some(BlockReason::ChaosClass)
+        ));
+    }
+
+    #[test]
+    fn test_check_qclass_in_allowed() {
+        let config = Config::default();
+        assert!(check_qclass(1, &config).is_none());
+    }
+
+    #[test]
+    fn test_check_qclass_chaos_disabled() {
+        let mut config = Config::default();
+        config.security.structure.block_chaos_class = false;
+        assert!(check_qclass(3, &config).is_none());
+    }
+
+    #[test]
+    fn test_check_qclass_unknown_class_allowed() {
+        let config = Config::default();
+        // class 4 (HS/Hesiod) is not CHAOS — should not be blocked
+        assert!(check_qclass(4, &config).is_none());
+        // class 255 (ANY) is not CHAOS
+        assert!(check_qclass(255, &config).is_none());
     }
 }

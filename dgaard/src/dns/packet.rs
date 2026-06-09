@@ -7,6 +7,10 @@ pub struct DnsPacket {
     /// Used by the QType Warden to block forbidden query types before domain
     /// resolution. Common suspicious values: NULL=10, HINFO=13, ANY=255.
     pub qtype: u16,
+    /// Raw DNS query class code from the query section (RFC 1035, §3.2.4).
+    /// Class IN=1 is normal Internet queries. Class CH=3 (CHAOS) is blocked
+    /// by default to prevent upstream reconnaissance.
+    pub qclass: u16,
 }
 
 impl DnsPacket {
@@ -21,11 +25,13 @@ impl DnsPacket {
         // Remove trailing dot if present (e.g., "example.com." -> "example.com")
         let clean_domain = domain.trim_end_matches('.').to_string();
         let qtype = u16::from(query.query_type());
+        let qclass = u16::from(query.query_class());
 
         Some(DnsPacket {
             message,
             domain: clean_domain,
             qtype,
+            qclass,
         })
     }
 
@@ -39,6 +45,18 @@ impl DnsPacket {
         response.metadata.recursion_available = true;
         response.metadata.authoritative = true;
 
+        response.to_vec().unwrap_or_default()
+    }
+
+    /// Generates a REFUSED response for queries the server is configured to reject.
+    ///
+    /// Used for CHAOS class blocking: the server is refusing to process the
+    /// request, not asserting that a domain is non-existent.
+    pub fn build_refused_response(query_msg: &Message) -> Vec<u8> {
+        let mut response = query_msg.clone();
+        response.metadata.message_type = MessageType::Response;
+        response.metadata.response_code = ResponseCode::Refused;
+        response.metadata.recursion_available = true;
         response.to_vec().unwrap_or_default()
     }
 
