@@ -14,7 +14,8 @@
 - **Deep Packet Inspection (DPI Lite)**: Analyzes TXT record entropy and CNAME chains to stop data exfiltration and CNAME cloaking.
 - **DNS Rebinding Protection**: Automatically drops public queries resolving to private local IPs.
 - **Threat Intelligence**: Analyzes blocklist trends to provide users with data-driven suggestions for parental control and TLD blocking.
-- **Smart Keyword Sentry**: Proactive label-matching using `Aho-Corasick` to block categories (Adult, Gambling) with near-zero memory footprint.
+- **GeoIP Suspicion Scoring**: Checks each resolved IP against a local MaxMind-format MMDB database. Responses from high-risk jurisdictions add configurable points to the domain's threat score, amplifying existing signals (entropy, NRD, low TTL) to catch brand-new malware infrastructure before it appears on any public blocklist.
+- **Custom Threat-Intelligence Flags** _(requires `custom_flags` feature)_: Map up to 16 organisation-specific domain lists (AI-generated feeds, sector threat intel, proprietary sources) to named bitflags in the telemetry stream. Each flag carries its own suspicion weight, enabling sector-specific threat models without modifying the engine.
 
 ## 🎯 Target Audience
 
@@ -43,6 +44,8 @@ Traditional DNS blockers (Pi-hole, AdGuard) have two major limitations:
 | **IDN/Homograph**    | ⚠️ Partial            | ❌ No            | **✅ Yes (Punycode Analysis)**              |
 | **Architecture**     | Monolithic (UI+Core) | Core Only        | **Split-Process (Engine + Unix Socket UI)** |
 | **Enterprise Scale** | ❌ Hard to scale     | ✅ Possible      | **✅ Built-in SO_REUSEPORT support**        |
+| **GeoIP Scoring**    | ❌ No                | ❌ No            | **✅ Yes (MMDB, configurable weight)**      |
+| **Custom TI Flags**  | ❌ No                | ❌ No            | **✅ Yes (`custom_flags` feature)**         |
 
 ### Comparison with Proprietary Solutions (Cisco Umbrella / NextDNS)
 
@@ -66,6 +69,84 @@ Dgaard processes every query through a "Short-Circuit" funnel to ensure maximum 
 - **Async Core**: Powered by `Tokio` for high-concurrency UDP handling.
 - **Telemetry**: Streams real-time `Postcard`-encoded events over a Unix Domain Socket (UDS) for external Dashboards/TUIs.
 - **Atomic Updates**: Uses `arc-swap` for zero-downtime rule updates.
+
+## 🌍 GeoIP Suspicion Scoring
+
+Nation-state threat actors, ransomware operators, and botnet C2 infrastructure are disproportionately hosted in jurisdictions with limited law enforcement cooperation. Blocklisting individual domains is a reactive game — infrastructure rotates faster than public lists update. GeoIP scoring provides a structural defence: any domain — regardless of whether it has been seen before — that resolves to flagged infrastructure accumulates suspicion points.
+
+**How it works:**
+
+After a successful upstream DNS resolution, Dgaard queries a local MaxMind-format MMDB database (opened with `mmap` to minimise RAM on OpenWrt) for each returned A/AAAA address. If the IP maps to a listed country code, `suspicious_country_score` points are added to the domain's running total. The check never blocks by itself; it amplifies other signals:
+
+- A domain with `score 6` (entropy + NRD) resolving to a CN-hosted IP (+3) crosses the default blocking threshold of 10 automatically.
+- An SME with no business in RU, CN, KP, or IR can suppress an entire class of infrastructure threats without false-positive risk for legitimate CDN traffic.
+- When `log_suspicious = true`, GeoIP events appear in the telemetry stream even when the domain is forwarded, enabling SIEM correlation without modifying blocking policy.
+
+**MMDB database sources (free):**
+
+| Source           | URL                                                           |
+| ---------------- | ------------------------------------------------------------- |
+| MaxMind GeoLite2 | <https://www.maxmind.com/en/geolite-free-ip-geolocation-data> |
+| DB-IP            | <https://db-ip.com/db/>                                       |
+| ip2location      | <https://www.ip2location.com/database>                        |
+
+```toml
+[security.geo_ip]
+enabled = true
+database_path = "/etc/dgaard/GeoLite2-Country.mmdb"
+# ISO 3166-1 alpha-2 codes
+suspicious_countries = ["RU", "CN", "KP", "IR"]
+# 3 = suspicious signal; set to 10 for hard-block in high-security environments
+suspicious_country_score = 3
+```
+
+---
+
+## 🏷️ Custom Threat-Intelligence Flags _(requires `custom_flags` feature)_
+
+Different organisations face different threat profiles. A financial institution's threat feed differs from a healthcare provider's or a manufacturing plant's. The `custom_flags` feature lets each deployment consume sector-specific domain intelligence — large AI-generated lists, proprietary feeds, curated research datasets — as first-class telemetry signals, without forking the engine.
+
+**How it works:**
+
+`StatBlockReason` is widened from `u16` to `u32`. Bits 0–15 are the built-in engine flags. Bits 16–31 are user-defined: each entry in `[[security.custom_flags]]` binds a bit index to a plain-text domain list file, a human name, a short code, and a suspicion score contribution. At startup (and on `SIGHUP` reload) the list is loaded and registered as a filter source tagged with that bit. A domain hit sets the bit in the event's `StatBlockReason` and adds the configured score.
+
+Custom flag names and codes propagate through the Unix socket event stream alongside built-in flags, so `dgaard-monitor` and any connected SIEM receive source attribution automatically — no dashboard changes required.
+
+**Security argument:** Large AI-generated classification datasets (hundreds of thousands of domains) can be loaded as a single custom flag. The bit persists in every telemetry event for that domain, giving analysts the ability to filter or pivot on the source in post-processing — something not possible with a flat blocklist hit.
+
+**Use cases by sector:**
+
+| Sector     | List type                            | Flag code      | Score        |
+| ---------- | ------------------------------------ | -------------- | ------------ |
+| Finance    | AI-generated fraud/phishing domains  | `FRAUD_DOMAIN` | 6            |
+| Healthcare | Credential-harvesting infrastructure | `HEALTH_PHISH` | 8            |
+| Enterprise | Cryptocurrency mining pool endpoints | `CRYPTO_POOL`  | 4            |
+| Research   | Known honeypot / sinkhole domains    | `HONEYPOT`     | 8            |
+| Any        | Proprietary internal threat feed     | `INTERNAL_TI`  | configurable |
+
+```toml
+# Compile with: cargo build --features custom_flags
+
+[[security.custom_flags]]
+bit = 16
+code = "AI_FRAUD"
+name = "AI-Detected Fraud Domain"
+description = "Domains flagged by the AI-generated financial fraud classification list."
+suspicious_score = 6
+list_path = "/etc/dgaard/fraud-domains.txt"
+
+[[security.custom_flags]]
+bit = 17
+code = "CRYPTO_POOL"
+name = "Cryptocurrency Mining Pool"
+description = "Known mining pool and cryptojacking endpoints."
+suspicious_score = 4
+list_path = "/etc/dgaard/crypto-mining.txt"
+```
+
+Valid bit range: 16–31. Maximum 16 custom flags. Duplicate or out-of-range bit values are rejected at config parse time.
+
+---
 
 ## 🚀 Quick Start (OpenWrt)
 

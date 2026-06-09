@@ -160,9 +160,63 @@ _Focus: Turning raw block data into actionable insights._
 - [ ] 9.3. **DGA Effectiveness Audit**: average entropy and consonant ratio of blocked vs. allowed domains.
 - [ ] 9.4. **List Collision Logic**: identify domains appearing in multiple sources for 100% confidence scoring.
 
+## Feature: Custom Bitflags (`custom_flags`)
+
+_Feature flag: `custom_flags`_
+
+Allow users to define up to 16 additional `StatBlockReason` flags mapped to their own domain lists. This covers niche or proprietary threat intelligence feeds (e.g. a large AI-generated domain list) without requiring a code change or a new built-in flag.
+
+### Motivation
+
+`StatBlockReason` is currently a `u16` with all 16 bits allocated (bits 0–15). Expanding it to `u32` frees bits 16–31 as a user-controlled extension point. Each custom bit maps one-to-one to a plain-text domain list file and carries its own metadata (human name, short code, description, suspicion score contribution).
+
+### Changes required
+
+- **`dgaard-engine/src/model/action.rs`**: widen `StatBlockReason` from `u16` to `u32`. Bits 0–15 remain unchanged. Bits 16–31 are reserved for user-defined flags.
+- **Wire protocol** (`StatMessage::serialize` / `deserialize`): the reason bits field changes from 2 bytes (`u16::to_le_bytes`) to 4 bytes (`u32::to_le_bytes`). This is a **breaking wire change** — `dgaard-monitor` and any external decoder must be updated in the same commit.
+- **`dgaard-engine/src/config.rs`**: parse a new `[[security.custom_flags]]` array-of-tables (see TOML shape below).
+- **Engine build**: for each configured custom flag, load the referenced domain list file and register it as a bloom/FST source tagged with that flag's bit. A domain hit sets the corresponding `StatBlockReason` bit and adds the configured `suspicious_score` to `SuspicionScore`.
+- **`dgaard-monitor`** (task 5.5 / Client Decoder): resolve custom bits to their `name`/`code` string using the active config; unknown bits (set but not in config) should render as `CUSTOM_BIT_<n>` as a fallback.
+
+### TOML shape
+
+```toml
+[[security.custom_flags]]
+# Bit index to assign (must be in range 16–31, unique across all entries)
+bit = 16
+# Short machine-readable identifier used in JSON/log output
+code = "AI_GENERATED"
+# Human-readable label shown in the TUI and CLI
+name = "AI-Generated Domain"
+# Freeform description (informational only, not transmitted on the wire)
+description = "Domains flagged by the AI-generated content."
+# Suspicion score points added when this flag is triggered
+suspicious_score = 4
+# Path to a plain-text domain lists (one domain per line, # comments stripped)
+list_path = ["/etc/dgaard/ai-domains.txt"]
+
+[[security.custom_flags]]
+bit = 17
+code = "HONEYPOT"
+name = "Honeypot Domain"
+description = "Known honeypot / sinkhole infrastructure."
+suspicious_score = 8
+list_path = ["/etc/dgaard/honeypots.txt"]
+```
+
+### Constraints
+
+- Valid `bit` range: 16–31 inclusive. Values outside this range must be rejected at config parse time with a clear error.
+- Duplicate `bit` values within the same config must be rejected.
+- Maximum 16 entries (`bit` 16 through 31).
+- `suspicious_score` follows the same `u8` saturating arithmetic as the existing scoring engine.
+- List files are loaded at startup and on `SIGHUP` reload, using the same parser as existing plain-text domain lists.
+
+---
+
 ## Unsorted
 
-- [ ] **Geoip blocking**: using MaxMind format (`mmdb` file). Crate `maxminddb` with `mmap` support to save RAM on OpenWRT. Only perform the test on successful DNS resolve. Add a bitflag for suspicious GEOIP.
+- [x] **Geoip blocking**: using MaxMind format (`mmdb` file). Crate `maxminddb` with `mmap` support to save RAM on OpenWRT. Only perform the test on successful DNS resolve. Add a bitflag for suspicious GEOIP.
 
 ```toml
 [security.geo_ip]

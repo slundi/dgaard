@@ -10,6 +10,8 @@ Embeddable DNS filtering and scoring library. No async runtime — suitable for 
 - **DPI lite**: TXT record entropy, CNAME cloaking detection, DNS rebinding shield, QType policy
 - **Lexical analysis**: consonant clustering, IDN homograph detection, banned keyword matching
 - **ASN filtering**: block autonomous systems used for malware hosting or crypto mining
+- **GeoIP suspicion scoring**: post-resolve check against a MaxMind-format MMDB database; IPs in listed countries add configurable points to the domain's cumulative score
+- **Custom threat-intelligence flags** _(requires `custom_flags` feature)_: user-defined bitflags (bits 16–31 of `StatBlockReason`) backed by plain-text domain lists; each flag carries its own suspicion weight and propagates through the telemetry stream
 - **Low-overhead lookups**: xxh64-hashed `HashMap` and Bloom filters for sub-millisecond exact-match queries
 
 ## Usage
@@ -43,15 +45,17 @@ println!("{:?}", result.action);
 
 ## Configuration Sections
 
-| Section                | Purpose                                                                               |
-| ---------------------- | ------------------------------------------------------------------------------------- |
-| `[sources]`            | Paths to blacklist, whitelist, and NRD files                                          |
-| `[security.structure]` | Max subdomain depth, max label/domain length, lowercase enforcement                   |
-| `[security.lexical]`   | Entropy threshold, consonant ratio, N-gram model paths, banned keywords               |
-| `[security.dpi]`       | TXT entropy, CNAME following depth, rebinding shield, QType policy, low-TTL threshold |
-| `[tld]`                | Blocked and suspicious TLD lists                                                      |
-| `[asn]`                | ASN block list                                                                        |
-| `[scoring]`            | `blocking_threshold` (default 10), `log_suspicion_threshold`                          |
+| Section                     | Purpose                                                                                                |
+| --------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `[sources]`                 | Paths to blacklist, whitelist, and NRD files                                                           |
+| `[security.structure]`      | Max subdomain depth, max label/domain length, lowercase enforcement                                    |
+| `[security.lexical]`        | Entropy threshold, consonant ratio, N-gram model paths, banned keywords                                |
+| `[security.dpi]`            | TXT entropy, CNAME following depth, rebinding shield, QType policy, low-TTL threshold                  |
+| `[tld]`                     | Blocked and suspicious TLD lists                                                                       |
+| `[security.asn_filter]`     | ASN CIDR block list                                                                                    |
+| `[security.geo_ip]`         | MaxMind-format MMDB path, `suspicious_countries` (ISO 3166-1 alpha-2), `suspicious_country_score`      |
+| `[[security.custom_flags]]` | _(requires `custom_flags` feature)_ bit index (16–31), `code`, `name`, `suspicious_score`, `list_path` |
+| `[scoring]`                 | `blocking_threshold` (default 10), `log_suspicion_threshold`                                           |
 
 Full example: [`config.example.toml`](../config.example.toml)
 

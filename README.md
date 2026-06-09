@@ -19,6 +19,8 @@ A heuristic DNS filtering proxy that goes beyond static blocklists. Instead of w
 - **Smart-IDN / Homograph protection** — decodes Punycode and blocks look-alike phishing domains.
 - **DNS exfiltration & rebinding protection** — monitors TXT record entropy, CNAME chains, and subdomain volume; drops public queries that resolve to private IPs.
 - **Behavioral analytics** — detects NXDOMAIN-hunting clients (botnet indicators) and DNS tunneling patterns.
+- **GeoIP suspicion scoring** — checks each resolved IP against a local MaxMind-format MMDB database; responses from high-risk jurisdictions add weighted points to the domain's cumulative threat score, catching new malware infrastructure regardless of whether it has appeared on any blocklist.
+- **Custom threat-intelligence flags** _(requires `custom_flags` feature)_ — map up to 16 organisation-specific domain lists (AI-generated feeds, sector threat intel, proprietary sources) to named bitflags, each with its own suspicion weight; flags propagate through the telemetry stream for dashboard and SIEM correlation.
 - **Live telemetry** — streams length-prefixed binary events over a Unix Domain Socket for real-time dashboards.
 - **OpenWrt-optimised** — binary under 5 MB, `SO_REUSEPORT` multi-threading, async Tokio runtime, zero-copy parsing with `rkyv`.
 
