@@ -128,6 +128,10 @@ fn build_router(web: Arc<WebState>, token: String) -> Router {
             "/api/v1",
             Router::new()
                 .route("/about", get(routes::about::about_handler))
+                .route("/health", get(routes::health::health_handler))
+                .route("/stats", get(routes::stats::stats_handler))
+                .route("/queries", get(routes::queries::queries_handler))
+                .route("/talkers", get(routes::talkers::talkers_handler))
                 .fallback(|| async { StatusCode::NOT_FOUND }),
         )
         .route("/ws", get(routes::ws::ws_handler))
@@ -313,7 +317,7 @@ mod tests {
     // ── Auth middleware ────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn api_no_token_configured_returns_404() {
+    async fn api_no_token_configured_allows_access() {
         let app = make_router("");
         let resp = app
             .oneshot(
@@ -324,8 +328,8 @@ mod tests {
             )
             .await
             .unwrap();
-        // Auth skipped (empty token) → no route → 404
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        // Auth skipped (empty token) → health route reached → 204
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
@@ -374,8 +378,8 @@ mod tests {
             )
             .await
             .unwrap();
-        // Auth passed; no matching route → 404, not 401
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        // Auth passed → health handler → 204
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
@@ -446,6 +450,101 @@ mod tests {
             .unwrap();
         // Static index is public even with a token configured
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── Phase 5 REST endpoints ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn api_health_returns_204() {
+        let app = make_router("");
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn api_stats_returns_json_with_fields() {
+        let app = make_router("");
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/stats")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp.into_body()).await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v.get("total").is_some());
+        assert!(v.get("blocked").is_some());
+        assert!(v.get("allowed").is_some());
+        assert!(v.get("qps").is_some());
+        assert!(v.get("active_clients").is_some());
+        assert!(v.get("blocked_pct").is_some());
+        assert!(v.get("top_domains").is_some());
+        assert!(v.get("top_reasons").is_some());
+    }
+
+    #[tokio::test]
+    async fn api_queries_returns_empty_array() {
+        let app = make_router("");
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/queries")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp.into_body()).await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v.is_array());
+    }
+
+    #[tokio::test]
+    async fn api_queries_invalid_action_returns_400() {
+        let app = make_router("");
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/queries?action=garbage")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = body_string(resp.into_body()).await;
+        assert!(body.contains("error"));
+    }
+
+    #[tokio::test]
+    async fn api_talkers_returns_empty_array() {
+        let app = make_router("");
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/talkers")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp.into_body()).await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v.is_array());
     }
 
     // ── IP helpers ─────────────────────────────────────────────────────────

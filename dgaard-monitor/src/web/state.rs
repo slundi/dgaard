@@ -13,13 +13,11 @@ const BROADCAST_CAPACITY: usize = 1024;
 pub struct ClientStats {
     pub count: u64,
     pub blocked: u64,
-    #[allow(dead_code)]
     pub first_seen: u64,
     pub last_seen: u64,
 }
 
 pub struct WebState {
-    #[allow(dead_code)]
     pub app: Arc<AppState>,
     pub query_log: Mutex<VecDeque<EventRecord>>,
     pub client_stats: DashMap<IpAddr, ClientStats>,

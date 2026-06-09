@@ -1,8 +1,8 @@
 pub(super) mod about;
-mod health;
+pub(super) mod health;
 mod lists;
-mod queries;
-mod stats;
-mod talkers;
+pub(super) mod queries;
+pub(super) mod stats;
+pub(super) mod talkers;
 mod timeline;
 pub(super) mod ws;

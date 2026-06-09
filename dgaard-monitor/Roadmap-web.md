@@ -68,15 +68,15 @@ _Focus: Replicating the dgaard-monitor dashboard layout in HTML/Alpine.js._
 - **Dashboard tab**: Combines metric header (4.1), live feed (3.3), flag distribution (4.2), and a top-domains table.
 - **About tab**: Project name, version injected at build time via `env!("CARGO_PKG_VERSION")`, repo URL, license Apache 2, key WebSocket and API endpoint reference.
 
-## Phase 5: REST API
+## Phase 5: REST API ✅
 
 _Focus: Backend endpoints that power the UI and allow external integration._
 
-- [ ] 5.1. **`GET /api/v1/health`**: Return HTTP 204 No Content.
-- [ ] 5.2. **`GET /api/v1/stats`**: Return JSON — `{ total, blocked, allowed, suspicious, qps, active_clients, top_domains: [...], top_reasons: [...] }`. Computed from `AppState`.
-- [ ] 5.3. **`GET /api/v1/queries`**: Return the rolling query log as a JSON array. Optional query params: `?limit=N&offset=M&client=<IP>&action=<blocked|allowed|suspicious>`.
-- [ ] 5.4. **`GET /api/v1/talkers`**: Return per-client stats — `[{ client, hostname, count, blocked, first_seen, last_seen }]`.
-- [ ] 5.5. **Input validation**: Reject invalid query params with HTTP 400. All errors return `{ "error": "..." }` JSON body.
+- **`GET /api/v1/health`**: Return HTTP 204 No Content.
+- **`GET /api/v1/stats`**: Return JSON — `{ total, blocked, allowed, suspicious, qps, active_clients, top_domains: [...], top_reasons: [...] }`. Computed from `AppState`.
+- **`GET /api/v1/queries`**: Return the rolling query log as a JSON array. Optional query params: `?limit=N&offset=M&client=<IP>&action=<blocked|allowed|suspicious>`.
+- **`GET /api/v1/talkers`**: Return per-client stats — `[{ client, hostname, count, blocked, first_seen, last_seen }]`.
+- **Input validation**: Reject invalid query params with HTTP 400. All errors return `{ "error": "..." }` JSON body.
 
 ## Phase 6: Queries & Talkers Tabs
 
