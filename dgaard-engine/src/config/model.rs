@@ -778,6 +778,23 @@ pub struct UpstreamConfig {
     /// Per-query timeout in milliseconds.  Queries unanswered within this
     /// window are retried on the next server in the list.
     pub timeout_ms: u64,
+
+    /// Enable DNS0x20 case randomization on outgoing queries (Dagon et al., 2008).
+    ///
+    /// When `true`, each alphabetic byte in the outgoing QNAME has its ASCII
+    /// case bit randomly flipped before the query is sent upstream. An
+    /// RFC-compliant resolver echoes the QNAME back verbatim; if the response
+    /// QNAME does not match case-for-case, the answer is rejected as forged or
+    /// from a non-compliant middlebox.
+    ///
+    /// This adds a per-query entropy source on top of the 16-bit TXID, making
+    /// Kaminsky-style cache-poisoning attacks orders of magnitude harder at
+    /// zero cryptographic cost.
+    ///
+    /// Set to `false` if your upstream resolvers normalize case in responses
+    /// (some non-compliant servers do), which would cause every query to time
+    /// out. Default: `true`.
+    pub use_0x20_randomization: bool,
 }
 
 impl Default for UpstreamConfig {
@@ -785,6 +802,7 @@ impl Default for UpstreamConfig {
         Self {
             servers: vec![String::from("1.1.1.1:53"), String::from("9.9.9.9:53")],
             timeout_ms: 2000,
+            use_0x20_randomization: true,
         }
     }
 }
@@ -1377,6 +1395,7 @@ mod tests {
         let u = UpstreamConfig::default();
         assert_eq!(u.servers, vec!["1.1.1.1:53", "9.9.9.9:53"]);
         assert_eq!(u.timeout_ms, 2000);
+        assert!(u.use_0x20_randomization);
     }
 
     // -----------------------------------------------------------------------

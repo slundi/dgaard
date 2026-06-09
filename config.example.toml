@@ -155,6 +155,13 @@ forbidden_qtypes = ["NULL"]
 # Using DNS-over-HTTPS (DoH) or standard UDP
 servers = ["1.1.1.1:53", "9.9.9.9:53"]
 timeout_ms = 2000
+# DNS0x20 case randomization (Dagon et al., 2008).
+# Randomly flips the case of ASCII letters in the outgoing QNAME. A compliant
+# upstream echoes the QNAME back verbatim; responses that do not match are
+# rejected as forged. Combines with the 16-bit TXID to harden against
+# Kaminsky-style cache-poisoning attacks at zero cryptographic cost.
+# Set to false if your upstreams normalize case (some non-compliant servers do).
+use_0x20_randomization = true
 
 # -----------------------------------------------------------------------------
 # TLD Filtering

@@ -621,6 +621,9 @@ fn parse_upstream(table: &toml_span::value::Table<'_>) -> Result<UpstreamConfig,
     if let Some(n) = get_integer(table, "timeout_ms")? {
         cfg.timeout_ms = n as u64;
     }
+    if let Some(b) = get_bool(table, "use_0x20_randomization")? {
+        cfg.use_0x20_randomization = b;
+    }
 
     Ok(cfg)
 }
@@ -1313,10 +1316,18 @@ mod tests {
             [upstream]
             servers = ["8.8.8.8:53", "8.8.4.4:53"]
             timeout_ms = 5000
+            use_0x20_randomization = false
         "#;
         let cfg = Config::parse(toml).unwrap();
         assert_eq!(cfg.upstream.servers, vec!["8.8.8.8:53", "8.8.4.4:53"]);
         assert_eq!(cfg.upstream.timeout_ms, 5000);
+        assert!(!cfg.upstream.use_0x20_randomization);
+    }
+
+    #[test]
+    fn parse_upstream_0x20_defaults_true() {
+        let cfg = Config::parse("").unwrap();
+        assert!(cfg.upstream.use_0x20_randomization);
     }
 
     // -----------------------------------------------------------------------
