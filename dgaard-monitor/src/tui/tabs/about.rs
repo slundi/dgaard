@@ -4,7 +4,7 @@
 //!
 //!   dgaard-monitor  v0.1.0
 //!   https://codeberg.org/slundi/dgaard
-//!   License: Apache 2.0
+//!   License: GPLv3
 //!
 //!   ────────────────────────────────────────
 //!
@@ -36,7 +36,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const REPO_URL: &str = "https://codeberg.org/slundi/dgaard";
 
 /// SPDX license identifier shown in the About tab.
-pub const LICENSE: &str = "Apache 2.0";
+pub const LICENSE: &str = "GPLv3";
 
 /// Horizontal rule used to separate sections.
 pub const SEPARATOR: &str = "────────────────────────────────────────";
@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn test_license() {
-        assert_eq!(LICENSE, "Apache 2.0");
+        assert_eq!(LICENSE, "GPLv3");
     }
 
     // --- key_bindings ---

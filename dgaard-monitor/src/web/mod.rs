@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_string(resp.into_body()).await;
         assert!(body.contains("version"));
-        assert!(body.contains("Apache-2.0"));
+        assert!(body.contains("GPLv3"));
     }
 
     #[tokio::test]

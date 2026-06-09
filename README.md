@@ -190,11 +190,3 @@ cargo install cross --git https://github.com/cross-rs/cross
 cross build --release --target aarch64-unknown-linux-musl -p dgaard
 cross build --release --target armv7-unknown-linux-musleabihf -p dgaard
 ```
-
----
-
-## License
-
-Apache-2.0 — see each package's `Cargo.toml` for details.
-
-Repository: <https://codeberg.org/slundi/dgaard>

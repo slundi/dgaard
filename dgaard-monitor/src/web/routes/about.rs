@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 pub async fn about_handler() -> Json<Value> {
     Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
-        "license": "Apache-2.0",
+        "license": "GPLv3",
         "endpoints": [
             { "name": "WebSocket live feed", "path": "/ws" },
             { "name": "Stats",               "path": "GET /api/v1/stats" },
@@ -31,7 +31,7 @@ mod tests {
     #[tokio::test]
     async fn about_contains_license() {
         let Json(body) = about_handler().await;
-        assert_eq!(body["license"].as_str().unwrap(), "Apache-2.0");
+        assert_eq!(body["license"].as_str().unwrap(), "GPLv3");
     }
 
     #[tokio::test]
