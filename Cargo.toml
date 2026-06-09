@@ -73,6 +73,7 @@ socket2 = "0.6.4"
 async-trait = "0.1"
 axum = { version = "0.8.1", features = ["ws"] }
 crossterm = "0.29"
+futures-util = "0.3"
 inotify = "0.11.2"
 ratatui = "0.30.1"
 rust-embed = "8"

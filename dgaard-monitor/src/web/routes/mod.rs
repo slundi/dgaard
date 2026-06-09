@@ -4,4 +4,4 @@ mod queries;
 mod stats;
 mod talkers;
 mod timeline;
-mod ws;
+pub(super) mod ws;

@@ -772,6 +772,7 @@ dependencies = [
  "bitflags 2.13.0",
  "crossterm",
  "dashmap",
+ "futures-util",
  "gumdrop",
  "hickory-resolver",
  "http-body-util",

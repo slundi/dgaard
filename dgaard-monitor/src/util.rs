@@ -103,7 +103,7 @@ pub fn reason_labels(r: StatBlockReason) -> Vec<&'static str> {
 }
 
 /// Wire format shared by the REST API and WebSocket stream.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EventRecord {
     pub timestamp: u64,
     /// Resolved domain name, or `null` when the hash is unknown.

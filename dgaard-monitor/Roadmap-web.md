@@ -50,13 +50,13 @@ _Focus: Serving the single-page app shell and wiring up axum._
 - **HTML shell**: Minimal `index.html` — viewport meta, load Alpine.js and Chart.js from embedded paths (`/alpine.min.js`, `/chart.min.js`), tab navigation skeleton, metric header placeholders.
 - **Bearer auth middleware**: axum middleware that checks `Authorization: Bearer <token>` on all `/api/v1/*` and `/ws` routes. Returns HTTP 401 on mismatch.
 
-## Phase 3: Live Event Pipeline
+## Phase 3: Live Event Pipeline ✅
 
 _Focus: Bridging the main event stream to connected browsers via WebSocket._
 
-- [ ] 3.1. **Broadcast channel**: `tokio::sync::broadcast::channel` with a bounded capacity inside `WebState`. The ingestor task (1.4) is the sole sender; each WebSocket connection holds a receiver.
-- [ ] 3.2. **WebSocket endpoint** (`GET /ws`): Upgrade with `axum::extract::ws::WebSocket`. Subscribe to the broadcast channel; forward each `WebEvent` serialized as JSON. Drop lagging clients (lag > capacity) without crashing the server.
-- [ ] 3.3. **Alpine.js live feed**: `x-data` component that opens a `WebSocket` on mount, appends incoming events to a capped reactive array, renders the last 50 rows as a table with action colouring (green = allowed, red = blocked).
+- **Broadcast channel**: `tokio::sync::broadcast::channel` with a bounded capacity inside `WebState`. The ingestor task (1.4) is the sole sender; each WebSocket connection holds a receiver.
+- **WebSocket endpoint** (`GET /ws`): Upgrade with `axum::extract::ws::WebSocket`. Subscribe to the broadcast channel; forward each `WebEvent` serialized as JSON. Drop lagging clients (lag > capacity) without crashing the server.
+- **Alpine.js live feed**: `x-data` component that opens a `WebSocket` on mount, appends incoming events to a capped reactive array, renders the last 50 rows as a table with action colouring (green = allowed, red = blocked).
 
 ## Phase 4: Dashboard UI
 

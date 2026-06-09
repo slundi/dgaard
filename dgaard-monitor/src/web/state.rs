@@ -39,7 +39,6 @@ impl WebState {
         }
     }
 
-    #[allow(dead_code)]
     pub fn subscribe(&self) -> broadcast::Receiver<EventRecord> {
         self.broadcast_tx.subscribe()
     }

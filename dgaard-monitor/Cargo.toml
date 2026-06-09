@@ -25,6 +25,7 @@ serde_json.workspace = true
 
 axum.workspace = true
 dashmap.workspace = true
+futures-util.workspace = true
 rust-embed.workspace = true
 tokio-tungstenite.workspace = true
 

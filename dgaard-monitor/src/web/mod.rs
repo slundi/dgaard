@@ -68,13 +68,22 @@ async fn require_bearer(
     if token.is_empty() {
         return next.run(request).await;
     }
-    let authorized = request
+    let bearer_ok = request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .map(|v| v == format!("Bearer {}", token.as_str()))
         .unwrap_or(false);
-    if authorized {
+    // Browsers cannot set custom headers on WebSocket connections, so /ws also
+    // accepts a ?token= query parameter.
+    let query_ok = request.uri().path() == "/ws"
+        && request
+            .uri()
+            .query()
+            .and_then(|q| q.split('&').find(|p| p.starts_with("token=")))
+            .map(|p| &p["token=".len()..] == token.as_str())
+            .unwrap_or(false);
+    if bearer_ok || query_ok {
         next.run(request).await
     } else {
         (
@@ -119,8 +128,7 @@ fn build_router(web: Arc<WebState>, token: String) -> Router {
             "/api/v1",
             Router::new().fallback(|| async { StatusCode::NOT_FOUND }),
         )
-        // /ws — Phase 3 replaces this placeholder with the upgrade handler
-        .route("/ws", get(|| async { StatusCode::NOT_IMPLEMENTED }))
+        .route("/ws", get(routes::ws::ws_handler))
         .layer(auth_layer)
         .with_state(web)
 }
@@ -373,6 +381,37 @@ mod tests {
         let app = make_router("secret");
         let resp = app
             .oneshot(Request::builder().uri("/ws").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn ws_correct_query_token_passes_auth() {
+        let app = make_router("secret");
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/ws?token=secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Auth passed; plain HTTP to WS endpoint → 400, not 401.
+        assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn ws_wrong_query_token_returns_401() {
+        let app = make_router("secret");
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/ws?token=wrong")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);

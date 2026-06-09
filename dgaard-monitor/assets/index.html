@@ -45,7 +45,53 @@
 
   <main class="content">
     <section x-show="tab === 'dashboard'">
-      <p class="placeholder">Dashboard — coming soon</p>
+      <div x-data="liveFeed()" x-init="connect()">
+
+        <div class="toolbar">
+          <span class="badge" :class="status === 'live' ? 'badge-live' : 'badge-disconnected'"
+                x-text="status === 'live' ? '● live' : '○ disconnected'"></span>
+          <button class="btn" :class="frozen ? 'btn-frozen' : ''" @click="toggleFreeze()"
+                  x-text="frozen ? '▶ resume' : '⏸ freeze'"></button>
+          <template x-if="status !== 'live'">
+            <div class="token-row">
+              <input class="token-input" type="password" placeholder="Bearer token (if required)"
+                     x-model="token" @keydown.enter="connect()">
+              <button class="btn" @click="connect()">Connect</button>
+            </div>
+          </template>
+        </div>
+
+        <div class="frozen-notice" x-show="frozen">
+          Updates paused — <span x-text="bufferCount"></span> event(s) buffered
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Domain</th>
+              <th>Client</th>
+              <th>Action</th>
+              <th>Flags</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="row in events" :key="row.timestamp + '-' + row.domain_hash">
+              <tr :class="actionClass(row.action)">
+                <td x-text="fmtTime(row.timestamp)"></td>
+                <td x-text="row.domain ?? row.domain_hash"></td>
+                <td x-text="row.client_ip"></td>
+                <td :class="actionClass(row.action)" x-text="row.action"></td>
+                <td x-text="(row.flags_labels ?? []).join(', ')"></td>
+              </tr>
+            </template>
+            <tr x-show="events.length === 0">
+              <td colspan="5" style="text-align:center;color:var(--text-muted)">Waiting for events…</td>
+            </tr>
+          </tbody>
+        </table>
+
+      </div>
     </section>
     <section x-show="tab === 'queries'">
       <p class="placeholder">Queries — coming soon</p>
@@ -64,6 +110,63 @@
   <script src="/alpine.min.js" defer></script>
   <script src="/chart.min.js" defer></script>
   <script>
+  function liveFeed() {
+    return {
+      events: [],
+      status: 'disconnected',
+      frozen: false,
+      token: '',
+      bufferCount: 0,
+      _ws: null,
+      _buffer: [],
+      maxRows: 50,
+
+      connect() {
+        if (this._ws) { this._ws.close(); this._ws = null; }
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        const t = this.token ? '?token=' + encodeURIComponent(this.token) : '';
+        const ws = new WebSocket(proto + '://' + location.host + '/ws' + t);
+        this._ws = ws;
+        ws.onopen  = () => { this.status = 'live'; };
+        ws.onclose = () => { this.status = 'disconnected'; this._ws = null; };
+        ws.onerror = () => { this.status = 'disconnected'; };
+        ws.onmessage = (e) => {
+          const rec = JSON.parse(e.data);
+          if (this.frozen) { this._buffer.push(rec); this.bufferCount++; return; }
+          this._append(rec);
+        };
+      },
+
+      toggleFreeze() {
+        this.frozen = !this.frozen;
+        if (!this.frozen) {
+          this._buffer.forEach(r => this._append(r));
+          this._buffer = [];
+          this.bufferCount = 0;
+        }
+      },
+
+      _append(rec) {
+        this.events.unshift(rec);
+        if (this.events.length > this.maxRows) this.events.length = this.maxRows;
+      },
+
+      actionClass(action) {
+        const a = (action ?? '').toLowerCase().replace(/\s+/g, '');
+        if (a === 'allowed')          return 'action-allowed';
+        if (a === 'blocked')          return 'action-blocked';
+        if (a === 'suspicious')       return 'action-suspicious';
+        if (a === 'highlysuspicious') return 'action-highlysuspicious';
+        if (a === 'proxied')          return 'action-proxied';
+        return '';
+      },
+
+      fmtTime(ts) {
+        return new Date(ts * 1000).toLocaleTimeString();
+      },
+    };
+  }
+
   function app() {
     return {
       tab: location.hash.slice(1) || 'dashboard',
