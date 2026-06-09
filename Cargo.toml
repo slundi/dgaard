@@ -63,6 +63,7 @@ dashmap = "6.2.1"
 fst = "0.4.7"
 getrandom = "0.4.2"
 lru = "0.18"
+maxminddb = { version = "0.28.1", features = ["mmap"] }
 num_cpus = "1.17.0"
 rkyv = "0.8.16"
 rustls = { version = "0.23.40", default-features = false, features = ["ring"] }

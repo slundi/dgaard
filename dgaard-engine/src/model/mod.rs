@@ -58,6 +58,10 @@ pub enum BlockReason {
 
     /// Upstream response resolves to an IP within a user-configured blocked ASN range.
     AsnBlocked,
+
+    /// Upstream response resolves to an IP in a suspicious GeoIP country.
+    /// Carries the ISO 3166-1 alpha-2 country code (e.g. "RU", "CN").
+    GeoIpSuspicious(String),
 }
 
 /// Messages sent over the stats channel to the collector.
@@ -270,6 +274,7 @@ pub mod score_points {
     pub const DNS_REBINDING: u8 = 10;
     pub const KEYWORD_SUSPICIOUS_TLD: u8 = 10;
     pub const ASN_BLOCKED: u8 = 10;
+    pub const GEO_IP_SUSPICIOUS: u8 = 3;
 }
 
 impl SuspicionScore {

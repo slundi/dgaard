@@ -192,12 +192,16 @@ pub async fn reload_lists() {
         lexical_strict: true,
         blocked_asn_v4: Vec::new(),
         blocked_asn_v6: Vec::new(),
+        geoip_reader: None,
+        suspicious_country_codes: std::collections::HashSet::new(),
+        suspicious_country_score: 3,
         seed,
     };
 
     new_engine.load_tld_filters(&cfg);
     new_engine.load_lexical_filters(&cfg);
     new_engine.load_asn_filters(&cfg);
+    new_engine.load_geoip_filter(&cfg);
 
     CURRENT_ENGINE.store(Arc::new(new_engine));
 

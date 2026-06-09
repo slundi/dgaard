@@ -93,6 +93,8 @@ bitflags! {
         const LOW_TTL = 1 << 13;
         /// Response resolves to an IP in a user-configured blocked ASN range
         const ASN_BLOCKED = 1 << 14;
+        /// Response resolves to an IP in a suspicious GeoIP country
+        const SUSPICIOUS_GEO_IP = 1 << 15;
     }
 }
 
@@ -114,6 +116,7 @@ impl From<&BlockReason> for StatBlockReason {
             BlockReason::DnsRebinding => StatBlockReason::DNS_REBINDING,
             BlockReason::LowTtl(_) => StatBlockReason::LOW_TTL,
             BlockReason::AsnBlocked => StatBlockReason::ASN_BLOCKED,
+            BlockReason::GeoIpSuspicious(_) => StatBlockReason::SUSPICIOUS_GEO_IP,
         }
     }
 }
@@ -179,6 +182,10 @@ mod tests {
         assert_eq!(
             StatBlockReason::from(&BlockReason::AsnBlocked),
             StatBlockReason::ASN_BLOCKED
+        );
+        assert_eq!(
+            StatBlockReason::from(&BlockReason::GeoIpSuspicious("RU".into())),
+            StatBlockReason::SUSPICIOUS_GEO_IP
         );
     }
 

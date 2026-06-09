@@ -189,6 +189,31 @@ pub fn score_answer(
             return;
         }
     }
+
+    if config.security.geo_ip.enabled && filter.geoip_reader.is_some() {
+        for ip in &answer.a_records {
+            if let Some(code) = filter.geoip_country_suspicious_v4(*ip) {
+                score.add(
+                    filter.suspicious_country_score,
+                    BlockReason::GeoIpSuspicious(code),
+                );
+                if score.total >= blocking_threshold {
+                    return;
+                }
+            }
+        }
+        for ip in &answer.aaaa_records {
+            if let Some(code) = filter.geoip_country_suspicious_v6(*ip) {
+                score.add(
+                    filter.suspicious_country_score,
+                    BlockReason::GeoIpSuspicious(code),
+                );
+                if score.total >= blocking_threshold {
+                    return;
+                }
+            }
+        }
+    }
 }
 
 /// Check if an IPv4 address falls in a private or reserved range.
@@ -420,6 +445,30 @@ mod tests {
         };
         score_answer(&mut score, &answer, &engine, &config);
         assert_eq!(score.total, score_points::CNAME_CLOAKING);
+    }
+
+    #[test]
+    fn test_score_answer_geoip_disabled_no_score() {
+        let engine = init_test_engine();
+        let mut config = default_config();
+        config.security.geo_ip.enabled = false;
+        let mut score = SuspicionScore::new();
+        let answer = make_answer(1, 0, 0, &[]);
+        score_answer(&mut score, &answer, &engine, &config);
+        assert_eq!(score.total, 0);
+    }
+
+    #[test]
+    fn test_score_answer_geoip_enabled_no_reader_no_score() {
+        // enabled=true but no reader loaded → no score added
+        let engine = init_test_engine();
+        let mut config = default_config();
+        config.security.geo_ip.enabled = true;
+        config.security.geo_ip.suspicious_countries = vec!["RU".to_string()];
+        let mut score = SuspicionScore::new();
+        let answer = make_answer(1, 0, 0, &[]);
+        score_answer(&mut score, &answer, &engine, &config);
+        assert_eq!(score.total, 0);
     }
 
     #[test]

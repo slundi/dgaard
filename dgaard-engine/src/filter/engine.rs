@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 use aho_corasick::AhoCorasick;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -28,6 +30,11 @@ pub struct FilterEngine {
     // ASN IP-range filtering
     pub blocked_asn_v4: Vec<(u32, u32)>,
     pub blocked_asn_v6: Vec<([u8; 16], [u8; 16])>,
+
+    // GeoIP country-based suspicion scoring
+    pub geoip_reader: Option<maxminddb::Reader<maxminddb::Mmap>>,
+    pub suspicious_country_codes: HashSet<String>,
+    pub suspicious_country_score: u8,
 
     /// Hash seed used for all domain fingerprinting within this engine instance.
     pub seed: u64,
@@ -90,6 +97,9 @@ impl FilterEngine {
             lexical_strict: true,
             blocked_asn_v4: Vec::with_capacity(0),
             blocked_asn_v6: Vec::with_capacity(0),
+            geoip_reader: None,
+            suspicious_country_codes: HashSet::with_capacity(0),
+            suspicious_country_score: 3,
             seed: 0,
         }
     }
@@ -176,12 +186,16 @@ impl FilterEngine {
             lexical_strict: true,
             blocked_asn_v4: Vec::new(),
             blocked_asn_v6: Vec::new(),
+            geoip_reader: None,
+            suspicious_country_codes: HashSet::new(),
+            suspicious_country_score: 3,
             seed,
         };
 
         engine.load_tld_filters(config);
         engine.load_lexical_filters(config);
         engine.load_asn_filters(config);
+        engine.load_geoip_filter(config);
 
         engine
     }
@@ -251,6 +265,61 @@ impl FilterEngine {
                     None => eprintln!("Warning: Invalid IPv4 CIDR range in asn_filter: {range}"),
                 }
             }
+        }
+    }
+
+    /// Load GeoIP filter from a MaxMind MMDB file.
+    ///
+    /// Opens the database with mmap — no heap copy of the file contents.
+    /// Country codes in `suspicious_countries` are normalised to uppercase.
+    pub fn load_geoip_filter(&mut self, config: &Config) {
+        let geo = &config.security.geo_ip;
+
+        if !geo.enabled || geo.database_path.is_empty() {
+            return;
+        }
+
+        // SAFETY: mmap maps a read-only file; the file must not be truncated
+        // while the reader is alive. Dgaard owns the database path configuration
+        // and never modifies the MMDB file at runtime.
+        match unsafe { maxminddb::Reader::open_mmap(&geo.database_path) } {
+            Ok(reader) => {
+                self.geoip_reader = Some(reader);
+                self.suspicious_country_codes = geo
+                    .suspicious_countries
+                    .iter()
+                    .map(|c| c.to_ascii_uppercase())
+                    .collect();
+                self.suspicious_country_score = geo.suspicious_country_score;
+            }
+            Err(e) => eprintln!(
+                "Warning: Failed to open GeoIP database {}: {}",
+                geo.database_path, e
+            ),
+        }
+    }
+
+    /// Return the ISO 3166-1 alpha-2 country code if `ip` is in a suspicious
+    /// country, or `None` if the IP is unknown or the country is not suspicious.
+    pub fn geoip_country_suspicious_v4(&self, ip: std::net::Ipv4Addr) -> Option<String> {
+        self.geoip_country_suspicious(IpAddr::V4(ip))
+    }
+
+    /// Return the ISO 3166-1 alpha-2 country code if `ip` is in a suspicious
+    /// country, or `None` if the IP is unknown or the country is not suspicious.
+    pub fn geoip_country_suspicious_v6(&self, ip: std::net::Ipv6Addr) -> Option<String> {
+        self.geoip_country_suspicious(IpAddr::V6(ip))
+    }
+
+    fn geoip_country_suspicious(&self, ip: IpAddr) -> Option<String> {
+        let reader = self.geoip_reader.as_ref()?;
+        let result = reader.lookup(ip).ok()?;
+        let record = result.decode::<maxminddb::geoip2::Country>().ok()??;
+        let iso_code = record.country.iso_code?;
+        if self.suspicious_country_codes.contains(iso_code) {
+            Some(iso_code.to_string())
+        } else {
+            None
         }
     }
 
@@ -368,6 +437,43 @@ mod tests {
     fn test_parse_cidr_v4_invalid() {
         assert!(parse_cidr_v4("not-a-cidr").is_none());
         assert!(parse_cidr_v4("1.2.3.4/33").is_none());
+    }
+
+    #[test]
+    fn test_load_geoip_filter_disabled() {
+        let mut engine = make_engine();
+        let cfg = Config::default(); // geo_ip.enabled = false
+        engine.load_geoip_filter(&cfg);
+        assert!(engine.geoip_reader.is_none());
+        assert!(engine.suspicious_country_codes.is_empty());
+    }
+
+    #[test]
+    fn test_load_geoip_filter_missing_db() {
+        let mut engine = make_engine();
+        let mut cfg = Config::default();
+        cfg.security.geo_ip.enabled = true;
+        cfg.security.geo_ip.database_path = "/nonexistent/GeoLite2-Country.mmdb".to_string();
+        cfg.security.geo_ip.suspicious_countries = vec!["RU".to_string()];
+        // Should log a warning but not panic; reader stays None
+        engine.load_geoip_filter(&cfg);
+        assert!(engine.geoip_reader.is_none());
+    }
+
+    #[test]
+    fn test_geoip_suspicious_with_no_reader() {
+        let engine = make_engine();
+        // No reader loaded — all IPs are non-suspicious
+        assert!(
+            engine
+                .geoip_country_suspicious_v4("1.2.3.4".parse().unwrap())
+                .is_none()
+        );
+        assert!(
+            engine
+                .geoip_country_suspicious_v6("2001:db8::1".parse().unwrap())
+                .is_none()
+        );
     }
 
     #[test]

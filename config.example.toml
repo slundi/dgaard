@@ -257,6 +257,24 @@ enabled = false
 #   "2001:db8::/32",    # IPv6 documentation range (RFC 3849)
 # ]
 
+# GeoIP country-based suspicion scoring.
+#
+# After a successful DNS resolve, checks each A/AAAA address against a
+# MaxMind-compatible MMDB database. IPs from listed countries add
+# `suspicious_country_score` points to the domain's suspicion total.
+# The database is opened with mmap to minimise RAM usage on OpenWrt.
+#
+# Free database: https://www.maxmind.com/en/geolite-free-ip-geolocation-data
+# Alternatives:  https://db-ip.com/db/  |  https://www.ip2location.com/database
+[security.geo_ip]
+enabled = false
+# Path to a MaxMind-format MMDB file (GeoLite2-Country, GeoIP2-Country, etc.)
+database_path = "/etc/dgaard/GeoLite2-Country.mmdb"
+# ISO 3166-1 alpha-2 country codes considered suspicious
+suspicious_countries = ["RU", "CN", "KP", "IR"]
+# Suspicion points added per matching IP (default: 3; max useful: 10 to hard-block)
+suspicious_country_score = 3
+
 # -----------------------------------------------------------------------------
 # Behavior Monitoring
 # -----------------------------------------------------------------------------

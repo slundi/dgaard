@@ -504,6 +504,26 @@ fn parse_rebinding_shield(
     Ok(cfg)
 }
 
+/// Parse `[security.geo_ip]` section.
+fn parse_geo_ip(table: &toml_span::value::Table<'_>) -> Result<GeoIpConfig, ConfigError> {
+    let mut cfg = GeoIpConfig::default();
+
+    if let Some(b) = get_bool(table, "enabled")? {
+        cfg.enabled = b;
+    }
+    if let Some(s) = get_str(table, "database_path")? {
+        cfg.database_path = s.to_string();
+    }
+    if let Some(arr) = get_string_array(table, "suspicious_countries")? {
+        cfg.suspicious_countries = arr;
+    }
+    if let Some(n) = get_integer(table, "suspicious_country_score")? {
+        cfg.suspicious_country_score = n as u8;
+    }
+
+    Ok(cfg)
+}
+
 /// Parse `[security.scoring]` section.
 fn parse_scoring(table: &toml_span::value::Table<'_>) -> Result<ScoringConfig, ConfigError> {
     let mut cfg = ScoringConfig::default();
@@ -557,6 +577,9 @@ fn parse_security(table: &toml_span::value::Table<'_>) -> Result<SecurityConfig,
     }
     if let Some(t) = get_table(table, "scoring")? {
         cfg.scoring = parse_scoring(t)?;
+    }
+    if let Some(t) = get_table(table, "geo_ip")? {
+        cfg.geo_ip = parse_geo_ip(t)?;
     }
 
     Ok(cfg)
@@ -1072,6 +1095,44 @@ mod tests {
         assert_eq!(cfg.security.behavior.nxdomain_window, 120);
         assert_eq!(cfg.security.behavior.max_subdomains_per_minute, 100);
         assert_eq!(cfg.security.behavior.max_label_length, 40);
+    }
+
+    // -----------------------------------------------------------------------
+    // GeoIP section
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_security_geo_ip_all_fields() {
+        let toml = r#"
+            [security.geo_ip]
+            enabled = true
+            database_path = "/tmp/GeoLite2-Country.mmdb"
+            suspicious_countries = ["RU", "CN", "KP", "IR"]
+            suspicious_country_score = 5
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert!(cfg.security.geo_ip.enabled);
+        assert_eq!(
+            cfg.security.geo_ip.database_path,
+            "/tmp/GeoLite2-Country.mmdb"
+        );
+        assert_eq!(
+            cfg.security.geo_ip.suspicious_countries,
+            vec!["RU", "CN", "KP", "IR"]
+        );
+        assert_eq!(cfg.security.geo_ip.suspicious_country_score, 5);
+    }
+
+    #[test]
+    fn parse_security_geo_ip_defaults() {
+        let cfg = Config::parse("").unwrap();
+        assert!(!cfg.security.geo_ip.enabled);
+        assert_eq!(
+            cfg.security.geo_ip.database_path,
+            "/etc/dgaard/GeoLite2-Country.mmdb"
+        );
+        assert!(cfg.security.geo_ip.suspicious_countries.is_empty());
+        assert_eq!(cfg.security.geo_ip.suspicious_country_score, 3);
     }
 
     // -----------------------------------------------------------------------

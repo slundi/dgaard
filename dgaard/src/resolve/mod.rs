@@ -88,6 +88,9 @@ pub mod tests {
             lexical_strict: true,
             blocked_asn_v4: Vec::new(),
             blocked_asn_v6: Vec::new(),
+            geoip_reader: None,
+            suspicious_country_codes: HashSet::new(),
+            suspicious_country_score: 3,
             seed: 42,
         }
     }
@@ -117,6 +120,9 @@ pub mod tests {
             lexical_strict: true,
             blocked_asn_v4: Vec::new(),
             blocked_asn_v6: Vec::new(),
+            geoip_reader: None,
+            suspicious_country_codes: HashSet::new(),
+            suspicious_country_score: 3,
             seed: 42,
         }
     }
@@ -133,6 +139,9 @@ pub mod tests {
             lexical_strict: true,
             blocked_asn_v4: Vec::new(),
             blocked_asn_v6: Vec::new(),
+            geoip_reader: None,
+            suspicious_country_codes: HashSet::new(),
+            suspicious_country_score: 3,
             seed: 42,
         }
     }
@@ -170,6 +179,9 @@ pub mod tests {
             lexical_strict: strict,
             blocked_asn_v4: Vec::new(),
             blocked_asn_v6: Vec::new(),
+            geoip_reader: None,
+            suspicious_country_codes: HashSet::new(),
+            suspicious_country_score: 3,
             seed: 42,
         }
     }

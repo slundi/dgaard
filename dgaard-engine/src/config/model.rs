@@ -589,6 +589,60 @@ impl Default for ScoringConfig {
 }
 
 // ---------------------------------------------------------------------------
+// [security.geo_ip]
+// ---------------------------------------------------------------------------
+
+/// GeoIP country-based suspicion scoring.
+///
+/// After a successful DNS resolve, checks the returned A/AAAA addresses
+/// against a MaxMind-format MMDB database. IPs from countries in
+/// `suspicious_countries` add `suspicious_country_score` points to the
+/// domain's suspicion total.
+///
+/// Uses memory-mapped I/O (`mmap`) to minimise RAM usage — the database
+/// file is mapped into virtual address space rather than copied to heap.
+///
+/// Maps to `[security.geo_ip]` in the configuration file.
+#[derive(Debug, PartialEq, Clone)]
+pub struct GeoIpConfig {
+    /// Master switch — set to `false` to skip all GeoIP checks.
+    pub enabled: bool,
+
+    /// Path to a MaxMind-compatible MMDB file.
+    ///
+    /// Supported databases:
+    /// - GeoLite2-Country.mmdb (free, requires registration)
+    /// - GeoIP2-Country.mmdb (commercial)
+    /// - DB-IP or ip2location equivalents in MaxMind format
+    ///
+    /// Set to an empty string to disable GeoIP checks even when `enabled = true`.
+    pub database_path: String,
+
+    /// ISO 3166-1 alpha-2 country codes considered suspicious.
+    ///
+    /// Responses resolving to IPs in these countries add
+    /// `suspicious_country_score` to the domain's suspicion total.
+    ///
+    /// Example: `["RU", "CN", "KP", "IR"]`
+    pub suspicious_countries: Vec<String>,
+
+    /// Suspicion points added when the resolved IP is in a suspicious country.
+    /// Default: 3.
+    pub suspicious_country_score: u8,
+}
+
+impl Default for GeoIpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            database_path: String::from("/etc/dgaard/GeoLite2-Country.mmdb"),
+            suspicious_countries: Vec::new(),
+            suspicious_country_score: 3,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // [security]
 // ---------------------------------------------------------------------------
 
@@ -616,6 +670,8 @@ pub struct SecurityConfig {
     pub asn_filter: AsnFilterConfig,
     /// Suspicion score thresholds and logging policy.
     pub scoring: ScoringConfig,
+    /// GeoIP country-based suspicion scoring.
+    pub geo_ip: GeoIpConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -1116,6 +1172,20 @@ mod tests {
         assert_eq!(sec.rebinding_shield, RebindingShieldConfig::default());
         assert_eq!(sec.low_ttl, LowTtlConfig::default());
         assert_eq!(sec.asn_filter, AsnFilterConfig::default());
+        assert_eq!(sec.geo_ip, GeoIpConfig::default());
+    }
+
+    // -----------------------------------------------------------------------
+    // GeoIpConfig
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn geo_ip_config_default_is_disabled() {
+        let g = GeoIpConfig::default();
+        assert!(!g.enabled);
+        assert_eq!(g.database_path, "/etc/dgaard/GeoLite2-Country.mmdb");
+        assert!(g.suspicious_countries.is_empty());
+        assert_eq!(g.suspicious_country_score, 3);
     }
 
     // -----------------------------------------------------------------------

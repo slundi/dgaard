@@ -65,6 +65,7 @@ pub fn format_reason(reason: &BlockReason) -> String {
         BlockReason::DnsRebinding => String::from("DnsRebinding"),
         BlockReason::LowTtl(ttl) => format!("LowTtl({})", ttl),
         BlockReason::AsnBlocked => String::from("AsnBlocked"),
+        BlockReason::GeoIpSuspicious(code) => format!("GeoIpSuspicious({})", code),
     }
 }
 
@@ -225,6 +226,10 @@ mod tests {
             (BlockReason::DnsRebinding, "DnsRebinding"),
             (BlockReason::LowTtl(5), "LowTtl(5)"),
             (BlockReason::AsnBlocked, "AsnBlocked"),
+            (
+                BlockReason::GeoIpSuspicious("RU".into()),
+                "GeoIpSuspicious(RU)",
+            ),
         ];
         for (reason, expected) in cases {
             assert_eq!(format_reason(reason), *expected, "failed for {:?}", reason);

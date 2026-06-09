@@ -168,6 +168,9 @@ _Focus: Turning raw block data into actionable insights._
 [security.geo_ip]
 enabled = true
 # Path to MaxMind GeoLite2-Country.mmdb or equivalent ip2location or DB-IP
+# https://www.maxmind.com/en/geolite-free-ip-geolocation-data
+# https://www.ip2location.com/database
+# https://db-ip.com/db/
 database_path = "/etc/dgaard/GeoLite2-Country.mmdb"
 
 # List of country codes (ISO 3166-1 alpha-2) considered suspicious
