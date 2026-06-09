@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod debug;
 mod dns;
 mod filter;
 mod model;

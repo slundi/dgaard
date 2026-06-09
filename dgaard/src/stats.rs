@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
 
 use crate::GLOBAL_SEED;
+use crate::debug::debug_print;
 use crate::model::{StatAction, StatBlockReason, StatEvent, StatMessage};
 
 /// Channel capacity for the stats queue.
@@ -35,6 +36,12 @@ impl StatsSender {
     ///
     /// Events are dropped silently if the channel is full (non-blocking).
     pub fn send_event(&self, domain: &str, client_addr: std::net::SocketAddr, action: StatAction) {
+        debug_print!(
+            "Send DNS query for {} from {}: {:?}",
+            domain,
+            client_addr,
+            action
+        );
         let hash =
             twox_hash::XxHash64::oneshot(GLOBAL_SEED.load(Ordering::Relaxed), domain.as_bytes());
 
@@ -61,16 +68,24 @@ impl StatsSender {
         client_addr: std::net::SocketAddr,
         reason: StatBlockReason,
     ) {
+        debug_print!(
+            "Event blocked for {} from {}: {:?}",
+            domain,
+            client_addr,
+            reason
+        );
         self.send_event(domain, client_addr, StatAction::Blocked(reason));
     }
 
     /// Send an allowed event (whitelist hit or passed filters).
     pub fn send_allowed(&self, domain: &str, client_addr: std::net::SocketAddr) {
+        debug_print!("Event allowed for {} from {}: {}", domain, client_addr);
         self.send_event(domain, client_addr, StatAction::Allowed);
     }
 
     /// Send a proxied event (forwarded to upstream).
     pub fn send_proxied(&self, domain: &str, client_addr: std::net::SocketAddr) {
+        debug_print!("Event proxied for {} from {}", domain, client_addr);
         self.send_event(domain, client_addr, StatAction::Proxied);
     }
 }
@@ -96,7 +111,7 @@ impl StatsReceiver {
 
 /// Create a new stats channel pair.
 ///
-/// Returns a sender (clonable for distribution to workers) and a receiver
+/// Returns a sender (cloneable for distribution to workers) and a receiver
 /// for the collector task.
 pub fn channel() -> (StatsSender, StatsReceiver) {
     let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);

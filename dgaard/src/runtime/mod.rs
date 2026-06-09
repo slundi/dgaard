@@ -11,6 +11,7 @@ use std::{
 
 use crate::{
     CONFIG, CONFIG_PATH, STATS_SENDER,
+    debug::debug_print,
     dns::handle_query,
     filter::reload_lists,
     runtime::{
@@ -42,6 +43,7 @@ fn init_stats_channel() -> StatsReceiver {
 }
 
 pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error>> {
+    debug_print!("Start with single worker");
     let runtime = Builder::new_current_thread()
         .enable_all()
         .thread_stack_size(CONFIG.load().server.runtime.stack_size)
@@ -75,6 +77,7 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
 }
 
 pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::Error>> {
+    debug_print!("Start with {} worker", cpus);
     let runtime = Builder::new_multi_thread()
         .enable_all()
         .worker_threads(cpus)
