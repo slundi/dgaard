@@ -162,6 +162,7 @@ return view.extend({
                         'server_runtime_worker_threads','server_runtime_stack_size','server_runtime_max_blocking_threads',
                         'sec_struct_max_subdomain_depth','sec_struct_max_domain_length','sec_struct_force_lowercase_ascii',
                         'sec_struct_max_txt_record_length','sec_struct_max_answers_per_query',
+                        'sec_struct_block_chaos_class',
                         'sec_lex_enabled','sec_lex_banned_keywords_list','sec_lex_strict_keyword_matching',
                         'sec_intel_enabled','sec_intel_entropy_threshold','sec_intel_entropy_fast',
                         'sec_intel_min_word_length','sec_intel_consonant_ratio_threshold','sec_intel_max_consonant_sequence',
@@ -172,12 +173,13 @@ return view.extend({
                         'sec_behavior_max_subdomains_per_minute','sec_behavior_max_label_length',
                         'sec_inbound_enabled','sec_inbound_max_txt_entropy','sec_inbound_unmask_cname_cloaking',
                         'sec_inbound_block_private_ip','sec_inbound_forbidden_qtypes_list',
-                        'sec_rebinding_enabled',
-                        'sec_low_ttl_enabled','sec_low_ttl_threshold_secs',
+                        'sec_rebinding_enabled','sec_rebinding_block_ptr_leak',
+                        'sec_low_ttl_enabled','sec_low_ttl_threshold_secs','sec_low_ttl_min_ttl_floor_secs',
+                        'sec_special_use_enabled','sec_special_use_extra_local_tlds_list',
                         'sec_asn_enabled',
                         'sec_scoring_blocking_threshold','sec_scoring_highly_suspicious_threshold',
                         'sec_scoring_suspicious_threshold','sec_scoring_log_suspicious',
-                        'upstream_servers_list','upstream_timeout_ms',
+                        'upstream_servers_list','upstream_timeout_ms','upstream_use_0x20_randomization',
                         'tld_exclude_list','tld_suspicious_list',
                         'sources_nrd_list_path','sources_blacklists_list','sources_whitelists_list',
                         'sources_update_interval_hours','sources_retry_delay_mins',
@@ -246,6 +248,9 @@ return view.extend({
                 numberInput('sec_struct_max_txt_record_length', cfg.sec_struct_max_txt_record_length, 1, 255)),
             field('sec_struct_max_answers_per_query', _('Max answers per query'),
                 numberInput('sec_struct_max_answers_per_query', cfg.sec_struct_max_answers_per_query, 1)),
+            field('sec_struct_block_chaos_class', _('Block CHAOS class queries'),
+                checkbox('sec_struct_block_chaos_class', cfg.sec_struct_block_chaos_class),
+                _('Refuse DNS CHAOS class (qclass=3) reconnaissance queries with REFUSED')),
         ]);
 
         var lexicalSection = section(_('Security — Lexical / Parental control'), [
@@ -325,11 +330,17 @@ return view.extend({
                 checkbox('sec_scoring_log_suspicious', cfg.sec_scoring_log_suspicious)),
             field('sec_rebinding_enabled', _('DNS rebinding shield'),
                 checkbox('sec_rebinding_enabled', cfg.sec_rebinding_enabled)),
+            field('sec_rebinding_block_ptr_leak', _('Block PTR leak (private IP reverse lookups)'),
+                checkbox('sec_rebinding_block_ptr_leak', cfg.sec_rebinding_block_ptr_leak),
+                _('Block PTR queries for private/reserved IP ranges (10.x, 192.168.x, fc00::/7, etc.)')),
             field('sec_low_ttl_enabled', _('Low-TTL suspicion scoring'),
                 checkbox('sec_low_ttl_enabled', cfg.sec_low_ttl_enabled)),
             field('sec_low_ttl_threshold_secs', _('Low-TTL threshold (seconds)'),
                 numberInput('sec_low_ttl_threshold_secs', cfg.sec_low_ttl_threshold_secs, 1),
                 _('Responses with TTL below this add suspicion points')),
+            field('sec_low_ttl_min_ttl_floor_secs', _('Min TTL floor (seconds)'),
+                numberInput('sec_low_ttl_min_ttl_floor_secs', cfg.sec_low_ttl_min_ttl_floor_secs, 0),
+                _('Raise all response TTLs to at least this value — empty to disable')),
             field('sec_asn_enabled', _('ASN filter (CIDR block list)'),
                 checkbox('sec_asn_enabled', cfg.sec_asn_enabled),
                 _('Requires blocked_ranges in config.toml — edit manually for now')),
@@ -368,6 +379,9 @@ return view.extend({
                 _('One IP:port per line')),
             field('upstream_timeout_ms', _('Timeout (ms)'),
                 numberInput('upstream_timeout_ms', cfg.upstream_timeout_ms, 100, 10000)),
+            field('upstream_use_0x20_randomization', _('DNS0x20 query randomization'),
+                checkbox('upstream_use_0x20_randomization', cfg.upstream_use_0x20_randomization),
+                _('Randomize QNAME case in upstream queries to detect forged responses (RFC 5452)')),
         ]);
 
         var tldSection = section(_('TLD Filtering'), [
@@ -406,6 +420,15 @@ return view.extend({
                 numberInput('abp_update_interval', cfg.abp_update_interval, 1)),
         ]);
 
+        var protocolHardeningSection = section(_('Security — Protocol Hardening'), [
+            field('sec_special_use_enabled', _('Block special-use domains (RFC 6761)'),
+                checkbox('sec_special_use_enabled', cfg.sec_special_use_enabled),
+                _('Block .local, .localhost, .invalid, .test, .onion and other IANA-reserved TLDs')),
+            field('sec_special_use_extra_local_tlds_list', _('Extra local TLDs to block'),
+                listArea('sec_special_use_extra_local_tlds_list', cfg.sec_special_use_extra_local_tlds_list, 3, '.home\n.lan\n.internal'),
+                _('One TLD per line — additional internal/reserved TLDs not forwarded upstream')),
+        ]);
+
         var cacheSection = section(_('Cache & Memory'), [
             field('cache_enabled', _('DNS cache enabled'),
                 checkbox('cache_enabled', cfg.cache_enabled)),
@@ -442,6 +465,7 @@ return view.extend({
             scoringSection,
             behaviorSection,
             upstreamSection,
+            protocolHardeningSection,
             tldSection,
             sourcesSection,
             cacheSection,

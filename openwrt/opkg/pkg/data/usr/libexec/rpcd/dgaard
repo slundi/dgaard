@@ -145,6 +145,7 @@ _write_toml() {
     local force_lc_ascii;      force_lc_ascii=$(_get sec_struct_force_lowercase_ascii)
     local max_txt_len;         max_txt_len=$(_get sec_struct_max_txt_record_length)
     local max_answers;         max_answers=$(_get sec_struct_max_answers_per_query)
+    local block_chaos;         block_chaos=$(_get sec_struct_block_chaos_class)
 
     local lex_enabled;       lex_enabled=$(_get sec_lex_enabled)
     local banned_kw;         banned_kw=$(_get_list sec_lex_banned_keywords_list)
@@ -176,8 +177,12 @@ _write_toml() {
     local forbidden_qt;      forbidden_qt=$(_get_list sec_inbound_forbidden_qtypes_list)
 
     local rebinding;         rebinding=$(_get sec_rebinding_enabled)
+    local block_ptr_leak;    block_ptr_leak=$(_get sec_rebinding_block_ptr_leak)
     local low_ttl_en;        low_ttl_en=$(_get sec_low_ttl_enabled)
     local low_ttl_thresh;    low_ttl_thresh=$(_get sec_low_ttl_threshold_secs)
+    local low_ttl_floor;     low_ttl_floor=$(_get sec_low_ttl_min_ttl_floor_secs)
+    local special_use_en;    special_use_en=$(_get sec_special_use_enabled)
+    local special_use_tlds;  special_use_tlds=$(_get_list sec_special_use_extra_local_tlds_list)
     local asn_enabled;       asn_enabled=$(_get sec_asn_enabled)
 
     local block_thresh;      block_thresh=$(_get sec_scoring_blocking_threshold)
@@ -187,6 +192,7 @@ _write_toml() {
 
     local upstream_servers;  upstream_servers=$(_get_list upstream_servers_list)
     local upstream_timeout;  upstream_timeout=$(_get upstream_timeout_ms)
+    local use_0x20;          use_0x20=$(_get upstream_use_0x20_randomization)
 
     local tld_exclude;       tld_exclude=$(_get_list tld_exclude_list)
     local tld_suspicious;    tld_suspicious=$(_get_list tld_suspicious_list)
@@ -270,6 +276,7 @@ max_domain_length = $max_domain_length
 force_lowercase_ascii = $force_lc_ascii
 max_txt_record_length = $max_txt_len
 max_answers_per_query = $max_answers
+block_chaos_class = $block_chaos
 
 [security.lexical]
 enabled = $lex_enabled
@@ -307,10 +314,16 @@ forbidden_qtypes = $(_toml_str_array "$forbidden_qt")
 
 [security.rebinding_shield]
 enabled = $rebinding
+block_ptr_leak = $block_ptr_leak
 
 [security.low_ttl]
 enabled = $low_ttl_en
 threshold_secs = $low_ttl_thresh
+$([ -n "$low_ttl_floor" ] && echo "min_ttl_floor_secs = $low_ttl_floor")
+
+[security.special_use]
+enabled = $special_use_en
+extra_local_tlds = $(_toml_str_array "$special_use_tlds")
 
 [security.asn_filter]
 enabled = $asn_enabled
@@ -324,6 +337,7 @@ $([ -n "$log_sus" ]        && echo "log_suspicious = $log_sus")
 [upstream]
 servers = $(_toml_str_array "$upstream_servers")
 timeout_ms = $upstream_timeout
+use_0x20_randomization = $use_0x20
 
 [tld]
 exclude = $(_toml_str_array_ml "$tld_exclude")
@@ -390,6 +404,7 @@ sec_struct_max_domain_length=$(_toml_val security.structure max_domain_length)
 sec_struct_force_lowercase_ascii=$(_toml_val security.structure force_lowercase_ascii)
 sec_struct_max_txt_record_length=$(_toml_val security.structure max_txt_record_length)
 sec_struct_max_answers_per_query=$(_toml_val security.structure max_answers_per_query)
+sec_struct_block_chaos_class=$(_toml_val security.structure block_chaos_class)
 sec_lex_enabled=$(_toml_val security.lexical enabled)
 sec_lex_banned_keywords_list=$(_toml_array security.lexical banned_keywords)
 sec_lex_strict_keyword_matching=$(_toml_val security.lexical strict_keyword_matching)
@@ -415,8 +430,12 @@ sec_inbound_unmask_cname_cloaking=$(_toml_val security.inbound unmask_cname_cloa
 sec_inbound_block_private_ip=$(_toml_val security.inbound block_private_ip_in_public_res)
 sec_inbound_forbidden_qtypes_list=$(_toml_array security.inbound forbidden_qtypes)
 sec_rebinding_enabled=$(_toml_val security.rebinding_shield enabled)
+sec_rebinding_block_ptr_leak=$(_toml_val security.rebinding_shield block_ptr_leak)
 sec_low_ttl_enabled=$(_toml_val security.low_ttl enabled)
 sec_low_ttl_threshold_secs=$(_toml_val security.low_ttl threshold_secs)
+sec_low_ttl_min_ttl_floor_secs=$(_toml_val security.low_ttl min_ttl_floor_secs)
+sec_special_use_enabled=$(_toml_val security.special_use enabled)
+sec_special_use_extra_local_tlds_list=$(_toml_array security.special_use extra_local_tlds)
 sec_asn_enabled=$(_toml_val security.asn_filter enabled)
 sec_scoring_blocking_threshold=$(_toml_val security.scoring blocking_threshold)
 sec_scoring_highly_suspicious_threshold=$(_toml_val security.scoring highly_suspicious_threshold)
@@ -424,6 +443,7 @@ sec_scoring_suspicious_threshold=$(_toml_val security.scoring suspicious_thresho
 sec_scoring_log_suspicious=$(_toml_val security.scoring log_suspicious)
 upstream_servers_list=$(_toml_array upstream servers)
 upstream_timeout_ms=$(_toml_val upstream timeout_ms)
+upstream_use_0x20_randomization=$(_toml_val upstream use_0x20_randomization)
 tld_exclude_list=$(_toml_array tld exclude)
 tld_suspicious_list=$(_toml_array tld suspicious_tlds)
 sources_nrd_list_path=$(_toml_val sources nrd_list_path)
