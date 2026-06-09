@@ -3,6 +3,7 @@
 mod heuristics;
 mod matcher;
 mod patterns;
+mod ptr_leak;
 mod qtype;
 mod scoring;
 mod special_use;
@@ -10,6 +11,7 @@ mod special_use;
 pub use heuristics::{check_dga_heuristics, check_lexical, is_illegal_idn};
 pub use matcher::{is_blocked, is_nrd, is_suffix_blocked, is_whitelisted};
 pub use patterns::{is_regex_blocked, is_wildcard_pattern_blocked};
+pub use ptr_leak::is_ptr_leak_domain;
 pub use qtype::check_qtype;
 pub use scoring::{compute_score, score_answer};
 pub use special_use::is_special_use_domain;
@@ -48,6 +50,15 @@ pub struct ResolveResult {
 /// Resolution function that returns the computed suspicion score.
 pub fn resolve_with_score(domain: &str, filter: &FilterEngine, config: &Config) -> ResolveResult {
     let score = compute_score(domain, filter, config);
+
+    // PTR leak check runs before structure validation: a valid full IPv6 PTR
+    // name has 33+ dots and would trip the subdomain-depth limit otherwise.
+    if is_ptr_leak_domain(domain, config) {
+        return ResolveResult {
+            action: Action::Block(BlockReason::PtrLeak),
+            score,
+        };
+    }
 
     if is_structure_invalid(domain, config) {
         return ResolveResult {
@@ -459,6 +470,59 @@ pub mod tests {
             "example.com should not be blocked by special-use filter; got: {:?}",
             action
         );
+    }
+
+    #[test]
+    fn test_resolve_ptr_leak_blocked() {
+        let engine = init_test_engine();
+        let config = Config::default();
+        for domain in &[
+            "1.0.0.10.in-addr.arpa",
+            "100.1.168.192.in-addr.arpa",
+            "1.0.0.127.in-addr.arpa",
+            "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa",
+        ] {
+            let action = resolve_with_score(domain, &engine, &config).action;
+            assert!(
+                matches!(action, Action::Block(BlockReason::PtrLeak)),
+                "{} should be blocked as PTR leak, got: {:?}",
+                domain,
+                action
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_ptr_leak_public_ip_not_blocked() {
+        let engine = init_test_engine();
+        let config = Config::default();
+        let action = resolve_with_score("1.1.1.1.in-addr.arpa", &engine, &config).action;
+        assert!(
+            matches!(action, Action::ProxyToUpstream),
+            "PTR for public IP should be proxied, got: {:?}",
+            action
+        );
+    }
+
+    #[test]
+    fn test_resolve_ptr_leak_disabled_passes_through() {
+        let engine = init_test_engine();
+        let mut config = Config::default();
+        config.security.rebinding_shield.block_ptr_leak = false;
+        let action = resolve_with_score("1.0.0.10.in-addr.arpa", &engine, &config).action;
+        assert!(
+            matches!(action, Action::ProxyToUpstream),
+            "With block_ptr_leak disabled, private PTR should be proxied, got: {:?}",
+            action
+        );
+    }
+
+    #[test]
+    fn test_resolve_ptr_leak_regular_domain_not_blocked() {
+        let engine = init_test_engine();
+        let config = Config::default();
+        let action = resolve_with_score("example.com", &engine, &config).action;
+        assert!(matches!(action, Action::ProxyToUpstream));
     }
 
     #[test]

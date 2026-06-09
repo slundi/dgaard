@@ -503,6 +503,9 @@ fn parse_rebinding_shield(
     if let Some(b) = get_bool(table, "enabled")? {
         cfg.enabled = b;
     }
+    if let Some(b) = get_bool(table, "block_ptr_leak")? {
+        cfg.block_ptr_leak = b;
+    }
 
     Ok(cfg)
 }
@@ -1115,6 +1118,29 @@ mod tests {
         assert_eq!(cfg.security.behavior.nxdomain_window, 120);
         assert_eq!(cfg.security.behavior.max_subdomains_per_minute, 100);
         assert_eq!(cfg.security.behavior.max_label_length, 40);
+    }
+
+    // -----------------------------------------------------------------------
+    // Rebinding Shield section
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_security_rebinding_shield_all_fields() {
+        let toml = r#"
+            [security.rebinding_shield]
+            enabled = true
+            block_ptr_leak = false
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert!(cfg.security.rebinding_shield.enabled);
+        assert!(!cfg.security.rebinding_shield.block_ptr_leak);
+    }
+
+    #[test]
+    fn parse_security_rebinding_shield_defaults() {
+        let cfg = Config::parse("").unwrap();
+        assert!(cfg.security.rebinding_shield.enabled);
+        assert!(cfg.security.rebinding_shield.block_ptr_leak);
     }
 
     // -----------------------------------------------------------------------

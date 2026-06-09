@@ -217,7 +217,7 @@ pub fn score_answer(
 }
 
 /// Check if an IPv4 address falls in a private or reserved range.
-fn is_private_ipv4(ip: std::net::Ipv4Addr) -> bool {
+pub(crate) fn is_private_ipv4(ip: std::net::Ipv4Addr) -> bool {
     let [a, b, _, _] = ip.octets();
     matches!(a, 0 | 10 | 127)
         || (a == 100 && (64..=127).contains(&b))
@@ -227,7 +227,7 @@ fn is_private_ipv4(ip: std::net::Ipv4Addr) -> bool {
 }
 
 /// Check if an IPv6 address falls in a private or reserved range.
-fn is_private_ipv6(ip: std::net::Ipv6Addr) -> bool {
+pub(crate) fn is_private_ipv6(ip: std::net::Ipv6Addr) -> bool {
     let [a, b, ..] = ip.octets();
     ip.is_loopback() || (a & 0xFE == 0xFC) || (a == 0xFE && (b & 0xC0) == 0x80)
 }

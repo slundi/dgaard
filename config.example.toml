@@ -233,6 +233,11 @@ enabled = true
 
 [security.rebinding_shield]
 enabled = true
+# Refuse PTR queries (*.in-addr.arpa / *.ip6.arpa) for RFC 1918, loopback,
+# and link-local IP ranges. Prevents forwarding these queries to a public
+# upstream resolver, which would expose internal host names and LAN topology
+# to third-party DNS infrastructure.
+block_ptr_leak = true
 
 # Low-TTL suspicion scoring configuration.
 #

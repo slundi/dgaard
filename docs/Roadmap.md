@@ -164,7 +164,7 @@ _Focus: Turning raw block data into actionable insights._
 
 _Focus: Closing well-known DNS attack surfaces that do not require heuristics â€” correct protocol behaviour, upstream anti-spoofing, and topology leak prevention._
 
-- [ ] 10.1. **RFC 6761 Special-Use Domain Isolation**
+- [x] 10.1. **RFC 6761 Special-Use Domain Isolation**
 
   Queries for special-use names defined in RFC 6761 and common internal TLDs must never be forwarded to a public upstream resolver. Forwarding them leaks internal topology (hostnames, service names, network structure) to a third party and can expose queries intended for mDNS or split-horizon DNS to external observation or manipulation.
 
@@ -184,7 +184,7 @@ _Focus: Closing well-known DNS attack surfaces that do not require heuristics â€
   extra_local_tlds = [".corp", ".lan", ".internal", ".home"]
   ```
 
-- [ ] 10.2. **Minimum TTL Floor**
+- [x] 10.2. **Minimum TTL Floor**
 
   A TTL floor clamps all cached responses to a configurable minimum value (e.g. 30 s). This is the operational complement to the existing low-TTL suspicion scoring (item 8.6): scoring flags short-lived responses as suspicious but does not prevent the domain from being queried again immediately once the TTL expires. A floor forces at least one full cache window, defeating the fast-flux technique where an adversary sets TTL = 0 to ensure every client queries the same domain independently â€” maximising the number of IPs served and maximising evasion of IP-based blocking.
 
@@ -199,7 +199,7 @@ _Focus: Closing well-known DNS attack surfaces that do not require heuristics â€
   min_ttl_floor_secs = 30 # new: cache floor, clamped upward if below this value
   ```
 
-- [ ] 10.3. **PTR Leak Prevention for Private IP Ranges**
+- [x] 10.3. **PTR Leak Prevention for Private IP Ranges**
 
   Reverse-DNS queries (`PTR`) for RFC 1918 / loopback / link-local addresses (`*.in-addr.arpa`, `*.ip6.arpa`) should never be forwarded upstream. Forwarding them exposes the internal host layout of the network to a public DNS server: an attacker or passive observer at the upstream resolver can infer which private IPs are active, what they are named, and indirectly map the LAN topology.
 

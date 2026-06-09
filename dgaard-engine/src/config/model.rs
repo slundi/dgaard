@@ -521,11 +521,19 @@ impl LowTtlConfig {
 pub struct RebindingShieldConfig {
     /// Master switch — set to `false` to allow private-IP answers through.
     pub enabled: bool,
+    /// When `true`, PTR queries (`*.in-addr.arpa`, `*.ip6.arpa`) for private /
+    /// reserved IP ranges are answered locally with NXDOMAIN instead of being
+    /// forwarded to a public upstream resolver. Prevents leaking the internal
+    /// network topology to third-party DNS infrastructure.
+    pub block_ptr_leak: bool,
 }
 
 impl Default for RebindingShieldConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            block_ptr_leak: true,
+        }
     }
 }
 
@@ -1288,6 +1296,26 @@ mod tests {
         assert_eq!(sec.asn_filter, AsnFilterConfig::default());
         assert_eq!(sec.geo_ip, GeoIpConfig::default());
         assert_eq!(sec.special_use, SpecialUseConfig::default());
+    }
+
+    // -----------------------------------------------------------------------
+    // RebindingShieldConfig
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rebinding_shield_config_default_is_enabled_with_ptr_leak_blocked() {
+        let r = RebindingShieldConfig::default();
+        assert!(r.enabled);
+        assert!(r.block_ptr_leak);
+    }
+
+    #[test]
+    fn rebinding_shield_config_block_ptr_leak_can_be_disabled() {
+        let r = RebindingShieldConfig {
+            enabled: true,
+            block_ptr_leak: false,
+        };
+        assert!(!r.block_ptr_leak);
     }
 
     // -----------------------------------------------------------------------

@@ -68,6 +68,12 @@ pub enum BlockReason {
     /// Examples: `.local`, `.localhost`, `.invalid`, `.test`, `.example`,
     /// and any operator-configured extra TLDs (`.corp`, `.lan`, `.internal`).
     SpecialUseDomain,
+
+    /// PTR query for a private/reserved IP range that must not be forwarded
+    /// upstream. Forwarding `*.in-addr.arpa` / `*.ip6.arpa` for RFC 1918 /
+    /// loopback / link-local addresses exposes the internal network topology
+    /// to the public upstream resolver.
+    PtrLeak,
 }
 
 /// Messages sent over the stats channel to the collector.

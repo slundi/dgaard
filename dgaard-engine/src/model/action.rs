@@ -120,6 +120,9 @@ impl From<&BlockReason> for StatBlockReason {
             // StatBlockReason is a u16 with all 16 bits allocated. SpecialUseDomain shares
             // INVALID_STRUCTURE until StatBlockReason is widened to u32 (custom_flags feature).
             BlockReason::SpecialUseDomain => StatBlockReason::INVALID_STRUCTURE,
+            // PtrLeak is the outbound counterpart of DnsRebinding (both protect the
+            // private/public IP boundary). Shares the bit until u32 widening.
+            BlockReason::PtrLeak => StatBlockReason::DNS_REBINDING,
         }
     }
 }
@@ -193,6 +196,10 @@ mod tests {
         assert_eq!(
             StatBlockReason::from(&BlockReason::SpecialUseDomain),
             StatBlockReason::INVALID_STRUCTURE
+        );
+        assert_eq!(
+            StatBlockReason::from(&BlockReason::PtrLeak),
+            StatBlockReason::DNS_REBINDING
         );
     }
 
