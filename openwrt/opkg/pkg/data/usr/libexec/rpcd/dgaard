@@ -1,0 +1,494 @@
+#!/bin/sh
+# /usr/libexec/rpcd/dgaard
+# rpcd RPC handler for dgaard DNS proxy configuration.
+# Reads and writes /etc/dgaard/config.toml entirely from shell — no TOML parser needed.
+# All values are stored in a flat UCI-like file /etc/dgaard/uci_cache while the
+# canonical TOML is regenerated on every save.
+
+CONFIG_TOML="/etc/dgaard/config.toml"
+UCI_CACHE="/etc/dgaard/uci_cache"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Read a key from the UCI cache (key=value, one per line, # comments ignored)
+_get() {
+    grep -m1 "^${1}=" "$UCI_CACHE" 2>/dev/null | cut -d= -f2-
+}
+
+# Read a multi-value key (stored as newline-separated, encoded as \n in cache)
+_get_list() {
+    _get "$1" | sed 's/\\n/\n/g'
+}
+
+# Emit the UCI cache as a flat JSON object consumed by the LuCI view.
+# Every key becomes a string; lists become JSON arrays.
+_cache_to_json() {
+    local out="{"
+    local first=1
+
+    while IFS='=' read -r key val; do
+        # Skip comments and blank lines
+        case "$key" in ''|\#*) continue ;; esac
+        [ -z "$val" ] && continue
+
+        [ "$first" = "0" ] && out="$out,"
+        first=0
+
+        # Keys ending in _list are treated as arrays
+        case "$key" in
+            *_list)
+                local arr=""
+                local arrfirst=1
+                while IFS= read -r item; do
+                    [ -z "$item" ] && continue
+                    [ "$arrfirst" = "0" ] && arr="$arr,"
+                    arrfirst=0
+                    item=$(echo "$item" | sed 's/"/\\"/g')
+                    arr="$arr\"$item\""
+                done <<EOF
+$(echo "$val" | sed 's/\\n/\n/g')
+EOF
+                out="$out\"$key\":[$arr]"
+                ;;
+            *)
+                val=$(echo "$val" | sed 's/"/\\"/g')
+                out="$out\"$key\":\"$val\""
+                ;;
+        esac
+    done < "$UCI_CACHE"
+
+    echo "${out}}"
+}
+
+# ---------------------------------------------------------------------------
+# Write UCI cache from incoming JSON (using only busybox tools)
+# We rely on the fact that LuCI sends well-formed flat JSON with string values.
+# ---------------------------------------------------------------------------
+_json_to_cache() {
+    # input: flat JSON on stdin, e.g. {"server_listen_addr":"...","upstream_servers_list":"1.1.1.1\n9.9.9.9",...}
+    local json
+    json=$(cat)
+
+    # Strip outer braces, split on ," pattern, write each key=value
+    echo "$json" | sed 's/^{//; s/}$//' | \
+        grep -oE '"[^"]+":"[^"]*"' | \
+        sed 's/"//g; s/:/=/' > "$UCI_CACHE"
+}
+
+# ---------------------------------------------------------------------------
+# TOML helpers — section-aware (busybox awk)
+# ---------------------------------------------------------------------------
+
+# Read a scalar value for key under [section] header.
+# Usage: _toml_val "section.subsection" "key"
+_toml_val() {
+    local section="$1" key="$2"
+    awk -v sec="[$section]" -v key="$key" '
+        /^\[/ { in_sec = ($0 == sec) }
+        in_sec && $0 ~ ("^" key "[[:space:]]*=") {
+            sub(/^[^=]+=[ \t]*/, "")
+            gsub(/^"|"$/, "")
+            print; exit
+        }
+    ' "$CONFIG_TOML"
+}
+
+# Read an array (inline or multi-line) for key under [section] header.
+# Outputs items joined by literal \n (two chars: backslash + n).
+# Usage: _toml_array "section.subsection" "key"
+_toml_array() {
+    local section="$1" key="$2"
+    local result=""
+    while IFS= read -r item; do
+        [ -z "$result" ] && result="$item" || result="${result}\\n${item}"
+    done <<EOF
+$(awk -v sec="[$section]" -v key="$key" '
+    /^\[/ { in_sec = ($0 == sec); in_arr = 0 }
+    in_sec && !in_arr && $0 ~ ("^" key "[[:space:]]*=") {
+        if (index($0, "]") > 0) {
+            sub(/[^[]*\[/, ""); sub(/\].*/, "")
+            n = split($0, a, ",")
+            for (i = 1; i <= n; i++) {
+                gsub(/[[:space:]]/, "", a[i]); gsub(/"/, "", a[i])
+                if (a[i] != "") print a[i]
+            }
+        } else { in_arr = 1 }
+        next
+    }
+    in_arr {
+        if (/\][ \t]*$/) exit
+        v = $0; gsub(/[[:space:]]/, "", v); gsub(/[",]/, "", v)
+        if (v != "") print v
+    }
+' "$CONFIG_TOML")
+EOF
+    echo "$result"
+}
+
+# ---------------------------------------------------------------------------
+# Regenerate config.toml from UCI cache
+# ---------------------------------------------------------------------------
+_write_toml() {
+    local listen_addr;      listen_addr=$(_get server_listen_addr)
+    local allowed_nets;     allowed_nets=$(_get_list server_allowed_networks_list)
+    local stats_sock;       stats_sock=$(_get server_stats_socket_path)
+    local block_idn;        block_idn=$(_get server_block_idn)
+    local pipeline;         pipeline=$(_get_list server_pipeline_list)
+    local worker_threads;   worker_threads=$(_get server_runtime_worker_threads)
+    local stack_size;       stack_size=$(_get server_runtime_stack_size)
+    local max_blocking;     max_blocking=$(_get server_runtime_max_blocking_threads)
+
+    local max_subdomain_depth; max_subdomain_depth=$(_get sec_struct_max_subdomain_depth)
+    local max_domain_length;   max_domain_length=$(_get sec_struct_max_domain_length)
+    local force_lc_ascii;      force_lc_ascii=$(_get sec_struct_force_lowercase_ascii)
+    local max_txt_len;         max_txt_len=$(_get sec_struct_max_txt_record_length)
+    local max_answers;         max_answers=$(_get sec_struct_max_answers_per_query)
+
+    local lex_enabled;       lex_enabled=$(_get sec_lex_enabled)
+    local banned_kw;         banned_kw=$(_get_list sec_lex_banned_keywords_list)
+    local strict_kw;         strict_kw=$(_get sec_lex_strict_keyword_matching)
+
+    local intel_enabled;     intel_enabled=$(_get sec_intel_enabled)
+    local entropy_thresh;    entropy_thresh=$(_get sec_intel_entropy_threshold)
+    local entropy_fast;      entropy_fast=$(_get sec_intel_entropy_fast)
+    local min_word_len;      min_word_len=$(_get sec_intel_min_word_length)
+    local consonant_ratio;   consonant_ratio=$(_get sec_intel_consonant_ratio_threshold)
+    local max_consonant_seq; max_consonant_seq=$(_get sec_intel_max_consonant_sequence)
+    local use_ngram;         use_ngram=$(_get sec_intel_use_ngram_model)
+    local ngram_embedded;    ngram_embedded=$(_get sec_intel_ngram_use_embedded)
+    local ngram_langs;       ngram_langs=$(_get_list sec_intel_ngram_embedded_languages_list)
+    local ngram_prob;        ngram_prob=$(_get sec_intel_ngram_probability_threshold)
+
+    local idn_mode;          idn_mode=$(_get sec_idn_mode)
+    local idn_scripts;       idn_scripts=$(_get_list sec_idn_allowed_scripts_list)
+
+    local nxdomain_thresh;   nxdomain_thresh=$(_get sec_behavior_nxdomain_threshold)
+    local nxdomain_win;      nxdomain_win=$(_get sec_behavior_nxdomain_window)
+    local max_sub_min;       max_sub_min=$(_get sec_behavior_max_subdomains_per_minute)
+    local max_label_len;     max_label_len=$(_get sec_behavior_max_label_length)
+
+    local inbound_enabled;   inbound_enabled=$(_get sec_inbound_enabled)
+    local max_txt_ent;       max_txt_ent=$(_get sec_inbound_max_txt_entropy)
+    local unmask_cname;      unmask_cname=$(_get sec_inbound_unmask_cname_cloaking)
+    local block_priv;        block_priv=$(_get sec_inbound_block_private_ip)
+    local forbidden_qt;      forbidden_qt=$(_get_list sec_inbound_forbidden_qtypes_list)
+
+    local rebinding;         rebinding=$(_get sec_rebinding_enabled)
+    local low_ttl_en;        low_ttl_en=$(_get sec_low_ttl_enabled)
+    local low_ttl_thresh;    low_ttl_thresh=$(_get sec_low_ttl_threshold_secs)
+    local asn_enabled;       asn_enabled=$(_get sec_asn_enabled)
+
+    local block_thresh;      block_thresh=$(_get sec_scoring_blocking_threshold)
+    local hi_sus_thresh;     hi_sus_thresh=$(_get sec_scoring_highly_suspicious_threshold)
+    local sus_thresh;        sus_thresh=$(_get sec_scoring_suspicious_threshold)
+    local log_sus;           log_sus=$(_get sec_scoring_log_suspicious)
+
+    local upstream_servers;  upstream_servers=$(_get_list upstream_servers_list)
+    local upstream_timeout;  upstream_timeout=$(_get upstream_timeout_ms)
+
+    local tld_exclude;       tld_exclude=$(_get_list tld_exclude_list)
+    local tld_suspicious;    tld_suspicious=$(_get_list tld_suspicious_list)
+
+    local nrd_path;          nrd_path=$(_get sources_nrd_list_path)
+    local blacklists;        blacklists=$(_get_list sources_blacklists_list)
+    local whitelists;        whitelists=$(_get_list sources_whitelists_list)
+    local update_interval;   update_interval=$(_get sources_update_interval_hours)
+    local retry_delay;       retry_delay=$(_get sources_retry_delay_mins)
+    local host_index;        host_index=$(_get sources_host_index_path)
+    local browser_rules;     browser_rules=$(_get sources_browser_rules_path)
+    local abp_domain_only;   abp_domain_only=$(_get abp_extract_domain_only)
+    local abp_interval;      abp_interval=$(_get abp_update_interval)
+
+    local cache_enabled;     cache_enabled=$(_get cache_enabled)
+    local cache_max;         cache_max=$(_get cache_max_entries)
+    local cache_ttl;         cache_ttl=$(_get cache_ttl_override)
+    local mem_cache_en;      mem_cache_en=$(_get memory_cache_enabled)
+    local mem_cache_sz;      mem_cache_sz=$(_get memory_cache_size)
+    local use_bloom;         use_bloom=$(_get memory_use_bloom_filter)
+    local expected_dom;      expected_dom=$(_get memory_expected_total_domains)
+
+    local nxdh_enabled;      nxdh_enabled=$(_get nxdomain_hunting_enabled)
+    local nxdh_thresh;       nxdh_thresh=$(_get nxdomain_hunting_threshold)
+    local nxdh_window;       nxdh_window=$(_get nxdomain_hunting_window_seconds)
+    local nxdh_action;       nxdh_action=$(_get nxdomain_hunting_action)
+
+    local tun_enabled;       tun_enabled=$(_get tunneling_enabled)
+    local tun_max_sub;       tun_max_sub=$(_get tunneling_max_subdomains_per_minute)
+    local tun_max_label;     tun_max_label=$(_get tunneling_max_label_length)
+
+    # Helper: format a cached list as a TOML array of quoted strings
+    _toml_str_array() {
+        local items="$1"
+        local out="["
+        local f=1
+        while IFS= read -r item; do
+            [ -z "$item" ] && continue
+            [ "$f" = "0" ] && out="$out, "
+            f=0
+            out="$out\"$item\""
+        done <<EOF
+$items
+EOF
+        echo "${out}]"
+    }
+
+    # Helper: format a cached list as a multi-line TOML array of quoted strings
+    _toml_str_array_ml() {
+        local items="$1"
+        local out="[\n"
+        while IFS= read -r item; do
+            [ -z "$item" ] && continue
+            out="$out  \"$item\",\n"
+        done <<EOF
+$items
+EOF
+        printf "%b]" "$out"
+    }
+
+    cat > "$CONFIG_TOML" <<TOML
+# -----------------------------------------------------------------------------
+# Dgaard Configuration File (generated by LuCI — do not edit manually)
+# -----------------------------------------------------------------------------
+
+[server]
+listen_addr = "$listen_addr"
+allowed_networks = $(_toml_str_array "$allowed_nets")
+stats_socket_path = "$stats_sock"
+block_idn = $block_idn
+pipeline = $(_toml_str_array "$pipeline")
+
+[server.runtime]
+worker_threads = $worker_threads
+stack_size = $stack_size
+max_blocking_threads = $max_blocking
+
+[security.structure]
+max_subdomain_depth = $max_subdomain_depth
+max_domain_length = $max_domain_length
+force_lowercase_ascii = $force_lc_ascii
+max_txt_record_length = $max_txt_len
+max_answers_per_query = $max_answers
+
+[security.lexical]
+enabled = $lex_enabled
+banned_keywords = $(_toml_str_array "$banned_kw")
+strict_keyword_matching = $strict_kw
+
+[security.intelligence]
+enabled = $intel_enabled
+entropy_threshold = $entropy_thresh
+entropy_fast = $entropy_fast
+min_word_length = $min_word_len
+consonant_ratio_threshold = $consonant_ratio
+max_consonant_sequence = $max_consonant_seq
+use_ngram_model = $use_ngram
+ngram_use_embedded = $ngram_embedded
+ngram_embedded_languages = $(_toml_str_array "$ngram_langs")
+ngram_probability_threshold = $ngram_prob
+
+[security.idn]
+mode = "$idn_mode"
+allowed_scripts = $(_toml_str_array "$idn_scripts")
+
+[security.behavior]
+nxdomain_threshold = $nxdomain_thresh
+nxdomain_window = $nxdomain_win
+max_subdomains_per_minute = $max_sub_min
+max_label_length = $max_label_len
+
+[security.inbound]
+enabled = $inbound_enabled
+max_txt_entropy = $max_txt_ent
+unmask_cname_cloaking = $unmask_cname
+block_private_ip_in_public_res = $block_priv
+forbidden_qtypes = $(_toml_str_array "$forbidden_qt")
+
+[security.rebinding_shield]
+enabled = $rebinding
+
+[security.low_ttl]
+enabled = $low_ttl_en
+threshold_secs = $low_ttl_thresh
+
+[security.asn_filter]
+enabled = $asn_enabled
+
+[security.scoring]
+$([ -n "$block_thresh" ]   && echo "blocking_threshold = $block_thresh")
+$([ -n "$hi_sus_thresh" ]  && echo "highly_suspicious_threshold = $hi_sus_thresh")
+$([ -n "$sus_thresh" ]     && echo "suspicious_threshold = $sus_thresh")
+$([ -n "$log_sus" ]        && echo "log_suspicious = $log_sus")
+
+[upstream]
+servers = $(_toml_str_array "$upstream_servers")
+timeout_ms = $upstream_timeout
+
+[tld]
+exclude = $(_toml_str_array_ml "$tld_exclude")
+suspicious_tlds = $(_toml_str_array_ml "$tld_suspicious")
+
+[nxdomain_hunting]
+enabled = $nxdh_enabled
+threshold = $nxdh_thresh
+window_seconds = $nxdh_window
+action = "$nxdh_action"
+
+[tunneling_detection]
+enabled = $tun_enabled
+max_subdomains_per_minute = $tun_max_sub
+max_label_length = $tun_max_label
+
+[sources]
+nrd_list_path = "$nrd_path"
+blacklists = $(_toml_str_array_ml "$blacklists")
+whitelists = $(_toml_str_array_ml "$whitelists")
+update_interval_hours = $update_interval
+retry_delay_mins = $retry_delay
+host_index_path = "$host_index"
+browser_rules_path = "$browser_rules"
+
+[abp]
+extract_domain_only = $abp_domain_only
+update_interval = $abp_interval
+
+[cache]
+enabled = $cache_enabled
+max_entries = $cache_max
+ttl_override = $cache_ttl
+
+[memory]
+cache_enabled = $mem_cache_en
+cache_size = $mem_cache_sz
+use_bloom_filter = $use_bloom
+expected_total_domains = $expected_dom
+TOML
+}
+
+# ---------------------------------------------------------------------------
+# Bootstrap: populate UCI cache from existing TOML on first run
+# Uses section-aware helpers to avoid reading the wrong 'enabled' value.
+# ---------------------------------------------------------------------------
+_toml_to_cache() {
+    [ -f "$UCI_CACHE" ] && return 0
+    [ ! -f "$CONFIG_TOML" ] && return 1
+
+    mkdir -p "$(dirname "$UCI_CACHE")"
+
+    cat > "$UCI_CACHE" <<EOF
+server_listen_addr=$(_toml_val server listen_addr)
+server_allowed_networks_list=$(_toml_array server allowed_networks)
+server_stats_socket_path=$(_toml_val server stats_socket_path)
+server_block_idn=$(_toml_val server block_idn)
+server_pipeline_list=$(_toml_array server pipeline)
+server_runtime_worker_threads=$(_toml_val server.runtime worker_threads)
+server_runtime_stack_size=$(_toml_val server.runtime stack_size)
+server_runtime_max_blocking_threads=$(_toml_val server.runtime max_blocking_threads)
+sec_struct_max_subdomain_depth=$(_toml_val security.structure max_subdomain_depth)
+sec_struct_max_domain_length=$(_toml_val security.structure max_domain_length)
+sec_struct_force_lowercase_ascii=$(_toml_val security.structure force_lowercase_ascii)
+sec_struct_max_txt_record_length=$(_toml_val security.structure max_txt_record_length)
+sec_struct_max_answers_per_query=$(_toml_val security.structure max_answers_per_query)
+sec_lex_enabled=$(_toml_val security.lexical enabled)
+sec_lex_banned_keywords_list=$(_toml_array security.lexical banned_keywords)
+sec_lex_strict_keyword_matching=$(_toml_val security.lexical strict_keyword_matching)
+sec_intel_enabled=$(_toml_val security.intelligence enabled)
+sec_intel_entropy_threshold=$(_toml_val security.intelligence entropy_threshold)
+sec_intel_entropy_fast=$(_toml_val security.intelligence entropy_fast)
+sec_intel_min_word_length=$(_toml_val security.intelligence min_word_length)
+sec_intel_consonant_ratio_threshold=$(_toml_val security.intelligence consonant_ratio_threshold)
+sec_intel_max_consonant_sequence=$(_toml_val security.intelligence max_consonant_sequence)
+sec_intel_use_ngram_model=$(_toml_val security.intelligence use_ngram_model)
+sec_intel_ngram_use_embedded=$(_toml_val security.intelligence ngram_use_embedded)
+sec_intel_ngram_embedded_languages_list=$(_toml_array security.intelligence ngram_embedded_languages)
+sec_intel_ngram_probability_threshold=$(_toml_val security.intelligence ngram_probability_threshold)
+sec_idn_mode=$(_toml_val security.idn mode)
+sec_idn_allowed_scripts_list=$(_toml_array security.idn allowed_scripts)
+sec_behavior_nxdomain_threshold=$(_toml_val security.behavior nxdomain_threshold)
+sec_behavior_nxdomain_window=$(_toml_val security.behavior nxdomain_window)
+sec_behavior_max_subdomains_per_minute=$(_toml_val security.behavior max_subdomains_per_minute)
+sec_behavior_max_label_length=$(_toml_val security.behavior max_label_length)
+sec_inbound_enabled=$(_toml_val security.inbound enabled)
+sec_inbound_max_txt_entropy=$(_toml_val security.inbound max_txt_entropy)
+sec_inbound_unmask_cname_cloaking=$(_toml_val security.inbound unmask_cname_cloaking)
+sec_inbound_block_private_ip=$(_toml_val security.inbound block_private_ip_in_public_res)
+sec_inbound_forbidden_qtypes_list=$(_toml_array security.inbound forbidden_qtypes)
+sec_rebinding_enabled=$(_toml_val security.rebinding_shield enabled)
+sec_low_ttl_enabled=$(_toml_val security.low_ttl enabled)
+sec_low_ttl_threshold_secs=$(_toml_val security.low_ttl threshold_secs)
+sec_asn_enabled=$(_toml_val security.asn_filter enabled)
+sec_scoring_blocking_threshold=$(_toml_val security.scoring blocking_threshold)
+sec_scoring_highly_suspicious_threshold=$(_toml_val security.scoring highly_suspicious_threshold)
+sec_scoring_suspicious_threshold=$(_toml_val security.scoring suspicious_threshold)
+sec_scoring_log_suspicious=$(_toml_val security.scoring log_suspicious)
+upstream_servers_list=$(_toml_array upstream servers)
+upstream_timeout_ms=$(_toml_val upstream timeout_ms)
+tld_exclude_list=$(_toml_array tld exclude)
+tld_suspicious_list=$(_toml_array tld suspicious_tlds)
+sources_nrd_list_path=$(_toml_val sources nrd_list_path)
+sources_blacklists_list=$(_toml_array sources blacklists)
+sources_whitelists_list=$(_toml_array sources whitelists)
+sources_update_interval_hours=$(_toml_val sources update_interval_hours)
+sources_retry_delay_mins=$(_toml_val sources retry_delay_mins)
+sources_host_index_path=$(_toml_val sources host_index_path)
+sources_browser_rules_path=$(_toml_val sources browser_rules_path)
+abp_extract_domain_only=$(_toml_val abp extract_domain_only)
+abp_update_interval=$(_toml_val abp update_interval)
+cache_enabled=$(_toml_val cache enabled)
+cache_max_entries=$(_toml_val cache max_entries)
+cache_ttl_override=$(_toml_val cache ttl_override)
+memory_cache_enabled=$(_toml_val memory cache_enabled)
+memory_cache_size=$(_toml_val memory cache_size)
+memory_use_bloom_filter=$(_toml_val memory use_bloom_filter)
+memory_expected_total_domains=$(_toml_val memory expected_total_domains)
+nxdomain_hunting_enabled=$(_toml_val nxdomain_hunting enabled)
+nxdomain_hunting_threshold=$(_toml_val nxdomain_hunting threshold)
+nxdomain_hunting_window_seconds=$(_toml_val nxdomain_hunting window_seconds)
+nxdomain_hunting_action=$(_toml_val nxdomain_hunting action)
+tunneling_enabled=$(_toml_val tunneling_detection enabled)
+tunneling_max_subdomains_per_minute=$(_toml_val tunneling_detection max_subdomains_per_minute)
+tunneling_max_label_length=$(_toml_val tunneling_detection max_label_length)
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# rpcd entry point
+# ---------------------------------------------------------------------------
+case "$1" in
+    list)
+        echo '{
+  "get_config": {},
+  "set_config": {"config": {}},
+  "restart":    {},
+  "status":     {}
+}'
+        ;;
+    call)
+        case "$2" in
+            get_config)
+                _toml_to_cache
+                _cache_to_json
+                ;;
+            set_config)
+                read -r input
+                # input is {"config": {...flat keys...}}
+                # strip the outer {"config": wrapper
+                echo "$input" | sed 's/^{"config"://; s/}$//' | _json_to_cache
+                _write_toml
+                echo '{"result":"ok"}'
+                ;;
+            restart)
+                /etc/init.d/dgaard restart >/dev/null 2>&1
+                echo '{"result":"ok"}'
+                ;;
+            status)
+                if pgrep -x dgaard >/dev/null 2>&1; then
+                    echo '{"running":true}'
+                else
+                    echo '{"running":false}'
+                fi
+                ;;
+        esac
+        ;;
+esac

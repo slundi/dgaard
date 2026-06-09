@@ -1,0 +1,15 @@
+{
+    "dgaard": {
+        "description": "Dgaard DNS Proxy configuration",
+        "read": {
+            "ubus": {
+                "dgaard": ["get_config", "status"]
+            }
+        },
+        "write": {
+            "ubus": {
+                "dgaard": ["set_config", "restart"]
+            }
+        }
+    }
+}

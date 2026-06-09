@@ -1,0 +1,45 @@
+# Justfile — dgaard build, packaging and deployment
+# Requires: cross, ar (binutils)
+# Run from this directory: just <recipe>
+
+target   := "armv7-unknown-linux-musleabihf"
+version  := `grep '^version' ../../dgaard/Cargo.toml | head -1 | cut -d'"' -f2`
+arch     := "arm_cortex-a9_vfpv3"
+ipk      := "dgaard_" + version + "_" + arch + ".ipk"
+router   := env("ROUTER_IP", "192.168.1.1")
+
+# Build the release binary for the WRT1900ACS
+build:
+    cd ../.. && cross build --release --target {{target}}
+
+# Build the .ipk package
+package: build
+    @echo "Packaging dgaard {{version}} for {{arch}}..."
+    @bash build-ipk.sh "{{version}}" "{{arch}}"
+    @echo "→ {{ipk}}"
+
+# Upload and install on the router
+deploy: package
+    scp {{ipk}} root@{{router}}:/tmp/
+    ssh root@{{router}} "opkg install --force-reinstall /tmp/{{ipk}} && /etc/init.d/rpcd restart && /etc/init.d/dgaard restart"
+
+# Upload binary only (faster iteration — skips LuCI files)
+deploy-bin: build
+    scp ../../target/{{target}}/release/dgaard root@{{router}}:/usr/bin/dgaard
+    ssh root@{{router}} "/etc/init.d/dgaard restart"
+
+# Watch dgaard logs on the router
+logs:
+    ssh root@{{router}} "logread -f | grep dgaard"
+
+# Open an SSH shell on the router
+shell:
+    ssh root@{{router}}
+
+# Remove the package from the router
+remove:
+    ssh root@{{router}} "opkg remove dgaard; /etc/init.d/rpcd restart"
+
+# Show installed version on router
+version-check:
+    ssh root@{{router}} "opkg info dgaard 2>/dev/null || echo 'not installed'"
