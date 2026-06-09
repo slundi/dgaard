@@ -58,15 +58,15 @@ _Focus: Bridging the main event stream to connected browsers via WebSocket._
 - **WebSocket endpoint** (`GET /ws`): Upgrade with `axum::extract::ws::WebSocket`. Subscribe to the broadcast channel; forward each `WebEvent` serialized as JSON. Drop lagging clients (lag > capacity) without crashing the server.
 - **Alpine.js live feed**: `x-data` component that opens a `WebSocket` on mount, appends incoming events to a capped reactive array, renders the last 50 rows as a table with action colouring (green = allowed, red = blocked).
 
-## Phase 4: Dashboard UI
+## Phase 4: Dashboard UI ✅
 
 _Focus: Replicating the dgaard-monitor dashboard layout in HTML/Alpine.js._
 
-- [ ] 4.1. **Metric header**: Four stat cards polled every second via `fetch('/api/v1/stats')` — Total Queries, Blocked %, Active Clients, QPS. Implemented with Alpine.js `x-init` + `setInterval`.
-- [ ] 4.2. **Flag distribution panel**: Horizontal bar chart (CSS) or small Chart.js bar chart showing the top block reasons, updated on each `/api/v1/stats` poll.
-- [ ] 4.3. **Tab navigation**: Alpine.js `x-show` tabs — Dashboard, Queries, Talkers, Timelines, About. Active tab state stored in the URL hash for bookmarkability.
-- [ ] 4.4. **Dashboard tab**: Combines metric header (4.1), live feed (3.3), flag distribution (4.2), and a top-domains table.
-- [ ] 4.5. **About tab**: Project name, version injected at build time via `env!("CARGO_PKG_VERSION")`, repo URL, license Apache 2, key WebSocket and API endpoint reference.
+- **Metric header**: Four stat cards polled every second via `fetch('/api/v1/stats')` — Total Queries, Blocked %, Active Clients, QPS. Implemented with Alpine.js `x-init` + `setInterval`.
+- **Flag distribution panel**: Horizontal bar chart (CSS) or small Chart.js bar chart showing the top block reasons, updated on each `/api/v1/stats` poll.
+- **Tab navigation**: Alpine.js `x-show` tabs — Dashboard, Queries, Talkers, Timelines, About. Active tab state stored in the URL hash for bookmarkability.
+- **Dashboard tab**: Combines metric header (4.1), live feed (3.3), flag distribution (4.2), and a top-domains table.
+- **About tab**: Project name, version injected at build time via `env!("CARGO_PKG_VERSION")`, repo URL, license Apache 2, key WebSocket and API endpoint reference.
 
 ## Phase 5: REST API
 

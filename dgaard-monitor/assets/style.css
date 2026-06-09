@@ -124,6 +124,105 @@ tr:hover td { background: var(--surface); }
 .action-suspicious     { color: var(--yellow); }
 .action-highlysuspicious { color: var(--red); font-weight: 700; }
 
+/* ── Dashboard grid ─────────────────────────────────────────── */
+.dash-grid {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  gap: 1.25rem;
+  align-items: start;
+}
+@media (max-width: 860px) {
+  .dash-grid { grid-template-columns: 1fr; }
+  .dash-side  { display: none; }
+}
+
+/* ── Generic panel ───────────────────────────────────────────── */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 1rem;
+}
+.panel-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+}
+
+/* ── Flag distribution bars ─────────────────────────────────── */
+.flag-row {
+  display: grid;
+  grid-template-columns: 110px 1fr auto;
+  gap: 0.4rem;
+  align-items: center;
+  margin-bottom: 0.45rem;
+  font-size: 12px;
+}
+.flag-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+.flag-track {
+  background: var(--bg);
+  border-radius: 3px;
+  height: 7px;
+  overflow: hidden;
+}
+.flag-fill {
+  background: var(--red);
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+  min-width: 2px;
+}
+.flag-count {
+  color: var(--text-muted);
+  font-size: 11px;
+  text-align: right;
+  min-width: 2ch;
+}
+
+/* ── About tab ───────────────────────────────────────────────── */
+.about-panel {
+  max-width: 680px;
+}
+.about-logo {
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.about-logo span { color: var(--accent); }
+.about-version {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-top: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+.about-meta {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.link {
+  color: var(--accent);
+  text-decoration: none;
+}
+.link:hover { text-decoration: underline; }
+code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.1em 0.4em;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--green);
+}
+
 /* Row-level tinting (applied to <tr>) */
 tr.action-blocked          { background: rgba(248,81,73,0.06); }
 tr.action-suspicious       { background: rgba(210,153,34,0.06); }

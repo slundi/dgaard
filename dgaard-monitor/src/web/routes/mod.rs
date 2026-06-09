@@ -1,3 +1,4 @@
+pub(super) mod about;
 mod health;
 mod lists;
 mod queries;

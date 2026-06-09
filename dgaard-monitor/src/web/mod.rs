@@ -126,7 +126,9 @@ fn build_router(web: Arc<WebState>, token: String) -> Router {
         // /api/v1/* — Phases 5+ add routes to this nest
         .nest(
             "/api/v1",
-            Router::new().fallback(|| async { StatusCode::NOT_FOUND }),
+            Router::new()
+                .route("/about", get(routes::about::about_handler))
+                .fallback(|| async { StatusCode::NOT_FOUND }),
         )
         .route("/ws", get(routes::ws::ws_handler))
         .layer(auth_layer)
@@ -384,6 +386,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn api_about_returns_version() {
+        let app = make_router("");
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/about")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp.into_body()).await;
+        assert!(body.contains("version"));
+        assert!(body.contains("Apache-2.0"));
     }
 
     #[tokio::test]

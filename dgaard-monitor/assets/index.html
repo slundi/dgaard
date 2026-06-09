@@ -17,7 +17,7 @@
       </div>
       <div class="stat-card">
         <div class="stat-label">Blocked %</div>
-        <div class="stat-value" x-text="stats.blocked_pct ?? '—'">—</div>
+        <div class="stat-value" x-text="blockedPct">—</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Active Clients</div>
@@ -44,69 +44,154 @@
   </nav>
 
   <main class="content">
+
+    <!-- ── Dashboard ──────────────────────────────────────────── -->
     <section x-show="tab === 'dashboard'">
-      <div x-data="liveFeed()" x-init="connect()">
+      <div class="dash-grid">
 
-        <div class="toolbar">
-          <span class="badge" :class="status === 'live' ? 'badge-live' : 'badge-disconnected'"
-                x-text="status === 'live' ? '● live' : '○ disconnected'"></span>
-          <button class="btn" :class="frozen ? 'btn-frozen' : ''" @click="toggleFreeze()"
-                  x-text="frozen ? '▶ resume' : '⏸ freeze'"></button>
-          <template x-if="status !== 'live'">
-            <div class="token-row">
-              <input class="token-input" type="password" placeholder="Bearer token (if required)"
-                     x-model="token" @keydown.enter="connect()">
-              <button class="btn" @click="connect()">Connect</button>
-            </div>
-          </template>
-        </div>
-
-        <div class="frozen-notice" x-show="frozen">
-          Updates paused — <span x-text="bufferCount"></span> event(s) buffered
-        </div>
-
-        <table>
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Domain</th>
-              <th>Client</th>
-              <th>Action</th>
-              <th>Flags</th>
-            </tr>
-          </thead>
-          <tbody>
-            <template x-for="row in events" :key="row.timestamp + '-' + row.domain_hash">
-              <tr :class="actionClass(row.action)">
-                <td x-text="fmtTime(row.timestamp)"></td>
-                <td x-text="row.domain ?? row.domain_hash"></td>
-                <td x-text="row.client_ip"></td>
-                <td :class="actionClass(row.action)" x-text="row.action"></td>
-                <td x-text="(row.flags_labels ?? []).join(', ')"></td>
-              </tr>
+        <!-- Live feed -->
+        <div x-data="liveFeed()" x-init="connect()">
+          <div class="toolbar">
+            <span class="badge" :class="status === 'live' ? 'badge-live' : 'badge-disconnected'"
+                  x-text="status === 'live' ? '● live' : '○ disconnected'"></span>
+            <button class="btn" :class="frozen ? 'btn-frozen' : ''" @click="toggleFreeze()"
+                    x-text="frozen ? '▶ resume' : '⏸ freeze'"></button>
+            <template x-if="status !== 'live'">
+              <div class="token-row">
+                <input class="token-input" type="password" placeholder="Bearer token (if required)"
+                       x-model="$store.auth.token" @keydown.enter="connect()">
+                <button class="btn" @click="connect()">Connect</button>
+              </div>
             </template>
-            <tr x-show="events.length === 0">
-              <td colspan="5" style="text-align:center;color:var(--text-muted)">Waiting for events…</td>
-            </tr>
-          </tbody>
-        </table>
+          </div>
 
+          <div class="frozen-notice" x-show="frozen">
+            Updates paused — <span x-text="bufferCount"></span> event(s) buffered
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Domain</th>
+                <th>Client</th>
+                <th>Action</th>
+                <th>Flags</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="row in events" :key="row.timestamp + '-' + row.domain_hash">
+                <tr :class="actionClass(row.action)">
+                  <td x-text="fmtTime(row.timestamp)"></td>
+                  <td x-text="row.domain ?? row.domain_hash"></td>
+                  <td x-text="row.client_ip"></td>
+                  <td :class="actionClass(row.action)" x-text="row.action"></td>
+                  <td x-text="(row.flags_labels ?? []).join(', ')"></td>
+                </tr>
+              </template>
+              <tr x-show="events.length === 0">
+                <td colspan="5" style="text-align:center;color:var(--text-muted)">Waiting for events…</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Sidebar -->
+        <aside class="dash-side">
+
+          <!-- Flag distribution -->
+          <div class="panel" x-show="(stats.top_reasons ?? []).length > 0">
+            <div class="panel-title">Flag Distribution</div>
+            <template x-for="r in (stats.top_reasons ?? []).slice(0, 8)" :key="r.reason">
+              <div class="flag-row">
+                <span class="flag-label" :title="r.reason" x-text="r.reason"></span>
+                <div class="flag-track">
+                  <div class="flag-fill"
+                       :style="'width:' + (maxReason > 0 ? Math.round(r.count / maxReason * 100) : 0) + '%'">
+                  </div>
+                </div>
+                <span class="flag-count" x-text="r.count"></span>
+              </div>
+            </template>
+          </div>
+
+          <!-- Top domains -->
+          <div class="panel" x-show="(stats.top_domains ?? []).length > 0">
+            <div class="panel-title">Top Domains</div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Domain</th>
+                  <th style="text-align:right">Queries</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="d in (stats.top_domains ?? []).slice(0, 10)" :key="d.domain">
+                  <tr>
+                    <td style="word-break:break-all" x-text="d.domain"></td>
+                    <td style="text-align:right;color:var(--text-muted)" x-text="d.count"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+
+        </aside>
       </div>
     </section>
+
+    <!-- ── Queries ────────────────────────────────────────────── -->
     <section x-show="tab === 'queries'">
       <p class="placeholder">Queries — coming soon</p>
     </section>
+
+    <!-- ── Talkers ────────────────────────────────────────────── -->
     <section x-show="tab === 'talkers'">
       <p class="placeholder">Talkers — coming soon</p>
     </section>
+
+    <!-- ── Timelines ─────────────────────────────────────────── -->
     <section x-show="tab === 'timelines'">
       <p class="placeholder">Timelines — coming soon</p>
     </section>
+
+    <!-- ── About ─────────────────────────────────────────────── -->
     <section x-show="tab === 'about'">
-      <p class="placeholder">About — coming soon</p>
+      <div class="panel about-panel">
+        <div class="about-logo">dgaard<span>monitor</span></div>
+        <div class="about-version" x-text="'v' + (aboutInfo.version ?? '…')"></div>
+        <div class="about-meta">
+          License: <strong>Apache-2.0</strong>
+          &nbsp;·&nbsp;
+          <a class="link" href="https://github.com/stamus-networks/dgaard"
+             target="_blank" rel="noopener">GitHub</a>
+        </div>
+
+        <div class="panel-title" style="margin-top:2rem">API Reference</div>
+        <table>
+          <thead>
+            <tr><th>Description</th><th>Endpoint</th></tr>
+          </thead>
+          <tbody>
+            <template x-for="ep in (aboutInfo.endpoints ?? [])" :key="ep.path">
+              <tr>
+                <td x-text="ep.name"></td>
+                <td><code x-text="ep.path"></code></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
     </section>
+
   </main>
 
+  <!-- Store init must run before Alpine.js deferred script fires alpine:init -->
+  <script>
+    document.addEventListener('alpine:init', () => {
+      Alpine.store('auth', { token: '' });
+    });
+  </script>
   <script src="/alpine.min.js" defer></script>
   <script src="/chart.min.js" defer></script>
   <script>
@@ -115,7 +200,6 @@
       events: [],
       status: 'disconnected',
       frozen: false,
-      token: '',
       bufferCount: 0,
       _ws: null,
       _buffer: [],
@@ -124,7 +208,8 @@
       connect() {
         if (this._ws) { this._ws.close(); this._ws = null; }
         const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-        const t = this.token ? '?token=' + encodeURIComponent(this.token) : '';
+        const token = this.$store.auth.token;
+        const t = token ? '?token=' + encodeURIComponent(token) : '';
         const ws = new WebSocket(proto + '://' + location.host + '/ws' + t);
         this._ws = ws;
         ws.onopen  = () => { this.status = 'live'; };
@@ -171,11 +256,44 @@
     return {
       tab: location.hash.slice(1) || 'dashboard',
       stats: {},
+      aboutInfo: {},
+
+      get blockedPct() {
+        if (!this.stats.total) return '—';
+        return ((this.stats.blocked ?? 0) / this.stats.total * 100).toFixed(1) + '%';
+      },
+
+      get maxReason() {
+        const rs = this.stats.top_reasons ?? [];
+        return rs.length ? Math.max(...rs.map(r => r.count)) : 1;
+      },
+
+      _authHeaders() {
+        const t = this.$store.auth.token;
+        return t ? { Authorization: 'Bearer ' + t } : {};
+      },
+
+      async fetchStats() {
+        try {
+          const r = await fetch('/api/v1/stats', { headers: this._authHeaders() });
+          if (r.ok) this.stats = await r.json();
+        } catch {}
+      },
+
+      async fetchAbout() {
+        try {
+          const r = await fetch('/api/v1/about', { headers: this._authHeaders() });
+          if (r.ok) this.aboutInfo = await r.json();
+        } catch {}
+      },
 
       init() {
         window.addEventListener('hashchange', () => {
           this.tab = location.hash.slice(1) || 'dashboard';
         });
+        this.fetchStats();
+        this.fetchAbout();
+        setInterval(() => this.fetchStats(), 1000);
       },
 
       setTab(name) {
