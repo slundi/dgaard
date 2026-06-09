@@ -6,11 +6,11 @@ OpenWRT's root filesystem uses a read-only SquashFS overlay, which prevents writ
 
 ## Writable Locations
 
-| Path | Type | Notes |
-|---|---|---|
-| `/tmp` | RAM tmpfs | Cleared on reboot |
+| Path       | Type                    | Notes                          |
+| ---------- | ----------------------- | ------------------------------ |
+| `/tmp`     | RAM tmpfs               | Cleared on reboot              |
 | `/overlay` | SquashFS writable layer | Where `opkg` installs packages |
-| `/root` | Root home directory | Normally writable |
+| `/root`    | Root home directory     | Normally writable              |
 
 ## Cross-Compilation
 
