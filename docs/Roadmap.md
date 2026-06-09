@@ -160,6 +160,93 @@ _Focus: Turning raw block data into actionable insights._
 - [ ] 9.3. **DGA Effectiveness Audit**: average entropy and consonant ratio of blocked vs. allowed domains.
 - [ ] 9.4. **List Collision Logic**: identify domains appearing in multiple sources for 100% confidence scoring.
 
+## Phase 10: Protocol Hardening & Upstream Security
+
+_Focus: Closing well-known DNS attack surfaces that do not require heuristics — correct protocol behaviour, upstream anti-spoofing, and topology leak prevention._
+
+- [ ] 10.1. **RFC 6761 Special-Use Domain Isolation**
+
+  Queries for special-use names defined in RFC 6761 and common internal TLDs must never be forwarded to a public upstream resolver. Forwarding them leaks internal topology (hostnames, service names, network structure) to a third party and can expose queries intended for mDNS or split-horizon DNS to external observation or manipulation.
+
+  Names that must be answered locally (NXDOMAIN or a configurable local response) without touching upstream:
+  - `.local` — mDNS / Bonjour (RFC 6762). Forwarding breaks Multicast DNS semantics entirely.
+  - `.localhost` — loopback alias (RFC 6761). Should always resolve to `127.0.0.1` / `::1` locally.
+  - `.invalid` — guaranteed non-resolvable (RFC 6761). Leaking it upstream is pointless and exposes a query.
+  - `.test`, `.example` — reserved for documentation and testing (RFC 2606 / RFC 6761).
+  - `.corp`, `.home`, `.internal`, `.lan`, `.intranet`, `.private` — de-facto internal TLDs used in split-horizon setups. No ICANN delegation exists; an upstream resolver cannot answer them correctly.
+
+  Implementation: a suffix set checked in the gatekeeper, before the pipeline executes. Configurable so operators can add or remove entries. Zero runtime cost — suffix check runs once per query before any heap allocation.
+
+  ```toml
+  [security.special_use]
+  enabled = true
+  # Additional internal TLDs beyond the RFC 6761 defaults
+  extra_local_tlds = [".corp", ".lan", ".internal", ".home"]
+  ```
+
+- [ ] 10.2. **Minimum TTL Floor**
+
+  A TTL floor clamps all cached responses to a configurable minimum value (e.g. 30 s). This is the operational complement to the existing low-TTL suspicion scoring (item 8.6): scoring flags short-lived responses as suspicious but does not prevent the domain from being queried again immediately once the TTL expires. A floor forces at least one full cache window, defeating the fast-flux technique where an adversary sets TTL = 0 to ensure every client queries the same domain independently — maximising the number of IPs served and maximising evasion of IP-based blocking.
+
+  It also reduces upstream query volume in proportion to how aggressively low legitimate TTLs are on the network, which matters on constrained links (LTE-backhauled OpenWrt routers).
+
+  Implementation: a single `max(observed_ttl, min_ttl_floor)` applied in the cache write path. No changes to the scoring pipeline.
+
+  ```toml
+  [security.low_ttl]
+  enabled = true
+  threshold_secs = 10 # existing: adds suspicion points below this value
+  min_ttl_floor_secs = 30 # new: cache floor, clamped upward if below this value
+  ```
+
+- [ ] 10.3. **PTR Leak Prevention for Private IP Ranges**
+
+  Reverse-DNS queries (`PTR`) for RFC 1918 / loopback / link-local addresses (`*.in-addr.arpa`, `*.ip6.arpa`) should never be forwarded upstream. Forwarding them exposes the internal host layout of the network to a public DNS server: an attacker or passive observer at the upstream resolver can infer which private IPs are active, what they are named, and indirectly map the LAN topology.
+
+  This is the forward-direction counterpart to the existing DNS Rebinding Shield (item 8.4), which protects against public domains resolving to private IPs in _responses_. PTR leak prevention protects against private IPs being sent _in queries_.
+
+  Affected ranges (already documented in the rebinding shield config):
+  `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`, `169.254.0.0/16`, `100.64.0.0/10`, `::1/128`, `fc00::/7`, `fe80::/10`.
+
+  Implementation: decode the `in-addr.arpa` / `ip6.arpa` label back to an IP address at the gatekeeper stage; if it falls in any private range, return NXDOMAIN locally. Reuses the same range-check logic already present in the rebinding shield — no new dependencies.
+
+  ```toml
+  [security.rebinding_shield]
+  enabled = true
+  block_ptr_leak = true # new: refuse PTR queries for private IP ranges
+  ```
+
+- [ ] 10.4. **CHAOS Class Query Blocking**
+
+  DNS supports multiple query classes. Class `IN` (1) is Internet. Class `CH` (3, CHAOS) is a legacy class originally used by the CHAOS network that modern authoritative servers repurpose to serve metadata: `version.bind`, `id.server`, `hostname.bind`, `authors.bind`. These queries are a standard reconnaissance technique — tools like `dig CH TXT version.bind` or `nmap --script dns-nsid` use them to fingerprint DNS software, extract the resolver's identity, and confirm a target is a DNS server before deeper probing.
+
+  A forwarding proxy has no reason to forward CHAOS-class queries upstream. The upstream resolver's version string is irrelevant to LAN clients, and exposing it provides no value while giving an attacker free intelligence.
+
+  Implementation: check `qclass == 3` in the gatekeeper (the same stage that validates query structure). Return `REFUSED`. This is a one-line change in the packet parser with no config needed; an opt-out flag can be added if a use case requires forwarding CHAOS queries.
+
+  ```toml
+  [security.structure]
+  block_chaos_class = true # block DNS CHAOS class queries (default: true)
+  ```
+
+- [ ] 10.5. **0x20 Upstream Query Case Randomization**
+
+  When forwarding a query to upstream, randomize the casing of the domain name labels (e.g. `example.com` → `eXaMpLe.CoM`). RFC-compliant DNS implementations are case-insensitive and echo the query name back verbatim in the response. If the response does not echo the same mixed-case pattern, the answer is either forged or came from a non-compliant middlebox — both of which should cause the response to be discarded.
+
+  This provides a cheap second entropy source for transaction validation on top of the 16-bit transaction ID (which gives only 1-in-65536 collision resistance). Combined, an attacker attempting a Kaminsky-style cache poisoning attack must guess both the TXID and the exact mixed-case pattern — making blind-injection attacks orders of magnitude harder without any cryptographic overhead.
+
+  Used by default in Unbound and BIND since 2008; standardised as DNS0x20 (Dagon et al., 2008).
+
+  Implementation: in `src/dns/mod.rs` (`forward_to_upstream`), before building the upstream query, save the original label bytes, XOR each alphabetic byte with a random bitmask to set/clear bit 5 (ASCII case bit), send the modified query, then verify the response QNAME matches byte-for-byte before accepting it.
+
+  ```toml
+  [upstream]
+  servers = ["1.1.1.1:53", "9.9.9.9:53"]
+  use_0x20_randomization = true # default: true when upstream is plain UDP DNS
+  ```
+
+---
+
 ## Feature: Custom Bitflags (`custom_flags`)
 
 _Feature flag: `custom_flags`_
