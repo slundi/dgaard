@@ -117,6 +117,9 @@ impl From<&BlockReason> for StatBlockReason {
             BlockReason::LowTtl(_) => StatBlockReason::LOW_TTL,
             BlockReason::AsnBlocked => StatBlockReason::ASN_BLOCKED,
             BlockReason::GeoIpSuspicious(_) => StatBlockReason::SUSPICIOUS_GEO_IP,
+            // StatBlockReason is a u16 with all 16 bits allocated. SpecialUseDomain shares
+            // INVALID_STRUCTURE until StatBlockReason is widened to u32 (custom_flags feature).
+            BlockReason::SpecialUseDomain => StatBlockReason::INVALID_STRUCTURE,
         }
     }
 }
@@ -186,6 +189,10 @@ mod tests {
         assert_eq!(
             StatBlockReason::from(&BlockReason::GeoIpSuspicious("RU".into())),
             StatBlockReason::SUSPICIOUS_GEO_IP
+        );
+        assert_eq!(
+            StatBlockReason::from(&BlockReason::SpecialUseDomain),
+            StatBlockReason::INVALID_STRUCTURE
         );
     }
 

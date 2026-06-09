@@ -62,6 +62,12 @@ pub enum BlockReason {
     /// Upstream response resolves to an IP in a suspicious GeoIP country.
     /// Carries the ISO 3166-1 alpha-2 country code (e.g. "RU", "CN").
     GeoIpSuspicious(String),
+
+    /// Domain has a special-use or internal TLD (RFC 6761 / RFC 6762) that
+    /// must never be forwarded to a public upstream resolver.
+    /// Examples: `.local`, `.localhost`, `.invalid`, `.test`, `.example`,
+    /// and any operator-configured extra TLDs (`.corp`, `.lan`, `.internal`).
+    SpecialUseDomain,
 }
 
 /// Messages sent over the stats channel to the collector.

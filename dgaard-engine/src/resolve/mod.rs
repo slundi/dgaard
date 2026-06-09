@@ -5,12 +5,14 @@ mod matcher;
 mod patterns;
 mod qtype;
 mod scoring;
+mod special_use;
 
 pub use heuristics::{check_dga_heuristics, check_lexical, is_illegal_idn};
 pub use matcher::{is_blocked, is_nrd, is_suffix_blocked, is_whitelisted};
 pub use patterns::{is_regex_blocked, is_wildcard_pattern_blocked};
 pub use qtype::check_qtype;
 pub use scoring::{compute_score, score_answer};
+pub use special_use::is_special_use_domain;
 
 use crate::config::{Config, PipelineStep};
 use crate::filter::engine::FilterEngine;
@@ -57,6 +59,13 @@ pub fn resolve_with_score(domain: &str, filter: &FilterEngine, config: &Config) 
     if is_illegal_idn(domain, config) {
         return ResolveResult {
             action: Action::Block(BlockReason::SuspiciousIdn),
+            score,
+        };
+    }
+
+    if is_special_use_domain(domain, config) {
+        return ResolveResult {
+            action: Action::Block(BlockReason::SpecialUseDomain),
             score,
         };
     }
@@ -384,6 +393,70 @@ pub mod tests {
         assert!(
             matches!(action, Action::Block(BlockReason::BannedKeyword(ref k)) if k == "porno"),
             "Got: {:?}",
+            action
+        );
+    }
+
+    #[test]
+    fn test_resolve_special_use_domain_blocked() {
+        let engine = init_test_engine();
+        let config = Config::default(); // special_use.enabled = true
+        for domain in &[
+            "printer.local",
+            "localhost",
+            "db.localhost",
+            "x.invalid",
+            "api.test",
+            "www.example",
+        ] {
+            let action = resolve_with_score(domain, &engine, &config).action;
+            assert!(
+                matches!(action, Action::Block(BlockReason::SpecialUseDomain)),
+                "{} should be blocked as special-use, got: {:?}",
+                domain,
+                action
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_special_use_extra_tld_blocked() {
+        let engine = init_test_engine();
+        let mut config = Config::default();
+        config.security.special_use.extra_local_tlds = vec![".corp".to_string(), "lan".to_string()];
+
+        assert!(matches!(
+            resolve_with_score("dc1.corp", &engine, &config).action,
+            Action::Block(BlockReason::SpecialUseDomain)
+        ));
+        assert!(matches!(
+            resolve_with_score("router.lan", &engine, &config).action,
+            Action::Block(BlockReason::SpecialUseDomain)
+        ));
+    }
+
+    #[test]
+    fn test_resolve_special_use_disabled_passes_through() {
+        let engine = init_test_engine();
+        let mut config = Config::default();
+        config.security.special_use.enabled = false;
+
+        let action = resolve_with_score("printer.local", &engine, &config).action;
+        assert!(
+            matches!(action, Action::ProxyToUpstream),
+            "With special_use disabled, .local should be forwarded; got: {:?}",
+            action
+        );
+    }
+
+    #[test]
+    fn test_resolve_special_use_public_tld_not_blocked() {
+        let engine = init_test_engine();
+        let config = Config::default();
+        let action = resolve_with_score("example.com", &engine, &config).action;
+        assert!(
+            matches!(action, Action::ProxyToUpstream),
+            "example.com should not be blocked by special-use filter; got: {:?}",
             action
         );
     }

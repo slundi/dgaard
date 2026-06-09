@@ -589,6 +589,50 @@ impl Default for ScoringConfig {
 }
 
 // ---------------------------------------------------------------------------
+// [security.special_use]
+// ---------------------------------------------------------------------------
+
+/// RFC 6761 special-use domain isolation.
+///
+/// Prevents forwarding queries for special-use and internal TLDs to public
+/// upstream resolvers. These names either have reserved semantics (RFC 6761,
+/// RFC 6762) or are de-facto internal conventions with no ICANN delegation.
+///
+/// The built-in set is always enforced when `enabled = true`:
+/// - `.local`     — mDNS / Bonjour (RFC 6762)
+/// - `.localhost` — loopback alias (RFC 6761)
+/// - `.invalid`   — guaranteed non-resolvable (RFC 6761)
+/// - `.test`      — reserved for testing (RFC 6761)
+/// - `.example`   — reserved for documentation (RFC 2606 / RFC 6761)
+///
+/// Additional TLDs common in split-horizon deployments can be added via
+/// `extra_local_tlds`.
+///
+/// Maps to `[security.special_use]` in the configuration file.
+#[derive(Debug, PartialEq, Clone)]
+pub struct SpecialUseConfig {
+    /// Master switch — set to `false` to forward all TLDs to upstream.
+    pub enabled: bool,
+
+    /// Additional TLDs to isolate beyond the RFC 6761 defaults.
+    ///
+    /// Entries may include or omit a leading dot — both `.corp` and `corp`
+    /// are accepted. Matching is case-insensitive.
+    ///
+    /// Common values: `[".corp", ".lan", ".internal", ".home", ".intranet"]`
+    pub extra_local_tlds: Vec<String>,
+}
+
+impl Default for SpecialUseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            extra_local_tlds: Vec::new(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // [security.geo_ip]
 // ---------------------------------------------------------------------------
 
@@ -672,6 +716,8 @@ pub struct SecurityConfig {
     pub scoring: ScoringConfig,
     /// GeoIP country-based suspicion scoring.
     pub geo_ip: GeoIpConfig,
+    /// RFC 6761 special-use domain isolation.
+    pub special_use: SpecialUseConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -1173,6 +1219,31 @@ mod tests {
         assert_eq!(sec.low_ttl, LowTtlConfig::default());
         assert_eq!(sec.asn_filter, AsnFilterConfig::default());
         assert_eq!(sec.geo_ip, GeoIpConfig::default());
+        assert_eq!(sec.special_use, SpecialUseConfig::default());
+    }
+
+    // -----------------------------------------------------------------------
+    // GeoIpConfig
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // SpecialUseConfig
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn special_use_config_default_is_enabled_with_no_extras() {
+        let s = SpecialUseConfig::default();
+        assert!(s.enabled);
+        assert!(s.extra_local_tlds.is_empty());
+    }
+
+    #[test]
+    fn special_use_config_extra_tlds_can_be_set() {
+        let s = SpecialUseConfig {
+            enabled: true,
+            extra_local_tlds: vec![".corp".to_string(), "lan".to_string()],
+        };
+        assert_eq!(s.extra_local_tlds.len(), 2);
     }
 
     // -----------------------------------------------------------------------

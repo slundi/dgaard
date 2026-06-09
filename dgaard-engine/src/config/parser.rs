@@ -504,6 +504,20 @@ fn parse_rebinding_shield(
     Ok(cfg)
 }
 
+/// Parse `[security.special_use]` section.
+fn parse_special_use(table: &toml_span::value::Table<'_>) -> Result<SpecialUseConfig, ConfigError> {
+    let mut cfg = SpecialUseConfig::default();
+
+    if let Some(b) = get_bool(table, "enabled")? {
+        cfg.enabled = b;
+    }
+    if let Some(arr) = get_string_array(table, "extra_local_tlds")? {
+        cfg.extra_local_tlds = arr;
+    }
+
+    Ok(cfg)
+}
+
 /// Parse `[security.geo_ip]` section.
 fn parse_geo_ip(table: &toml_span::value::Table<'_>) -> Result<GeoIpConfig, ConfigError> {
     let mut cfg = GeoIpConfig::default();
@@ -580,6 +594,9 @@ fn parse_security(table: &toml_span::value::Table<'_>) -> Result<SecurityConfig,
     }
     if let Some(t) = get_table(table, "geo_ip")? {
         cfg.geo_ip = parse_geo_ip(t)?;
+    }
+    if let Some(t) = get_table(table, "special_use")? {
+        cfg.special_use = parse_special_use(t)?;
     }
 
     Ok(cfg)
@@ -1095,6 +1112,43 @@ mod tests {
         assert_eq!(cfg.security.behavior.nxdomain_window, 120);
         assert_eq!(cfg.security.behavior.max_subdomains_per_minute, 100);
         assert_eq!(cfg.security.behavior.max_label_length, 40);
+    }
+
+    // -----------------------------------------------------------------------
+    // SpecialUse section
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_security_special_use_all_fields() {
+        let toml = r#"
+            [security.special_use]
+            enabled = true
+            extra_local_tlds = [".corp", ".lan", "internal"]
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert!(cfg.security.special_use.enabled);
+        assert_eq!(
+            cfg.security.special_use.extra_local_tlds,
+            vec![".corp", ".lan", "internal"]
+        );
+    }
+
+    #[test]
+    fn parse_security_special_use_disabled() {
+        let toml = r#"
+            [security.special_use]
+            enabled = false
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert!(!cfg.security.special_use.enabled);
+        assert!(cfg.security.special_use.extra_local_tlds.is_empty());
+    }
+
+    #[test]
+    fn parse_security_special_use_defaults() {
+        let cfg = Config::parse("").unwrap();
+        assert!(cfg.security.special_use.enabled);
+        assert!(cfg.security.special_use.extra_local_tlds.is_empty());
     }
 
     // -----------------------------------------------------------------------

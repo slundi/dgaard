@@ -213,6 +213,24 @@ suspicious_tlds = [
 # | ::1/128         | RFC 4291   | IPv6 loopback                       |
 # | fc00::/7        | RFC 4193   | IPv6 unique local                   |
 # | fe80::/10       | RFC 4291   | IPv6 link-local                     |
+# RFC 6761 special-use domain isolation.
+#
+# Prevents forwarding queries for reserved or internal TLDs to public
+# upstream resolvers. These names have no ICANN delegation and sending them
+# upstream leaks internal topology and is semantically incorrect.
+#
+# Built-in set (always applied when enabled):
+#   .local      — mDNS / Bonjour (RFC 6762). Must never reach unicast DNS.
+#   .localhost  — Loopback alias (RFC 6761). Always 127.0.0.1 / ::1.
+#   .invalid    — Guaranteed non-resolvable by design (RFC 6761).
+#   .test       — Reserved for testing; no public delegation (RFC 6761).
+#   .example    — Reserved for documentation (RFC 2606).
+[security.special_use]
+enabled = true
+# Additional TLDs to isolate beyond the RFC 6761 defaults.
+# Common in split-horizon / corporate deployments.
+# extra_local_tlds = [".corp", ".lan", ".internal", ".home", ".intranet"]
+
 [security.rebinding_shield]
 enabled = true
 
