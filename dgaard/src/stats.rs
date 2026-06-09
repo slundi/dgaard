@@ -51,9 +51,11 @@ impl StatsSender {
                 hash,
                 domain: domain.to_string(),
             };
-            // Use try_send to avoid blocking - drop if full
-            let _ = self.tx.try_send(mapping);
-            self.announced.insert(hash);
+            // Only mark as announced if the message was actually queued.
+            // If the channel is full, skip the insert so we retry next time.
+            if self.tx.try_send(mapping).is_ok() {
+                self.announced.insert(hash);
+            }
         }
 
         // Send the event
@@ -79,7 +81,7 @@ impl StatsSender {
 
     /// Send an allowed event (whitelist hit or passed filters).
     pub fn send_allowed(&self, domain: &str, client_addr: std::net::SocketAddr) {
-        debug_print!("Event allowed for {} from {}: {}", domain, client_addr);
+        debug_print!("Event allowed for {} from {}", domain, client_addr);
         self.send_event(domain, client_addr, StatAction::Allowed);
     }
 

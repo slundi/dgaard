@@ -58,10 +58,10 @@ pub async fn run(config: TuiConfig, state: Arc<AppState>, mut shutdown: watch::R
             }
             match crossterm::event::poll(Duration::from_millis(50)) {
                 Ok(true) => {
-                    if let Ok(Event::Key(key)) = crossterm::event::read() {
-                        if key_tx.send(key).is_err() {
-                            break;
-                        }
+                    if let Ok(Event::Key(key)) = crossterm::event::read()
+                        && key_tx.send(key).is_err()
+                    {
+                        break;
                     }
                 }
                 Ok(false) => {}

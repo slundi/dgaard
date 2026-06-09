@@ -38,7 +38,7 @@ pub struct InputConfig {
 }
 
 fn default_socket() -> String {
-    "/tmp/dns.sock".to_string()
+    "/tmp/dgaard_stats.sock".to_string()
 }
 
 fn default_index() -> String {
@@ -231,7 +231,7 @@ mod tests {
     fn test_input_defaults() {
         let f = write_temp("[input]\n");
         let cfg = Config::load(f.path().to_str().unwrap()).unwrap();
-        assert_eq!(cfg.input.socket, "/tmp/dns.sock");
+        assert_eq!(cfg.input.socket, "/tmp/dgaard_stats.sock");
         assert_eq!(cfg.input.index, "/var/lib/dns/hosts.bin");
     }
 
