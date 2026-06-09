@@ -472,6 +472,9 @@ fn parse_low_ttl(table: &toml_span::value::Table<'_>) -> Result<LowTtlConfig, Co
     if let Some(n) = get_integer(table, "threshold_secs")? {
         cfg.threshold_secs = n as u32;
     }
+    if let Some(n) = get_integer(table, "min_ttl_floor_secs")? {
+        cfg.min_ttl_floor_secs = Some(n as u32);
+    }
 
     Ok(cfg)
 }
@@ -1112,6 +1115,43 @@ mod tests {
         assert_eq!(cfg.security.behavior.nxdomain_window, 120);
         assert_eq!(cfg.security.behavior.max_subdomains_per_minute, 100);
         assert_eq!(cfg.security.behavior.max_label_length, 40);
+    }
+
+    // -----------------------------------------------------------------------
+    // Low TTL section
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_security_low_ttl_all_fields() {
+        let toml = r#"
+            [security.low_ttl]
+            enabled = true
+            threshold_secs = 5
+            min_ttl_floor_secs = 30
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert!(cfg.security.low_ttl.enabled);
+        assert_eq!(cfg.security.low_ttl.threshold_secs, 5);
+        assert_eq!(cfg.security.low_ttl.min_ttl_floor_secs, Some(30));
+    }
+
+    #[test]
+    fn parse_security_low_ttl_no_floor() {
+        let toml = r#"
+            [security.low_ttl]
+            enabled = true
+            threshold_secs = 10
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert_eq!(cfg.security.low_ttl.min_ttl_floor_secs, None);
+    }
+
+    #[test]
+    fn parse_security_low_ttl_defaults() {
+        let cfg = Config::parse("").unwrap();
+        assert!(cfg.security.low_ttl.enabled);
+        assert_eq!(cfg.security.low_ttl.threshold_secs, 10);
+        assert_eq!(cfg.security.low_ttl.min_ttl_floor_secs, None);
     }
 
     // -----------------------------------------------------------------------

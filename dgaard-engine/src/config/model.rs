@@ -461,6 +461,12 @@ pub struct LowTtlConfig {
     /// TTL threshold in seconds. Responses with `min_ttl < threshold_secs`
     /// add `LOW_TTL` suspicion points (default: 10 s).
     pub threshold_secs: u32,
+    /// Optional cache TTL floor in seconds. When set, any observed TTL below
+    /// this value is clamped upward to `min_ttl_floor_secs` before the result
+    /// is written to the cache. Prevents fast-flux domains from poisoning the
+    /// cache with near-zero TTLs that force a re-query on every request.
+    /// `None` (default) means no floor is applied.
+    pub min_ttl_floor_secs: Option<u32>,
 }
 
 impl Default for LowTtlConfig {
@@ -468,6 +474,20 @@ impl Default for LowTtlConfig {
         Self {
             enabled: true,
             threshold_secs: 10,
+            min_ttl_floor_secs: None,
+        }
+    }
+}
+
+impl LowTtlConfig {
+    /// Clamp `ttl` upward to the configured floor, if any.
+    ///
+    /// Call this in the cache write path before storing the TTL:
+    /// `let cached_ttl = config.security.low_ttl.apply_floor(observed_ttl);`
+    pub fn apply_floor(&self, ttl: u32) -> u32 {
+        match self.min_ttl_floor_secs {
+            Some(floor) => ttl.max(floor),
+            None => ttl,
         }
     }
 }
@@ -1188,6 +1208,54 @@ mod tests {
         assert!(l.enabled);
         assert!(l.banned_keywords.is_empty());
         assert!(l.strict_keyword_matching);
+    }
+
+    // -----------------------------------------------------------------------
+    // LowTtlConfig
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn low_ttl_config_default_has_no_floor() {
+        let c = LowTtlConfig::default();
+        assert!(c.enabled);
+        assert_eq!(c.threshold_secs, 10);
+        assert_eq!(c.min_ttl_floor_secs, None);
+    }
+
+    #[test]
+    fn apply_floor_no_floor_returns_ttl_unchanged() {
+        let c = LowTtlConfig {
+            enabled: true,
+            threshold_secs: 10,
+            min_ttl_floor_secs: None,
+        };
+        assert_eq!(c.apply_floor(0), 0);
+        assert_eq!(c.apply_floor(5), 5);
+        assert_eq!(c.apply_floor(300), 300);
+    }
+
+    #[test]
+    fn apply_floor_clamps_ttl_below_floor() {
+        let c = LowTtlConfig {
+            enabled: true,
+            threshold_secs: 10,
+            min_ttl_floor_secs: Some(30),
+        };
+        assert_eq!(c.apply_floor(0), 30);
+        assert_eq!(c.apply_floor(5), 30);
+        assert_eq!(c.apply_floor(29), 30);
+    }
+
+    #[test]
+    fn apply_floor_does_not_reduce_ttl_above_floor() {
+        let c = LowTtlConfig {
+            enabled: true,
+            threshold_secs: 10,
+            min_ttl_floor_secs: Some(30),
+        };
+        assert_eq!(c.apply_floor(30), 30);
+        assert_eq!(c.apply_floor(300), 300);
+        assert_eq!(c.apply_floor(3600), 3600);
     }
 
     // -----------------------------------------------------------------------

@@ -245,6 +245,11 @@ enabled = true
 # TTL threshold in seconds. Responses with `min_ttl < threshold_secs`
 # add `LOW_TTL` suspicion points (default: 10 s).
 threshold_secs = 10
+# Optional cache TTL floor in seconds. When set, any TTL below this value is
+# clamped upward before the result is written to the cache. Prevents fast-flux
+# domains from bypassing the cache with near-zero TTLs. Omit or comment out
+# to leave observed TTLs unchanged (default: no floor).
+# min_ttl_floor_secs = 30
 
 # ASN (Autonomous System Number) IP-range filtering.
 #
