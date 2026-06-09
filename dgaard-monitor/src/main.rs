@@ -8,6 +8,7 @@ mod protocol;
 mod state;
 mod tui;
 mod util;
+mod web;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,6 +40,7 @@ async fn main() {
             api: config::ConnectivityConfig::default(),
             websocket: config::ConnectivityConfig::default(),
             mcp: config::ConnectivityConfig::default(),
+            web: config::WebConfig::default(),
         },
     };
 
@@ -63,6 +65,7 @@ async fn main() {
         api: api_cfg,
         websocket: ws_cfg,
         mcp: mcp_cfg,
+        web: web_cfg,
     } = cfg;
 
     // Warm-up: load host index.
@@ -195,6 +198,16 @@ async fn main() {
         let rx = shutdown_rx.clone();
         handles.push(tokio::spawn(async move {
             mcp::run(mcp_cfg, s, rx).await;
+        }));
+    }
+
+    if web_cfg.enabled {
+        let s = Arc::clone(&state);
+        let web_state =
+            std::sync::Arc::new(web::WebState::new(Arc::clone(&s), web_cfg.history_size));
+        let rx = shutdown_rx.clone();
+        handles.push(tokio::spawn(async move {
+            web::start(s, web_state, web_cfg, rx).await;
         }));
     }
 

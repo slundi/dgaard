@@ -27,6 +27,8 @@ pub struct Config {
     pub websocket: ConnectivityConfig,
     #[serde(default)]
     pub mcp: ConnectivityConfig,
+    #[serde(default)]
+    pub web: WebConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -202,6 +204,41 @@ impl Default for ConnectivityConfig {
             port: 0,
             token: default_token(),
             root_path: default_root_path(),
+        }
+    }
+}
+
+/// Configuration for the embedded web UI server.
+#[derive(Debug, Deserialize)]
+pub struct WebConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_listen")]
+    pub listen: String,
+    #[serde(default = "default_web_port")]
+    pub port: u16,
+    #[serde(default = "default_token")]
+    pub token: String,
+    #[serde(default = "default_history_size")]
+    pub history_size: usize,
+}
+
+fn default_web_port() -> u16 {
+    8083
+}
+
+fn default_history_size() -> usize {
+    1000
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen: default_listen(),
+            port: default_web_port(),
+            token: default_token(),
+            history_size: default_history_size(),
         }
     }
 }
@@ -406,6 +443,40 @@ port    = 8082
         assert!(cfg.mcp.enabled);
         assert_eq!(cfg.mcp.port, 8082);
         assert!(!cfg.api.enabled);
+    }
+
+    // --- WebConfig ---
+
+    #[test]
+    fn test_web_defaults() {
+        let f = write_temp("[input]\n");
+        let cfg = Config::load(f.path().to_str().unwrap()).unwrap();
+        assert!(!cfg.web.enabled);
+        assert_eq!(cfg.web.listen, "127.0.0.1");
+        assert_eq!(cfg.web.port, 8083);
+        assert_eq!(cfg.web.token, "changeme");
+        assert_eq!(cfg.web.history_size, 1000);
+    }
+
+    #[test]
+    fn test_web_custom_values() {
+        let f = write_temp(
+            r#"
+[input]
+[web]
+enabled = true
+listen = "0.0.0.0"
+port = 9090
+token = "mytoken"
+history_size = 5000
+"#,
+        );
+        let cfg = Config::load(f.path().to_str().unwrap()).unwrap();
+        assert!(cfg.web.enabled);
+        assert_eq!(cfg.web.listen, "0.0.0.0");
+        assert_eq!(cfg.web.port, 9090);
+        assert_eq!(cfg.web.token, "mytoken");
+        assert_eq!(cfg.web.history_size, 5000);
     }
 
     // --- Error handling ---
