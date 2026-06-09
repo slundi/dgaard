@@ -213,6 +213,26 @@ tr:hover td { background: var(--surface); }
   text-decoration: none;
 }
 .link:hover { text-decoration: underline; }
+
+/* ── Filter input (Queries / future tabs) ───────────────────── */
+.filter-input {
+  flex: 1;
+  min-width: 200px;
+  max-width: 420px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 0.25rem 0.6rem;
+}
+.filter-input:focus { outline: none; border-color: var(--accent); }
+
+.result-count { color: var(--text-muted); font-size: 12px; }
+.text-dim      { color: var(--text-muted); font-size: 12px; }
+.text-error    { color: var(--red); font-size: 12px; }
+
 code {
   background: var(--bg);
   border: 1px solid var(--border);
