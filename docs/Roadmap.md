@@ -73,13 +73,13 @@ _Focus: Adding the "Brain" features that differentiate Dgaard from Pi-hole._
 - [x] 4.4. **N-Gram Loader**: Implement the binary loader for the `.bin` language models (source? https://www.unb.ca/cic/datasets/dns-2021.html).
 - [x] 4.5. **Multi-Model N-Gram Logic**: Implement the "OR" logic (if domain passes English or French, it’s allowed).
 - [x] 4.6. **Punycode/IDN**: Add `idna` crate integration for the "Smart IDN" mode (✅ `src/resolve.rs - is_illegal_idn()`).
-- [ ] 4.7. **Forbidden words**: for a parental control, introduce the following fields:
+- [x] 4.7. **Forbidden words**: for a parental control, introduce the following fields:
   - in the TOML section `[security.lexical]`
     - `banned_keywords = ["porno", "casino", "drogue", "bet", "sex"]` for forbidden keywords. It will avoid a blocklist of 2 millions domains in RAM. Instead we will use `AhoCorasick` that will have few keywords.
     - `strict_keyword_matching = true` to avoid false positive and block the word with a separator: `casinon-les-bains.fr` city website will be blocked with `*casino*` and we dont want to
   - in the `[tld]` section:
     - `suspicious_tlds = [".com", ".net", ".org"]` so we block if suspicious tld and banned keywords matches
-- [ ] 4.8. **Deduplication**: when loaling blocklists we can have TLD blocking and domain blocking doing the same thing. Example: coverage for blocked TLD `.xyz` will bloc domains like `bad-site.xyz` (bigger depth), wildcard `abc*.def.xyz` and regexes like `[some-regex]+\\.xyz`. To reduce RAM usage, it is required.
+- [x] 4.8. **Deduplication**: when loaling blocklists we can have TLD blocking and domain blocking doing the same thing. Example: coverage for blocked TLD `.xyz` will bloc domains like `bad-site.xyz` (bigger depth), wildcard `abc*.def.xyz` and regexes like `[some-regex]+\\.xyz`. To reduce RAM usage, it is required.
   - [x] check before adding a filter
   - [ ] check if the current filter is better (smaller depth) than an already existing one so we can replace it
 
@@ -88,7 +88,7 @@ _Focus: Adding the "Brain" features that differentiate Dgaard from Pi-hole._
 _Focus: Sharing the internal state with the outside world._
 
 - [x] 5.1a. **StatEvent Definition**: Define the `StatEvent` struct with BlockReason.
-- [ ] 5.1b. **Struct Update**: Update `StatEvent` to replace `BlockReason` (a plain enum) with a compact `u16` bitmask representing accumulated `ThreatKind` flags.
+- [x] 5.1b. **Struct Update**: Update `StatEvent` to replace `BlockReason` (a plain enum) with a compact `u16` bitmask representing accumulated `ThreatKind` flags.
 - [x] 5.2. **MPSC Channel**: Setup the `tokio::sync::mpsc` channel to pass events from the Resolver to the Stats task.
 - [x] 5.3. **Unix Domain Socket** (UDS) Server: Implement the listener that streams `Postcard`-encoded events.
 - [ ] 5.4. **Basic CLI Logger**: Create a small internal function that prints blocks to `stdout` (for initial debugging).
@@ -120,7 +120,7 @@ if let Some(entry) = self.bypass_map.get(&client_ip) {
 }
 ```
 
-- [ ] 7.2. **Stat filtering**: Filter what data are written on the UNIX socket to match the log strategy. Do not log some domains for GDPR purposes (health website, ...) or personal (lottery, adult, ...).
+- [x] 7.2. **Stat filtering**: Filter what data are written on the UNIX socket to match the log strategy. Do not log some domains for GDPR purposes (health website, ...) or personal (lottery, adult, ...).
 
 ```rust
 pub enum LogStrategy {
@@ -216,7 +216,7 @@ _Focus: Closing well-known DNS attack surfaces that do not require heuristics �
   block_ptr_leak = true # new: refuse PTR queries for private IP ranges
   ```
 
-- [ ] 10.4. **CHAOS Class Query Blocking**
+- [x] 10.4. **CHAOS Class Query Blocking**
 
   DNS supports multiple query classes. Class `IN` (1) is Internet. Class `CH` (3, CHAOS) is a legacy class originally used by the CHAOS network that modern authoritative servers repurpose to serve metadata: `version.bind`, `id.server`, `hostname.bind`, `authors.bind`. These queries are a standard reconnaissance technique — tools like `dig CH TXT version.bind` or `nmap --script dns-nsid` use them to fingerprint DNS software, extract the resolver's identity, and confirm a target is a DNS server before deeper probing.
 
@@ -229,7 +229,7 @@ _Focus: Closing well-known DNS attack surfaces that do not require heuristics �
   block_chaos_class = true # block DNS CHAOS class queries (default: true)
   ```
 
-- [ ] 10.5. **0x20 Upstream Query Case Randomization**
+- [x] 10.5. **0x20 Upstream Query Case Randomization**
 
   When forwarding a query to upstream, randomize the casing of the domain name labels (e.g. `example.com` → `eXaMpLe.CoM`). RFC-compliant DNS implementations are case-insensitive and echo the query name back verbatim in the response. If the response does not echo the same mixed-case pattern, the answer is either forged or came from a non-compliant middlebox — both of which should cause the response to be discarded.
 
@@ -300,6 +300,98 @@ list_path = ["/etc/dgaard/honeypots.txt"]
 - List files are loaded at startup and on `SIGHUP` reload, using the same parser as existing plain-text domain lists.
 
 ---
+
+## Ideas
+
+### Local DNS Resolution
+
+Serve authoritative answers for LAN device names (`nas.lan`, `router.lan`, `htpc.lan`, …) directly from dgaard, without forwarding to an upstream resolver. dgaard already sits in the DNS path and has a pipeline concept with early short-circuit exits; local resolution is a natural pre-pipeline stage.
+
+**Disabled by default.**
+
+#### Design
+
+Records are declared inline in `config.toml` as an array-of-tables under `[local_dns]`. No separate hosts file is required. The record set is expected to be small (< a few hundred entries); a `HashMap<String, CompiledLocalRecord>` keyed on lowercase FQDN (without trailing dot) is sufficient — no bloom filter, no rkyv.
+
+Supported record types: **A**, **AAAA**, **CNAME**, **PTR**, **MX**, **SRV**, **TXT**.
+
+**Auto-PTR generation**: for every `A` entry a synthetic `*.in-addr.arpa → name` PTR record is generated at startup; for every `AAAA` entry a synthetic `*.ip6.arpa → name` PTR record is generated. An explicit `ptr` field in a record overrides the auto-generated entry.
+
+**Pipeline position**: local DNS runs as the very first check, before Phase 10.1 (special-use domain isolation) and Phase 10.3 (PTR leak prevention). This ensures:
+
+- A query for `nas.lan` is answered from local records before 10.1 returns NXDOMAIN for `.lan`.
+- An auto-generated PTR for a private IP is answered before 10.3 blocks the query.
+- An unknown `.lan` name with no local record falls through to 10.1, which returns NXDOMAIN — unchanged behaviour.
+
+A new `Action::LocalAnswer(Vec<u8>)` variant carries the pre-built DNS response bytes. The UDP handler sends them directly, bypassing upstream forwarding entirely.
+
+**CNAME chaining**: when a CNAME target also has a local record, the resolver follows the chain (up to 8 hops) and appends the final A/AAAA records in the Answer section in the same response.
+
+**TTL**: a `default_ttl` applies to all records; individual records can override it with a `ttl` field.
+
+#### Data structures
+
+```rust
+pub struct LocalDnsConfig {
+    pub enabled: bool,          // default: false
+    pub default_ttl: u32,       // default: 300 s
+    pub records: Vec<LocalRecord>,
+}
+
+pub struct LocalRecord {
+    pub name: String,           // lowercase FQDN, no trailing dot
+    pub ttl: Option<u32>,       // overrides default_ttl when set
+    pub a: Vec<Ipv4Addr>,
+    pub aaaa: Vec<Ipv6Addr>,
+    pub cname: Option<String>,
+    pub ptr: Option<String>,    // explicit PTR — overrides auto-generated entry
+    pub mx: Vec<MxRecord>,
+    pub srv: Vec<SrvRecord>,
+    pub txt: Vec<String>,
+}
+
+pub struct MxRecord { pub priority: u16, pub exchange: String }
+pub struct SrvRecord { pub priority: u16, pub weight: u16, pub port: u16, pub target: String }
+```
+
+#### TOML shape
+
+```toml
+[local_dns]
+enabled = false
+default_ttl = 300
+
+[[local_dns.records]]
+name = "nas.lan"
+a = ["192.168.1.10"]
+aaaa = ["fd00::10"]
+# auto-generates: 10.1.168.192.in-addr.arpa PTR nas.lan
+#                 0.1.0.0...fd00.ip6.arpa    PTR nas.lan
+
+[[local_dns.records]]
+name = "router.lan"
+a = ["192.168.1.1"]
+
+[[local_dns.records]]
+name = "media.lan"
+cname = "htpc.lan" # Answer section will chain to htpc.lan A records
+
+[[local_dns.records]]
+name = "lan"
+mx = [{ priority = 10, exchange = "mail.lan" }]
+txt = ["v=spf1 ip4:192.168.1.0/24 ~all"]
+
+[[local_dns.records]]
+name = "_http._tcp.nas.lan"
+srv = [{ priority = 0, weight = 0, port = 80, target = "nas.lan" }]
+```
+
+#### Implementation notes
+
+- Build a `HashMap<String, CompiledLocalRecord>` at startup and on `SIGHUP` reload. Auto-PTR entries are injected into the same map as synthetic records.
+- The lookup is called in `dgaard/src/dns/mod.rs` before `resolve_with_score`, using the parsed `DnsPacket` (domain + qtype + qclass). If a record is found for the queried name and type, build a `hickory-proto` `Message` response, serialise to bytes, and return `Action::LocalAnswer(bytes)`.
+- If no record matches, return `None` and continue the normal pipeline.
+- Queries for a name that exists in local DNS but with a different record type (e.g. `AAAA` query when only `A` is declared) return NOERROR with an empty Answer section (standard DNS behaviour for "name exists, type does not").
 
 ## Unsorted
 
