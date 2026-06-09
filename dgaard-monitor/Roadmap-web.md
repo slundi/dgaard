@@ -30,25 +30,25 @@ dgaard-monitor/
 
 ---
 
-## Phase 1: Integration Scaffolding
+## Phase 1: Integration Scaffolding ✅
 
 _Focus: Wire the web server into dgaard-monitor as an opt-in background thread._
 
-- [ ] 1.1. **Config**: Add `WebConfig` struct to `config.rs` — `listen` (default `127.0.0.1`), `port` (default `8083`), `token`, `history_size` (default `1000`). Add `[web]` section to `dgaard-monitor.example.toml`.
-- [ ] 1.2. **Cargo dependencies**: Add `axum`, `rust-embed`, `tokio-tungstenite` to `Cargo.toml`.
-- [ ] 1.3. **WebState**: `WebState` behind `Arc` — rolling query log (`VecDeque` capped at `history_size`), per-client counters (`DashMap<IpAddr, ClientStats>`), `tokio::sync::broadcast` sender for live WebSocket push. Shares `Arc<AppState>` (domain map, stats) from the main pipeline.
-- [ ] 1.4. **Ingestor task**: Subscribe to `AppState::subscribe()`. On each `StatEvent`: enrich domain hash → name via `domain_map`, push to the WebSocket broadcast channel, append to the rolling query log.
-- [ ] 1.5. **Thread spawn**: In `main.rs`, if `config.web.enabled`, spawn `web::start(Arc<AppState>, Arc<WebState>, WebConfig)` as a `tokio::task`. Log the listen address on startup.
-- [ ] 1.6. **Graceful shutdown**: Wire `SIGTERM` / `SIGINT` to `axum::serve(...).with_graceful_shutdown(...)`. Web thread failure is logged but does not crash the TUI process.
+- **Config**: Add `WebConfig` struct to `config.rs` — `listen` (default `127.0.0.1`), `port` (default `8083`), `token`, `history_size` (default `1000`). Add `[web]` section to `dgaard-monitor.example.toml`.
+- **Cargo dependencies**: Add `axum`, `rust-embed`, `tokio-tungstenite` to `Cargo.toml`.
+- **WebState**: `WebState` behind `Arc` — rolling query log (`VecDeque` capped at `history_size`), per-client counters (`DashMap<IpAddr, ClientStats>`), `tokio::sync::broadcast` sender for live WebSocket push. Shares `Arc<AppState>` (domain map, stats) from the main pipeline.
+- **Ingestor task**: Subscribe to `AppState::subscribe()`. On each `StatEvent`: enrich domain hash → name via `domain_map`, push to the WebSocket broadcast channel, append to the rolling query log.
+- **Thread spawn**: In `main.rs`, if `config.web.enabled`, spawn `web::start(Arc<AppState>, Arc<WebState>, WebConfig)` as a `tokio::task`. Log the listen address on startup.
+- **Graceful shutdown**: Wire `SIGTERM` / `SIGINT` to `axum::serve(...).with_graceful_shutdown(...)`. Web thread failure is logged but does not crash the TUI process.
 
-## Phase 2: Web Server
+## Phase 2: Web Server ✅
 
 _Focus: Serving the single-page app shell and wiring up axum._
 
-- [ ] 2.1. **Axum setup**: Build the router with shared `Arc<WebState>`, bind to `listen:port`, start with `axum::serve`.
-- [ ] 2.2. **Static asset embedding**: Integrate `rust-embed` to embed the `assets/` directory at compile time. Serve `GET /` → `index.html` and each asset at its filename path.
-- [ ] 2.3. **HTML shell**: Minimal `index.html` — viewport meta, load Alpine.js and Chart.js from embedded paths (`/alpine.min.js`, `/chart.min.js`), tab navigation skeleton, metric header placeholders.
-- [ ] 2.4. **Bearer auth middleware**: axum middleware that checks `Authorization: Bearer <token>` on all `/api/v1/*` and `/ws` routes. Returns HTTP 401 on mismatch.
+- **Axum setup**: Build the router with shared `Arc<WebState>`, bind to `listen:port`, start with `axum::serve`.
+- **Static asset embedding**: Integrate `rust-embed` to embed the `assets/` directory at compile time. Serve `GET /` → `index.html` and each asset at its filename path.
+- **HTML shell**: Minimal `index.html` — viewport meta, load Alpine.js and Chart.js from embedded paths (`/alpine.min.js`, `/chart.min.js`), tab navigation skeleton, metric header placeholders.
+- **Bearer auth middleware**: axum middleware that checks `Authorization: Bearer <token>` on all `/api/v1/*` and `/ws` routes. Returns HTTP 401 on mismatch.
 
 ## Phase 3: Live Event Pipeline
 

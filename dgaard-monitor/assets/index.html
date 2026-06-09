@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>dgaard monitor</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body x-data="app()" x-init="init()">
+
+  <header>
+    <div class="brand">dgaard<span>monitor</span></div>
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-label">Total Queries</div>
+        <div class="stat-value" x-text="stats.total ?? '—'">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Blocked %</div>
+        <div class="stat-value" x-text="stats.blocked_pct ?? '—'">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Active Clients</div>
+        <div class="stat-value" x-text="stats.active_clients ?? '—'">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">QPS</div>
+        <div class="stat-value" x-text="stats.qps ?? '—'">—</div>
+      </div>
+    </div>
+  </header>
+
+  <nav class="tab-bar">
+    <a class="tab" :class="{ active: tab === 'dashboard' }"
+       @click.prevent="setTab('dashboard')" href="#dashboard">Dashboard</a>
+    <a class="tab" :class="{ active: tab === 'queries' }"
+       @click.prevent="setTab('queries')" href="#queries">Queries</a>
+    <a class="tab" :class="{ active: tab === 'talkers' }"
+       @click.prevent="setTab('talkers')" href="#talkers">Talkers</a>
+    <a class="tab" :class="{ active: tab === 'timelines' }"
+       @click.prevent="setTab('timelines')" href="#timelines">Timelines</a>
+    <a class="tab" :class="{ active: tab === 'about' }"
+       @click.prevent="setTab('about')" href="#about">About</a>
+  </nav>
+
+  <main class="content">
+    <section x-show="tab === 'dashboard'">
+      <p class="placeholder">Dashboard — coming soon</p>
+    </section>
+    <section x-show="tab === 'queries'">
+      <p class="placeholder">Queries — coming soon</p>
+    </section>
+    <section x-show="tab === 'talkers'">
+      <p class="placeholder">Talkers — coming soon</p>
+    </section>
+    <section x-show="tab === 'timelines'">
+      <p class="placeholder">Timelines — coming soon</p>
+    </section>
+    <section x-show="tab === 'about'">
+      <p class="placeholder">About — coming soon</p>
+    </section>
+  </main>
+
+  <script src="/alpine.min.js" defer></script>
+  <script src="/chart.min.js" defer></script>
+  <script>
+  function app() {
+    return {
+      tab: location.hash.slice(1) || 'dashboard',
+      stats: {},
+
+      init() {
+        window.addEventListener('hashchange', () => {
+          this.tab = location.hash.slice(1) || 'dashboard';
+        });
+      },
+
+      setTab(name) {
+        this.tab = name;
+        location.hash = name;
+      },
+    };
+  }
+  </script>
+</body>
+</html>
