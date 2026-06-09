@@ -449,26 +449,42 @@ return view.extend({
         ]);
 
         // ===================================================================
-        // Assemble page
+        // Assemble page — tabbed layout
         // ===================================================================
+        var tabsNode = E('div', {}, [
+            E('div', { 'data-tab': 'server', 'data-tab-title': _('Server') }, [
+                serverSection,
+                runtimeSection,
+            ]),
+            E('div', { 'data-tab': 'security', 'data-tab-title': _('Security') }, [
+                structSection,
+                lexicalSection,
+                intelSection,
+                idnSection,
+                inboundSection,
+                protocolHardeningSection,
+                scoringSection,
+            ]),
+            E('div', { 'data-tab': 'behavior', 'data-tab-title': _('Behavior') }, [
+                behaviorSection,
+            ]),
+            E('div', { 'data-tab': 'upstream', 'data-tab-title': _('Upstream & Cache') }, [
+                upstreamSection,
+                cacheSection,
+            ]),
+            E('div', { 'data-tab': 'sources', 'data-tab-title': _('Sources & TLD') }, [
+                tldSection,
+                sourcesSection,
+            ]),
+        ]);
+
+        ui.tabs.initTabGroup(tabsNode.childNodes);
+
         return E('div', { class: 'cbi-map' }, [
             E('h2', {}, _('Dgaard DNS Proxy')),
             statusBar,
             saveBtn(),
-            serverSection,
-            runtimeSection,
-            structSection,
-            lexicalSection,
-            intelSection,
-            idnSection,
-            inboundSection,
-            scoringSection,
-            behaviorSection,
-            upstreamSection,
-            protocolHardeningSection,
-            tldSection,
-            sourcesSection,
-            cacheSection,
+            tabsNode,
             E('div', { style: 'margin-top:16px' }, saveBtn()),
         ]);
     },
