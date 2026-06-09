@@ -142,9 +142,13 @@
 
     <!-- ── Queries ────────────────────────────────────────────── -->
     <section x-show="tab === 'queries'">
-      <div x-data="queries()" x-init="load()">
+      <div x-data="queries()" x-init="init()">
 
         <div class="toolbar">
+          <span class="badge" :class="wsStatus === 'live' ? 'badge-live' : 'badge-disconnected'"
+                x-text="wsStatus === 'live' ? '● live' : '○ disconnected'"></span>
+          <button class="btn" :class="frozen ? 'btn-frozen' : ''" @click="toggleFreeze()"
+                  x-text="frozen ? '▶ resume' : '⏸ freeze'"></button>
           <input class="filter-input" type="text"
                  placeholder="Filter by domain or client IP…"
                  x-model="filter">
@@ -154,6 +158,10 @@
           </span>
           <span class="text-dim" x-show="loading">Loading…</span>
           <span class="text-error" x-show="error" x-text="error"></span>
+        </div>
+
+        <div class="frozen-notice" x-show="frozen">
+          Updates paused — <span x-text="bufferCount"></span> event(s) buffered
         </div>
 
         <table>
@@ -188,7 +196,43 @@
 
     <!-- ── Talkers ────────────────────────────────────────────── -->
     <section x-show="tab === 'talkers'">
-      <p class="placeholder">Talkers — coming soon</p>
+      <div x-data="talkers()" x-init="init()">
+
+        <div class="toolbar">
+          <button class="btn" @click="load()" :disabled="loading">↺ Refresh</button>
+          <span class="text-dim" x-show="loading">Loading…</span>
+          <span class="text-error" x-show="error" x-text="error"></span>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th class="sortable" @click="toggleSort('client')" x-text="'Client' + sortIcon('client')"></th>
+              <th class="sortable" style="text-align:right" @click="toggleSort('count')" x-text="'Total' + sortIcon('count')"></th>
+              <th class="sortable" style="text-align:right" @click="toggleSort('blocked')" x-text="'Blocked' + sortIcon('blocked')"></th>
+              <th style="text-align:right">Blocked %</th>
+              <th class="sortable" @click="toggleSort('first_seen')" x-text="'First Seen' + sortIcon('first_seen')"></th>
+              <th class="sortable" @click="toggleSort('last_seen')" x-text="'Last Seen' + sortIcon('last_seen')"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="row in sorted" :key="row.client">
+              <tr>
+                <td x-text="row.hostname ? row.hostname + ' (' + row.client + ')' : row.client"></td>
+                <td style="text-align:right" x-text="row.count"></td>
+                <td style="text-align:right" :class="row.blocked > 0 ? 'action-blocked' : ''" x-text="row.blocked"></td>
+                <td style="text-align:right" x-text="blockedPct(row)"></td>
+                <td x-text="fmtDatetime(row.first_seen)"></td>
+                <td x-text="fmtDatetime(row.last_seen)"></td>
+              </tr>
+            </template>
+            <tr x-show="sorted.length === 0 && !loading">
+              <td colspan="6" style="text-align:center;color:var(--text-muted)">No clients seen yet</td>
+            </tr>
+          </tbody>
+        </table>
+
+      </div>
     </section>
 
     <!-- ── Timelines ─────────────────────────────────────────── -->
@@ -242,6 +286,11 @@
       filter: '',
       loading: false,
       error: '',
+      frozen: false,
+      bufferCount: 0,
+      wsStatus: 'disconnected',
+      _ws: null,
+      _buffer: [],
 
       get filtered() {
         const f = this.filter.trim().toLowerCase();
@@ -250,6 +299,11 @@
           (r.client_ip ?? '').toLowerCase().includes(f) ||
           (r.domain ?? r.domain_hash ?? '').toLowerCase().includes(f)
         );
+      },
+
+      init() {
+        this.load();
+        this.connectWs();
       },
 
       async load() {
@@ -268,6 +322,37 @@
           this.error = 'Failed to connect';
         }
         this.loading = false;
+      },
+
+      connectWs() {
+        if (this._ws) { this._ws.close(); this._ws = null; }
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        const token = this.$store.auth.token;
+        const t = token ? '?token=' + encodeURIComponent(token) : '';
+        const ws = new WebSocket(proto + '://' + location.host + '/ws' + t);
+        this._ws = ws;
+        ws.onopen  = () => { this.wsStatus = 'live'; };
+        ws.onclose = () => { this.wsStatus = 'disconnected'; this._ws = null; };
+        ws.onerror = () => { this.wsStatus = 'disconnected'; };
+        ws.onmessage = (e) => {
+          const rec = JSON.parse(e.data);
+          if (this.frozen) { this._buffer.push(rec); this.bufferCount++; return; }
+          this._prepend(rec);
+        };
+      },
+
+      toggleFreeze() {
+        this.frozen = !this.frozen;
+        if (!this.frozen) {
+          // Flush oldest→newest so newest ends up at front after unshift
+          this._buffer.forEach(r => this._prepend(r));
+          this._buffer = [];
+          this.bufferCount = 0;
+        }
+      },
+
+      _prepend(rec) {
+        this.rows.unshift(rec);
       },
 
       fmtDatetime(ts) {
@@ -339,6 +424,75 @@
 
       fmtTime(ts) {
         return new Date(ts * 1000).toLocaleTimeString();
+      },
+    };
+  }
+
+  function talkers() {
+    return {
+      rows: [],
+      loading: false,
+      error: '',
+      sortKey: 'count',
+      sortAsc: false,
+
+      get sorted() {
+        const k = this.sortKey;
+        const dir = this.sortAsc ? 1 : -1;
+        return [...this.rows].sort((a, b) => {
+          const av = a[k] ?? '';
+          const bv = b[k] ?? '';
+          if (av < bv) return -dir;
+          if (av > bv) return dir;
+          return 0;
+        });
+      },
+
+      init() {
+        this.load();
+        setInterval(() => this.load(), 5000);
+      },
+
+      async load() {
+        this.loading = true;
+        this.error = '';
+        try {
+          const token = this.$store.auth.token;
+          const headers = token ? { Authorization: 'Bearer ' + token } : {};
+          const r = await fetch('/api/v1/talkers', { headers });
+          if (r.ok) {
+            this.rows = await r.json();
+          } else {
+            this.error = r.status === 401 ? 'Unauthorized — enter token above' : `Error ${r.status}`;
+          }
+        } catch {
+          this.error = 'Failed to connect';
+        }
+        this.loading = false;
+      },
+
+      toggleSort(key) {
+        if (this.sortKey === key) {
+          this.sortAsc = !this.sortAsc;
+        } else {
+          this.sortKey = key;
+          this.sortAsc = false;
+        }
+      },
+
+      sortIcon(key) {
+        if (this.sortKey !== key) return '';
+        return this.sortAsc ? ' ▲' : ' ▼';
+      },
+
+      fmtDatetime(ts) {
+        if (!ts) return '—';
+        return new Date(ts * 1000).toLocaleString();
+      },
+
+      blockedPct(row) {
+        if (!row.count) return '—';
+        return (row.blocked / row.count * 100).toFixed(1) + '%';
       },
     };
   }
