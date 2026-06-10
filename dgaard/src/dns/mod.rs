@@ -12,6 +12,7 @@ use crate::dns::packet::DnsPacket;
 use crate::dns::upstream::forward_to_upstream;
 use crate::model::{Action, StatAction, StatBlockReason, SuspicionScore};
 use crate::resolve::{check_qclass, check_qtype, resolve_with_score, score_answer};
+use crate::debug::debug_print;
 use crate::{CONFIG, STATS_COUNTERS, STATS_SENDER};
 
 /// Map a suspicion score to a stat action using the configured thresholds.
@@ -65,12 +66,20 @@ pub(crate) async fn handle_query(
 
     // Increment total query counter
     STATS_COUNTERS.increment_total();
+    debug_print!(
+        "Query: {} from {} (qtype={}, qclass={})",
+        dns_packet.domain,
+        peer,
+        dns_packet.qtype,
+        dns_packet.qclass
+    );
 
     // 2a. QType Warden: block forbidden query types before domain resolution.
     //     This is the cheapest check — a u16 lookup — so it runs first.
     if let Some(reason) = check_qtype(dns_packet.qtype) {
         STATS_COUNTERS.increment_blocked();
         let stat_reason = StatBlockReason::from(&reason);
+        debug_print!("QType block: {} qtype={}: {:?}", dns_packet.domain, dns_packet.qtype, stat_reason);
         let response = DnsPacket::build_nxdomain_response(&dns_packet.message);
         socket.send_to(&response, peer).await?;
         if let Some(sender) = STATS_SENDER.get() {
@@ -85,6 +94,7 @@ pub(crate) async fn handle_query(
     if let Some(reason) = check_qclass(dns_packet.qclass) {
         STATS_COUNTERS.increment_blocked();
         let stat_reason = StatBlockReason::from(&reason);
+        debug_print!("QClass block: {} qclass={}: {:?}", dns_packet.domain, dns_packet.qclass, stat_reason);
         let response = DnsPacket::build_refused_response(&dns_packet.message);
         socket.send_to(&response, peer).await?;
         if let Some(sender) = STATS_SENDER.get() {
@@ -97,6 +107,7 @@ pub(crate) async fn handle_query(
     let resolve_result = resolve_with_score(&dns_packet.domain);
     let action = resolve_result.action;
     let mut score = resolve_result.score;
+    debug_print!("Resolve: {} -> {:?} (score={})", dns_packet.domain, action, score.total);
 
     // 3. Process the action and determine stat action
     let scoring = &CONFIG.load();
