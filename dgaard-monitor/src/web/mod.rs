@@ -134,6 +134,7 @@ fn build_router(web: Arc<WebState>, token: String) -> Router {
                 .route("/queries", get(routes::queries::queries_handler))
                 .route("/talkers", get(routes::talkers::talkers_handler))
                 .route("/timelines", get(routes::timeline::timelines_handler))
+                .route("/lists", get(routes::lists::lists_handler))
                 .fallback(|| async { StatusCode::NOT_FOUND }),
         )
         .route("/ws", get(routes::ws::ws_handler))
@@ -549,6 +550,24 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/v1/talkers")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp.into_body()).await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v.is_array());
+    }
+
+    #[tokio::test]
+    async fn api_lists_returns_empty_array() {
+        let app = make_router("");
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/lists")
                     .body(Body::empty())
                     .unwrap(),
             )

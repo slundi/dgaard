@@ -39,6 +39,8 @@
        @click.prevent="setTab('talkers')" href="#talkers">Talkers</a>
     <a class="tab" :class="{ active: tab === 'timelines' }"
        @click.prevent="setTab('timelines')" href="#timelines">Timelines</a>
+    <a class="tab" :class="{ active: tab === 'lists' }"
+       @click.prevent="setTab('lists')" href="#lists">Lists</a>
     <a class="tab" :class="{ active: tab === 'about' }"
        @click.prevent="setTab('about')" href="#about">About</a>
   </nav>
@@ -248,6 +250,61 @@
         <div class="chart-container">
           <canvas id="timeline-chart"></canvas>
         </div>
+      </div>
+    </section>
+
+    <!-- ── Lists ─────────────────────────────────────────────── -->
+    <section x-show="tab === 'lists'">
+      <div x-data="lists()" x-init="init()">
+        <div class="toolbar">
+          <input class="filter-input" type="text" placeholder="Search domains…"
+                 x-model="search">
+          <select class="type-select" x-model="typeFilter" @change="load()">
+            <option value="">All types</option>
+            <option value="blocked">Blocked</option>
+            <option value="tld">TLD</option>
+            <option value="wildcard">Wildcard</option>
+            <option value="whitelist">Whitelist</option>
+          </select>
+          <button class="btn" @click="load()" :disabled="loading">↺ Refresh</button>
+          <span class="result-count" x-show="rows.length > 0">
+            <span x-text="rows.length"></span> entries
+          </span>
+          <span class="text-dim" x-show="loading">Loading…</span>
+          <span class="text-error" x-show="error" x-text="error"></span>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th class="sortable" @click="toggleSort('domain')"
+                  x-text="'Domain' + sortIcon('domain')"></th>
+              <th class="sortable" @click="toggleSort('type')"
+                  x-text="'Type' + sortIcon('type')"></th>
+              <th class="sortable" style="text-align:right" @click="toggleSort('hits')"
+                  x-text="'Hits' + sortIcon('hits')"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="row in sorted" :key="row.hash">
+              <tr>
+                <td style="word-break:break-all;font-family:inherit"
+                    x-text="row.domain"></td>
+                <td>
+                  <span class="type-badge" :class="'type-' + row.type"
+                        x-text="row.type"></span>
+                </td>
+                <td style="text-align:right;color:var(--text-muted)"
+                    x-text="row.hits || '—'"></td>
+              </tr>
+            </template>
+            <tr x-show="rows.length === 0 && !loading">
+              <td colspan="3" style="text-align:center;color:var(--text-muted)">
+                No entries — host index may not be loaded
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </section>
 
@@ -504,6 +561,81 @@
       blockedPct(row) {
         if (!row.count) return '—';
         return (row.blocked / row.count * 100).toFixed(1) + '%';
+      },
+    };
+  }
+
+  function lists() {
+    return {
+      rows: [],
+      search: '',
+      typeFilter: '',
+      loading: false,
+      error: '',
+      sortKey: 'type',
+      sortAsc: true,
+      _searchTimer: null,
+
+      get sorted() {
+        const k = this.sortKey;
+        const dir = this.sortAsc ? 1 : -1;
+        return [...this.rows].sort((a, b) => {
+          const av = a[k] ?? '';
+          const bv = b[k] ?? '';
+          if (av < bv) return -dir;
+          if (av > bv) return dir;
+          if (k === 'type') {
+            if (a.domain < b.domain) return -1;
+            if (a.domain > b.domain) return 1;
+          }
+          return 0;
+        });
+      },
+
+      init() {
+        this.load();
+        this.$watch('search', () => {
+          clearTimeout(this._searchTimer);
+          this._searchTimer = setTimeout(() => this.load(), 300);
+        });
+      },
+
+      async load() {
+        this.loading = true;
+        this.error = '';
+        try {
+          const token = this.$store.auth.token;
+          const headers = token ? { Authorization: 'Bearer ' + token } : {};
+          const ps = [];
+          if (this.search.trim()) ps.push('search=' + encodeURIComponent(this.search.trim()));
+          if (this.typeFilter)   ps.push('type='   + encodeURIComponent(this.typeFilter));
+          const url = '/api/v1/lists' + (ps.length ? '?' + ps.join('&') : '');
+          const r = await fetch(url, { headers });
+          if (r.ok) {
+            this.rows = await r.json();
+          } else {
+            this.error = r.status === 401
+              ? 'Unauthorized — enter token above'
+              : `Error ${r.status}`;
+          }
+        } catch {
+          this.error = 'Failed to connect';
+        }
+        this.loading = false;
+      },
+
+      toggleSort(key) {
+        if (this.sortKey === key) {
+          this.sortAsc = !this.sortAsc;
+        } else {
+          this.sortKey = key;
+          this.sortAsc = key !== 'hits';
+        }
+      },
+
+      sortIcon(key) {
+        if (this.sortKey !== key) return '';
+        return this.sortAsc ? ' ▲' : ' ▼';
       },
     };
   }
