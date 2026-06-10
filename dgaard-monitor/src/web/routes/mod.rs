@@ -1,4 +1,5 @@
 pub(super) mod about;
+pub(super) mod beaconing;
 pub(super) mod health;
 pub(super) mod lists;
 pub(super) mod queries;

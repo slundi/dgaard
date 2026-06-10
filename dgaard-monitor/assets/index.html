@@ -138,6 +138,22 @@
             </table>
           </div>
 
+          <!-- Beaconing alerts -->
+          <div class="panel">
+            <div class="panel-title">Beaconing Alerts</div>
+            <template x-if="beacons.length === 0">
+              <div style="color:var(--text-muted);font-size:12px">No beacons detected</div>
+            </template>
+            <template x-for="b in beacons.slice(0, 8)" :key="b.client + b.domain_hash">
+              <div class="beacon-row">
+                <span class="beacon-client" x-text="b.client"></span>
+                <span class="beacon-domain" :title="b.domain" x-text="b.domain"></span>
+                <span class="beacon-meta"
+                      x-text="fmtBeaconInterval(b.mean_interval_secs) + ' · CoV ' + b.cov.toFixed(3)"></span>
+              </div>
+            </template>
+          </div>
+
         </aside>
       </div>
     </section>
@@ -773,6 +789,7 @@
       tab: location.hash.slice(1) || 'dashboard',
       stats: {},
       aboutInfo: {},
+      beacons: [],
 
       get blockedPct() {
         if (!this.stats.total) return '—';
@@ -803,13 +820,28 @@
         } catch {}
       },
 
+      async fetchBeacons() {
+        try {
+          const r = await fetch('/api/v1/beaconing', { headers: this._authHeaders() });
+          if (r.ok) this.beacons = await r.json();
+        } catch {}
+      },
+
+      fmtBeaconInterval(secs) {
+        if (secs < 60)   return secs.toFixed(0) + 's';
+        if (secs < 3600) return (secs / 60).toFixed(1) + 'm';
+        return (secs / 3600).toFixed(1) + 'h';
+      },
+
       init() {
         window.addEventListener('hashchange', () => {
           this.tab = location.hash.slice(1) || 'dashboard';
         });
         this.fetchStats();
         this.fetchAbout();
+        this.fetchBeacons();
         setInterval(() => this.fetchStats(), 1000);
+        setInterval(() => this.fetchBeacons(), 60000);
       },
 
       setTab(name) {

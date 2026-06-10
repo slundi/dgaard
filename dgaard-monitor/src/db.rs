@@ -203,6 +203,38 @@ impl Database {
         }
         Ok(results)
     }
+
+    /// Return `(client_ip, domain_hash, domain_name, timestamp)` rows for all
+    /// (client, domain) pairs that have at least `min_observations` events,
+    /// ordered by `client_ip, domain_hash, timestamp` for sequential grouping.
+    pub fn query_beaconing_timestamps(
+        &self,
+        min_observations: i64,
+    ) -> rusqlite::Result<Vec<(String, String, Option<String>, u64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "WITH candidates AS (
+                 SELECT client_ip, domain_hash
+                 FROM dns_events
+                 GROUP BY client_ip, domain_hash
+                 HAVING COUNT(*) >= ?1
+             )
+             SELECT e.client_ip, e.domain_hash, e.domain, e.timestamp
+             FROM dns_events e
+             INNER JOIN candidates c
+                 ON e.client_ip = c.client_ip AND e.domain_hash = c.domain_hash
+             ORDER BY e.client_ip, e.domain_hash, e.timestamp",
+        )?;
+        let rows = stmt.query_map(params![min_observations], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)? as u64,
+            ))
+        })?;
+        rows.collect()
+    }
 }
 
 // ── Writer task ───────────────────────────────────────────────────────────────

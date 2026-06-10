@@ -98,3 +98,17 @@ token = "changeme"
 
 # Maximum number of DNS events kept in the in-memory rolling log.
 history_size = 1000
+
+# ---------------------------------------------------------------------------
+# Beaconing detection (GET /api/v1/beaconing)
+# ---------------------------------------------------------------------------
+
+# Minimum number of queries from a single client to the same domain before
+# the pair is eligible for beaconing analysis.
+beaconing_min_observations = 5
+
+# Coefficient of Variation (std_dev / mean) of inter-arrival times below
+# which a client/domain pair is flagged as a potential beacon.
+# Lower = stricter.  0.15 catches highly regular C2 beacons while avoiding
+# most false positives from bursty-but-periodic background traffic.
+beaconing_cov_threshold = 0.15

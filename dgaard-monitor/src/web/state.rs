@@ -47,6 +47,11 @@ pub struct WebState {
     pub db: Option<Arc<Database>>,
     pub(crate) broadcast_tx: broadcast::Sender<EventRecord>,
     pub history_size: usize,
+    /// Minimum number of observations before a (client, domain) pair is
+    /// considered for beaconing analysis.
+    pub beaconing_min_observations: usize,
+    /// Coefficient of Variation threshold below which a pair is flagged.
+    pub beaconing_cov_threshold: f64,
 }
 
 impl WebState {
@@ -61,6 +66,8 @@ impl WebState {
             db: None,
             broadcast_tx,
             history_size,
+            beaconing_min_observations: 5,
+            beaconing_cov_threshold: 0.15,
         }
     }
 
@@ -68,6 +75,15 @@ impl WebState {
     pub fn with_db(self, db: Arc<Database>) -> Self {
         Self {
             db: Some(db),
+            ..self
+        }
+    }
+
+    /// Override beaconing detection thresholds from config.
+    pub fn with_beaconing(self, min_observations: usize, cov_threshold: f64) -> Self {
+        Self {
+            beaconing_min_observations: min_observations,
+            beaconing_cov_threshold: cov_threshold,
             ..self
         }
     }

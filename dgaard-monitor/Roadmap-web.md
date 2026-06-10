@@ -107,4 +107,4 @@ _Focus: Surviving restarts and enabling longer-term analytics._
 
 - [x] 9.1. **List tab**: Browse blocked domains, TLDs, wildcards, and whitelist entries from the host index. Search input, filter by list type (whitelist / blacklist), sort.
 - [ ] 9.2. **Country flags**: Resolve hosted domain IPs to country codes and display flags in the Queries tab.
-- [ ] 9.3. **Beaconing detection**: Highlight client/domain pairs that repeat at suspiciously regular intervals.
+- [x] 9.3. **Beaconing detection**: Highlight client/domain pairs that repeat at suspiciously regular intervals.

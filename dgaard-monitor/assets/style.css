@@ -313,6 +313,40 @@ th.sortable:hover { color: var(--text); }
   padding: 0.35rem 0.75rem;
 }
 
+/* ── Beaconing panel ─────────────────────────────────────────── */
+.beacon-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  gap: 0 0.4rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.beacon-row:last-child { border-bottom: none; }
+.beacon-client {
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+  grid-column: 1;
+  grid-row: 1;
+}
+.beacon-domain {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  grid-column: 2;
+  grid-row: 1;
+}
+.beacon-meta {
+  color: var(--red);
+  font-size: 11px;
+  white-space: nowrap;
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+
 /* ── List tab ────────────────────────────────────────────────── */
 .type-select {
   background: var(--bg);

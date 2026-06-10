@@ -234,7 +234,11 @@ async fn main() {
     if web_cfg.enabled {
         let s = Arc::clone(&state);
         let web_state = {
-            let ws = web::WebState::new(Arc::clone(&s), web_cfg.history_size);
+            let ws = web::WebState::new(Arc::clone(&s), web_cfg.history_size)
+                .with_beaconing(
+                    web_cfg.beaconing_min_observations,
+                    web_cfg.beaconing_cov_threshold,
+                );
             match &db {
                 Some(d) => ws.with_db(std::sync::Arc::clone(d)),
                 None => ws,

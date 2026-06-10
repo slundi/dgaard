@@ -227,6 +227,15 @@ pub struct WebConfig {
     pub token: String,
     #[serde(default = "default_history_size")]
     pub history_size: usize,
+    /// Minimum number of queries from a single client to the same domain
+    /// before the pair is eligible for beaconing analysis.
+    #[serde(default = "default_beaconing_min_obs")]
+    pub beaconing_min_observations: usize,
+    /// Coefficient of Variation threshold (std_dev / mean of inter-arrival
+    /// times).  Pairs with CoV below this value are flagged as potential
+    /// beacons.  Lower = stricter.
+    #[serde(default = "default_beaconing_cov")]
+    pub beaconing_cov_threshold: f64,
 }
 
 fn default_web_port() -> u16 {
@@ -237,6 +246,14 @@ fn default_history_size() -> usize {
     1000
 }
 
+fn default_beaconing_min_obs() -> usize {
+    5
+}
+
+fn default_beaconing_cov() -> f64 {
+    0.15
+}
+
 impl Default for WebConfig {
     fn default() -> Self {
         Self {
@@ -245,6 +262,8 @@ impl Default for WebConfig {
             port: default_web_port(),
             token: default_token(),
             history_size: default_history_size(),
+            beaconing_min_observations: default_beaconing_min_obs(),
+            beaconing_cov_threshold: default_beaconing_cov(),
         }
     }
 }
