@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>dgaard monitor</title>
   <link rel="stylesheet" href="/style.css">
+  <!-- Apply stored theme before first paint to prevent flash -->
+  <script>
+    (function() {
+      var t = localStorage.getItem('dgaard-theme') || 'system';
+      if (t === 'dark')  document.documentElement.setAttribute('data-theme', 'dark');
+      if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    })();
+  </script>
 </head>
 <body x-data="app()" x-init="init()">
 
@@ -28,6 +36,10 @@
         <div class="stat-value" x-text="stats.qps ?? '—'">—</div>
       </div>
     </div>
+    <button class="btn" style="white-space:nowrap;flex-shrink:0"
+            @click="$store.theme.cycle()"
+            x-text="$store.theme.label"
+            :title="'Theme: ' + $store.theme.label"></button>
   </header>
 
   <nav class="tab-bar">
@@ -359,6 +371,26 @@
   <script>
     document.addEventListener('alpine:init', () => {
       Alpine.store('auth', { token: '' });
+
+      Alpine.store('theme', {
+        value: localStorage.getItem('dgaard-theme') || 'system',
+        get label() {
+          return { system: 'Auto', dark: 'Dark', light: 'Light' }[this.value] || 'Auto';
+        },
+        cycle() {
+          const next = { system: 'dark', dark: 'light', light: 'system' };
+          this.set(next[this.value] || 'system');
+        },
+        set(v) {
+          this.value = v;
+          localStorage.setItem('dgaard-theme', v);
+          const el = document.documentElement;
+          if (v === 'dark')       el.setAttribute('data-theme', 'dark');
+          else if (v === 'light') el.setAttribute('data-theme', 'light');
+          else                    el.removeAttribute('data-theme');
+          window.dispatchEvent(new Event('themechange'));
+        },
+      });
     });
   </script>
   <script src="/chart.min.js" defer></script>
@@ -656,6 +688,10 @@
     };
   }
 
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
   function timelines() {
     return {
       loading: false,
@@ -663,10 +699,18 @@
       lastUpdated: '',
       _chart: null,
       _interval: null,
+      _lastData: null,
 
       init() {
         this.load();
         this._interval = setInterval(() => this.load(), 60000);
+        window.addEventListener('themechange', () => {
+          if (this._chart && this._lastData) {
+            this._chart.destroy();
+            this._chart = null;
+            this.renderChart(this._lastData);
+          }
+        });
       },
 
       destroy() {
@@ -683,6 +727,7 @@
           const r = await fetch('/api/v1/timelines', { headers });
           if (r.ok) {
             const data = await r.json();
+            this._lastData = data;
             this.renderChart(data);
             this.lastUpdated = new Date().toLocaleTimeString();
           } else {
@@ -702,19 +747,25 @@
       },
 
       renderChart(data) {
-        const labels       = data.map(b => this.fmtLabel(b.ts));
-        const totalData    = data.map(b => b.total);
-        const blockedData  = data.map(b => b.blocked);
-        const suspData     = data.map(b => b.suspicious);
+        const labels      = data.map(b => this.fmtLabel(b.ts));
+        const totalData   = data.map(b => b.total);
+        const blockedData = data.map(b => b.blocked);
+        const suspData    = data.map(b => b.suspicious);
+
+        const accent = cssVar('--accent');
+        const red    = cssVar('--red');
+        const yellow = cssVar('--yellow');
+        const text   = cssVar('--text');
+        const muted  = cssVar('--border');
 
         const canvas = document.getElementById('timeline-chart');
         if (!canvas) return;
 
         if (this._chart) {
-          this._chart.data.labels             = labels;
-          this._chart.data.datasets[0].data   = totalData;
-          this._chart.data.datasets[1].data   = blockedData;
-          this._chart.data.datasets[2].data   = suspData;
+          this._chart.data.labels           = labels;
+          this._chart.data.datasets[0].data = totalData;
+          this._chart.data.datasets[1].data = blockedData;
+          this._chart.data.datasets[2].data = suspData;
           this._chart.update();
           return;
         }
@@ -727,8 +778,8 @@
               {
                 label: 'Total',
                 data: totalData,
-                borderColor: '#58a6ff',
-                backgroundColor: 'rgba(88,166,255,0.08)',
+                borderColor: accent,
+                backgroundColor: accent + '14',
                 tension: 0.3,
                 fill: false,
                 pointRadius: 2,
@@ -737,8 +788,8 @@
               {
                 label: 'Blocked',
                 data: blockedData,
-                borderColor: '#f85149',
-                backgroundColor: 'rgba(248,81,73,0.08)',
+                borderColor: red,
+                backgroundColor: red + '14',
                 tension: 0.3,
                 fill: false,
                 pointRadius: 2,
@@ -747,8 +798,8 @@
               {
                 label: 'Suspicious',
                 data: suspData,
-                borderColor: '#d29922',
-                backgroundColor: 'rgba(210,153,34,0.08)',
+                borderColor: yellow,
+                backgroundColor: yellow + '14',
                 tension: 0.3,
                 fill: false,
                 pointRadius: 2,
@@ -762,20 +813,20 @@
             plugins: {
               legend: {
                 position: 'top',
-                labels: { color: '#e6edf3' },
+                labels: { color: text },
               },
             },
             scales: {
               x: {
-                ticks: { color: '#8b949e', maxRotation: 45, autoSkip: true, maxTicksLimit: 24 },
-                grid:   { color: '#30363d' },
-                border: { color: '#30363d' },
+                ticks: { color: cssVar('--text-muted'), maxRotation: 45, autoSkip: true, maxTicksLimit: 24 },
+                grid:   { color: muted },
+                border: { color: muted },
               },
               y: {
                 beginAtZero: true,
-                ticks:  { color: '#8b949e' },
-                grid:   { color: '#30363d' },
-                border: { color: '#30363d' },
+                ticks:  { color: cssVar('--text-muted') },
+                grid:   { color: muted },
+                border: { color: muted },
               },
             },
           },

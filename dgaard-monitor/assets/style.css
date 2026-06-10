@@ -1,15 +1,44 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* ── Dark theme (default) ─────────────────────────────────────── */
 :root {
-  --bg:           #0d1117;
-  --surface:      #161b22;
-  --border:       #30363d;
-  --text:         #e6edf3;
-  --text-muted:   #8b949e;
-  --accent:       #58a6ff;
-  --green:        #3fb950;
-  --red:          #f85149;
-  --yellow:       #d29922;
+  --bg:         #0d1117;
+  --surface:    #161b22;
+  --border:     #30363d;
+  --text:       #e6edf3;
+  --text-muted: #8b949e;
+  --accent:     #58a6ff;
+  --green:      #3fb950;
+  --red:        #f85149;
+  --yellow:     #d29922;
+}
+
+/* ── Light theme (explicit choice) ───────────────────────────── */
+[data-theme="light"] {
+  --bg:         #ffffff;
+  --surface:    #f6f8fa;
+  --border:     #d0d7de;
+  --text:       #1f2328;
+  --text-muted: #656d76;
+  --accent:     #0969da;
+  --green:      #1a7f37;
+  --red:        #cf222e;
+  --yellow:     #9a6700;
+}
+
+/* ── System preference (no explicit override) ─────────────────── */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg:         #ffffff;
+    --surface:    #f6f8fa;
+    --border:     #d0d7de;
+    --text:       #1f2328;
+    --text-muted: #656d76;
+    --accent:     #0969da;
+    --green:      #1a7f37;
+    --red:        #cf222e;
+    --yellow:     #9a6700;
+  }
 }
 
 body {
@@ -244,9 +273,9 @@ code {
 }
 
 /* Row-level tinting (applied to <tr>) */
-tr.action-blocked          { background: rgba(248,81,73,0.06); }
-tr.action-suspicious       { background: rgba(210,153,34,0.06); }
-tr.action-highlysuspicious { background: rgba(248,81,73,0.10); }
+tr.action-blocked          { background: color-mix(in srgb, var(--red)    6%,  transparent); }
+tr.action-suspicious       { background: color-mix(in srgb, var(--yellow) 6%,  transparent); }
+tr.action-highlysuspicious { background: color-mix(in srgb, var(--red)    10%, transparent); }
 
 /* ── Live feed toolbar ───────────────────────────────────────── */
 .toolbar {
@@ -263,8 +292,8 @@ tr.action-highlysuspicious { background: rgba(248,81,73,0.10); }
   border-radius: 999px;
   font-weight: 600;
 }
-.badge-live         { background: rgba(63,185,80,0.15);  color: var(--green); }
-.badge-disconnected { background: rgba(139,148,158,0.15); color: var(--text-muted); }
+.badge-live         { background: color-mix(in srgb, var(--green)      15%, transparent); color: var(--green); }
+.badge-disconnected { background: color-mix(in srgb, var(--text-muted) 15%, transparent); color: var(--text-muted); }
 
 .btn {
   padding: 0.25rem 0.75rem;
@@ -304,8 +333,8 @@ th.sortable {
 th.sortable:hover { color: var(--text); }
 
 .frozen-notice {
-  background: rgba(210,153,34,0.08);
-  border: 1px solid rgba(210,153,34,0.3);
+  background: color-mix(in srgb, var(--yellow) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--yellow) 30%, transparent);
   border-radius: 5px;
   color: var(--yellow);
   font-size: 12px;
@@ -369,10 +398,10 @@ th.sortable:hover { color: var(--text); }
   letter-spacing: 0.05em;
   white-space: nowrap;
 }
-.type-blocked   { background: rgba(248,81,73,0.15);   color: var(--red); }
-.type-wildcard  { background: rgba(210,153,34,0.15);  color: var(--yellow); }
-.type-tld       { background: rgba(139,148,158,0.15); color: var(--text-muted); }
-.type-whitelist { background: rgba(63,185,80,0.15);   color: var(--green); }
+.type-blocked   { background: color-mix(in srgb, var(--red)        15%, transparent); color: var(--red); }
+.type-wildcard  { background: color-mix(in srgb, var(--yellow)     15%, transparent); color: var(--yellow); }
+.type-tld       { background: color-mix(in srgb, var(--text-muted) 15%, transparent); color: var(--text-muted); }
+.type-whitelist { background: color-mix(in srgb, var(--green)      15%, transparent); color: var(--green); }
 
 /* ── Timeline chart ──────────────────────────────────────────── */
 .chart-container {
