@@ -32,6 +32,9 @@ tokio-tungstenite.workspace = true
 # Reverse-DNS resolution for the Talkers tab (PTR lookups)
 hickory-resolver.workspace = true
 
+# SQLite persistence
+rusqlite.workspace = true
+
 # Terminal UI rendering
 crossterm.workspace = true
 ratatui.workspace = true

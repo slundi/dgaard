@@ -95,23 +95,16 @@ _Focus: 24-hour trend visualization with Chart.js._
 - **`GET /api/v1/timelines`**: Return the last N buckets as `[{ ts, total, blocked, suspicious }]`.
 - **Timelines tab UI**: Chart.js line chart with three series (total / blocked / suspicious). Auto-refreshes every 60 seconds.
 
-## Phase 8: Data & Persistence
+## Phase 8: Data & Persistence ✅
 
 _Focus: Surviving restarts and enabling longer-term analytics._
 
-- [ ] 8.1. **SQLite integration**: Open a WAL-mode SQLite database (`rusqlite`). Two tables: `dns_events` (72 h rolling log) and `dns_stats_hourly` (30-day aggregates). Reuses the `[persistence]` config already present in `dgaard-monitor.toml`.
-- [ ] 8.2. **Persistence writer**: A background task that drains a secondary channel and writes events to `dns_events`, updating `dns_stats_hourly` each hour.
-- [ ] 8.3. **DB-backed query history**: When `GET /api/v1/queries` receives `?from=<ts>&to=<ts>` params, query SQLite instead of the in-memory log.
+- **SQLite integration**: Open a WAL-mode SQLite database (`rusqlite`). Two tables: `dns_events` (72 h rolling log) and `dns_stats_hourly` (30-day aggregates). Reuses the `[persistence]` config already present in `dgaard-monitor.toml`.
+- **Persistence writer**: Standalone background task (active regardless of `web.enabled`) that subscribes to `AppState`'s broadcast channel and writes events to `dns_events`, flushing hourly aggregates to `dns_stats_hourly` event-driven (on hour boundary).
+- **DB-backed query history**: When `GET /api/v1/queries` receives `?from=<ts>&to=<ts>` params, query SQLite instead of the in-memory log. Returns 503 when persistence is not configured.
 
-## Phase 9: Integrations
+## Phase 9: Misc
 
-_Focus: Outbound notifications mirrored from the TUI._
-
-- [ ] 9.1. **Action hooks**: Configuration to define `on_block` triggers (same format as the existing forwarding hooks).
-- [ ] 9.2. **Generic webhooks**: POST JSON payloads to external URLs (SOAR, Slack, etc.) on configured events.
-
-## Phase 10: Misc
-
-- [ ] 10.1. **List tab**: Browse blocked domains, TLDs, wildcards, and whitelist entries from the host index. Search input, filter by list type (whitelist / blacklist), sort.
-- [ ] 10.2. **Country flags**: Resolve hosted domain IPs to country codes and display flags in the Queries tab.
-- [ ] 10.3. **Beaconing detection**: Highlight client/domain pairs that repeat at suspiciously regular intervals.
+- [ ] 9.1. **List tab**: Browse blocked domains, TLDs, wildcards, and whitelist entries from the host index. Search input, filter by list type (whitelist / blacklist), sort.
+- [ ] 9.2. **Country flags**: Resolve hosted domain IPs to country codes and display flags in the Queries tab.
+- [ ] 9.3. **Beaconing detection**: Highlight client/domain pairs that repeat at suspiciously regular intervals.

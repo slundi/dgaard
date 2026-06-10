@@ -24,6 +24,10 @@ pub struct QueriesParams {
     pub offset: Option<usize>,
     pub client: Option<String>,
     pub action: Option<String>,
+    /// Start of time range (Unix timestamp, inclusive). Enables DB query.
+    pub from: Option<u64>,
+    /// End of time range (Unix timestamp, inclusive). Enables DB query.
+    pub to: Option<u64>,
 }
 
 fn is_valid_action(action: &str) -> bool {
@@ -51,6 +55,57 @@ pub async fn queries_handler(
 
     let limit = params.limit.unwrap_or(100).min(1000);
     let offset = params.offset.unwrap_or(0);
+
+    // When a time-range is requested, serve from SQLite.
+    if params.from.is_some() || params.to.is_some() {
+        let db = match web.db.as_ref() {
+            Some(d) => std::sync::Arc::clone(d),
+            None => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({"error": "persistence not configured"})),
+                )
+                    .into_response()
+            }
+        };
+
+        let from = params.from.unwrap_or(0);
+        let to = params.to.unwrap_or(u64::MAX);
+        let client = params.client.clone();
+        let action = params.action.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            db.query_range(from, to, client, action, limit, offset)
+        })
+        .await;
+
+        return match result {
+            Ok(Ok(records)) => {
+                let results: Vec<QueryResponse> = records
+                    .into_iter()
+                    .map(|record| {
+                        let hostname = record
+                            .client_ip
+                            .parse::<IpAddr>()
+                            .ok()
+                            .and_then(|ip| web.hostname_cache.get(&ip).map(|h| h.clone()));
+                        QueryResponse { record, hostname }
+                    })
+                    .collect();
+                Json(results).into_response()
+            }
+            Ok(Err(e)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("database error: {e}")})),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("task error: {e}")})),
+            )
+                .into_response(),
+        };
+    }
 
     let log = web.query_log.lock().await;
 
@@ -123,6 +178,8 @@ mod tests {
             offset: None,
             client: None,
             action: Some("invalid".to_string()),
+            from: None,
+            to: None,
         };
         let resp = queries_handler(State(web), Query(params)).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -136,6 +193,8 @@ mod tests {
             offset: None,
             client: None,
             action: None,
+            from: None,
+            to: None,
         };
         let resp = queries_handler(State(web), Query(params)).await;
         assert_eq!(resp.status(), StatusCode::OK);
@@ -160,6 +219,8 @@ mod tests {
             offset: None,
             client: None,
             action: None,
+            from: None,
+            to: None,
         };
         let resp = queries_handler(State(Arc::clone(&web)), Query(params)).await;
         assert_eq!(resp.status(), StatusCode::OK);
@@ -174,6 +235,8 @@ mod tests {
             offset: None,
             client: None,
             action: None,
+            from: None,
+            to: None,
         };
         let resp2 = queries_handler(State(web), Query(params_capped)).await;
         let body2 = axum::body::to_bytes(resp2.into_body(), usize::MAX)
@@ -181,5 +244,78 @@ mod tests {
             .unwrap();
         let parsed2: Vec<serde_json::Value> = serde_json::from_slice(&body2).unwrap();
         assert_eq!(parsed2.len(), 150);
+    }
+
+    // ── DB-backed (from/to) path ──────────────────────────────────────────────
+
+    fn make_web_state_with_db() -> Arc<WebState> {
+        let app = Arc::new(AppState::new(std::time::Duration::from_secs(3600)));
+        let db = crate::db::Database::open_in_memory().unwrap();
+        Arc::new(WebState::new(app, 100).with_db(Arc::new(db)))
+    }
+
+    #[tokio::test]
+    async fn from_without_db_returns_503() {
+        let web = make_web_state();
+        let params = QueriesParams {
+            limit: None,
+            offset: None,
+            client: None,
+            action: None,
+            from: Some(0),
+            to: None,
+        };
+        let resp = queries_handler(State(web), Query(params)).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn from_to_returns_db_results() {
+        let web = make_web_state_with_db();
+        // Seed the DB through push_event (the ingestor path populates both
+        // in-memory log and persists via the writer task in production; here we
+        // insert directly into the DB for the test).
+        if let Some(db) = &web.db {
+            db.insert_events(&[
+                EventRecord {
+                    timestamp: 1000,
+                    domain: Some("example.com".to_string()),
+                    domain_hash: "0000000000000001".to_string(),
+                    client_ip: "10.0.0.1".to_string(),
+                    action: "Blocked".to_string(),
+                    flags: None,
+                    flags_labels: vec![],
+                },
+                EventRecord {
+                    timestamp: 2000,
+                    domain: Some("test.org".to_string()),
+                    domain_hash: "0000000000000002".to_string(),
+                    client_ip: "10.0.0.2".to_string(),
+                    action: "Allowed".to_string(),
+                    flags: None,
+                    flags_labels: vec![],
+                },
+            ])
+            .unwrap();
+        }
+
+        let params = QueriesParams {
+            limit: None,
+            offset: None,
+            client: None,
+            action: None,
+            from: Some(500),
+            to: Some(1500),
+        };
+        let resp = queries_handler(State(web), Query(params)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let parsed: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        // Only ts=1000 is in range [500, 1500]
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0]["timestamp"], 1000);
+        assert_eq!(parsed[0]["action"], "Blocked");
     }
 }

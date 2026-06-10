@@ -5,6 +5,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use tokio::sync::{Mutex, broadcast};
 
+use crate::db::Database;
 use crate::state::AppState;
 use crate::util::EventRecord;
 
@@ -41,6 +42,9 @@ pub struct WebState {
     pub hostname_cache: DashMap<IpAddr, String>,
     /// Circular ring of 288 five-minute aggregation buckets covering 24 h.
     pub timeline: Mutex<Vec<TimelineBucket>>,
+    /// SQLite database for persistent query history. `None` when persistence
+    /// is not configured or the DB failed to open.
+    pub db: Option<Arc<Database>>,
     pub(crate) broadcast_tx: broadcast::Sender<EventRecord>,
     pub history_size: usize,
 }
@@ -54,8 +58,17 @@ impl WebState {
             client_stats: DashMap::new(),
             hostname_cache: DashMap::new(),
             timeline: Mutex::new(vec![TimelineBucket::default(); BUCKET_COUNT]),
+            db: None,
             broadcast_tx,
             history_size,
+        }
+    }
+
+    /// Attach a database connection for persistent query history.
+    pub fn with_db(self, db: Arc<Database>) -> Self {
+        Self {
+            db: Some(db),
+            ..self
         }
     }
 

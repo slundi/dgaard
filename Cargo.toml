@@ -4,11 +4,11 @@ resolver = "2"
 
 [profile.release]
 # Optimization settings for OpenWrt's limited storage and CPU
-opt-level = "z" # Optimize for size
-lto = true # Enable Link Time Optimization
+opt-level = "z"   # Optimize for size
+lto = true        # Enable Link Time Optimization
 codegen-units = 1 # Maximize optimization at the cost of compile time
-panic = "abort" # Remove stack unwinding to save binary space
-strip = true # Automatically strip symbols from the binary
+panic = "abort"   # Remove stack unwinding to save binary space
+strip = true      # Automatically strip symbols from the binary
 
 [workspace.metadata.cargo-machete]
 ignored = []
@@ -71,6 +71,7 @@ socket2 = "0.6.4"
 
 # ── dgaard-monitor ───────────────────────────────────────────────────────────
 async-trait = "0.1"
+rusqlite = { version = "0.40", features = ["bundled"] }
 axum = { version = "0.8.1", features = ["ws"] }
 crossterm = "0.29"
 futures-util = "0.3"
@@ -80,7 +81,7 @@ rust-embed = "8"
 rust-mcp-sdk = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.150"
-tokio-tungstenite = "0.26"
+tokio-tungstenite = "0.29"
 toml = "0.9.8"
 
 # ── dev ──────────────────────────────────────────────────────────────────────

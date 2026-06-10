@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod connectivity;
+mod db;
 mod error;
 mod forwarding;
 mod io;
@@ -59,7 +60,7 @@ async fn main() {
     // Destructure config so each task can take ownership of its section.
     let config::Config {
         input: _,
-        persistence: _,
+        persistence: persistence_cfg,
         tui: tui_cfg,
         forwarding: fwd_cfg,
         api: api_cfg,
@@ -83,6 +84,25 @@ async fn main() {
         Err(e) => {
             eprintln!("Warning: could not load host index: {e}");
             std::collections::HashMap::new()
+        }
+    };
+
+    // Open SQLite database (standalone; active regardless of web.enabled).
+    let db: Option<std::sync::Arc<db::Database>> = match db::Database::open(
+        &persistence_cfg.db,
+        persistence_cfg.events_retention_hours,
+        persistence_cfg.aggregates_retention_days,
+    ) {
+        Ok(d) => {
+            println!("Persistence database opened: {}", persistence_cfg.db);
+            Some(std::sync::Arc::new(d))
+        }
+        Err(e) => {
+            eprintln!(
+                "Warning: could not open persistence database {}: {e}",
+                persistence_cfg.db
+            );
+            None
         }
     };
 
@@ -201,10 +221,26 @@ async fn main() {
         }));
     }
 
+    // Persistence writer — standalone task, active whenever the DB is open.
+    if let Some(ref db_arc) = db {
+        let s = Arc::clone(&state);
+        let d = std::sync::Arc::clone(db_arc);
+        let rx = shutdown_rx.clone();
+        handles.push(tokio::spawn(async move {
+            db::run_writer(s, d, rx).await;
+        }));
+    }
+
     if web_cfg.enabled {
         let s = Arc::clone(&state);
-        let web_state =
-            std::sync::Arc::new(web::WebState::new(Arc::clone(&s), web_cfg.history_size));
+        let web_state = {
+            let ws = web::WebState::new(Arc::clone(&s), web_cfg.history_size);
+            match &db {
+                Some(d) => ws.with_db(std::sync::Arc::clone(d)),
+                None => ws,
+            }
+        };
+        let web_state = std::sync::Arc::new(web_state);
         let rx = shutdown_rx.clone();
         handles.push(tokio::spawn(async move {
             web::start(s, web_state, web_cfg, rx).await;
