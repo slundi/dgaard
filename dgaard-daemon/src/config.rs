@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use toml_span::value::ValueInner;
 
 fn default_socket_path() -> String {
     String::from("/run/dgaard-daemon.sock")
@@ -16,19 +16,16 @@ fn default_log_level() -> String {
 ///
 /// Maps to `dgaard-daemon.toml`. All fields have sensible defaults so the
 /// daemon can start without a configuration file.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 #[allow(dead_code)] // fields consumed by Phase D2 socket listener
 pub struct DaemonConfig {
     /// Path to the Unix domain socket the daemon will listen on.
-    #[serde(default = "default_socket_path")]
     pub socket_path: String,
 
     /// Path to the dgaard-engine configuration file (`dgaard.toml`).
-    #[serde(default = "default_config_file")]
     pub config_file: String,
 
     /// `env_logger`-compatible log level filter (e.g. `"info"`, `"debug"`).
-    #[serde(default = "default_log_level")]
     pub log_level: String,
 }
 
@@ -43,8 +40,36 @@ impl Default for DaemonConfig {
 }
 
 impl DaemonConfig {
-    pub fn load(content: &str) -> Result<Self, toml::de::Error> {
-        toml::from_str(content)
+    pub fn load(content: &str) -> Result<Self, String> {
+        let value = toml_span::parse(content).map_err(|e| e.to_string())?;
+
+        let root = match value.as_ref() {
+            ValueInner::Table(t) => t,
+            _ => return Err("expected a TOML table at root".to_string()),
+        };
+
+        let mut cfg = DaemonConfig::default();
+
+        if let Some(v) = root.get("socket_path") {
+            match v.as_ref() {
+                ValueInner::String(s) => cfg.socket_path = s.to_string(),
+                _ => return Err("socket_path: expected string".to_string()),
+            }
+        }
+        if let Some(v) = root.get("config_file") {
+            match v.as_ref() {
+                ValueInner::String(s) => cfg.config_file = s.to_string(),
+                _ => return Err("config_file: expected string".to_string()),
+            }
+        }
+        if let Some(v) = root.get("log_level") {
+            match v.as_ref() {
+                ValueInner::String(s) => cfg.log_level = s.to_string(),
+                _ => return Err("log_level: expected string".to_string()),
+            }
+        }
+
+        Ok(cfg)
     }
 }
 
