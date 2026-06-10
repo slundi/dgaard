@@ -66,6 +66,9 @@ pub fn format_reason(reason: &BlockReason) -> String {
         BlockReason::LowTtl(ttl) => format!("LowTtl({})", ttl),
         BlockReason::AsnBlocked => String::from("AsnBlocked"),
         BlockReason::GeoIpSuspicious(code) => format!("GeoIpSuspicious({})", code),
+        BlockReason::SpecialUseDomain => String::from("SpecialUseDomain"),
+        BlockReason::PtrLeak => String::from("PtrLeak"),
+        BlockReason::ChaosClass => String::from("ChaosClass"),
     }
 }
 
