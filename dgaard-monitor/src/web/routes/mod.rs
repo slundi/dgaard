@@ -4,5 +4,5 @@ mod lists;
 pub(super) mod queries;
 pub(super) mod stats;
 pub(super) mod talkers;
-mod timeline;
+pub(super) mod timeline;
 pub(super) mod ws;

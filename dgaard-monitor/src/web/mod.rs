@@ -133,6 +133,7 @@ fn build_router(web: Arc<WebState>, token: String) -> Router {
                 .route("/stats", get(routes::stats::stats_handler))
                 .route("/queries", get(routes::queries::queries_handler))
                 .route("/talkers", get(routes::talkers::talkers_handler))
+                .route("/timelines", get(routes::timeline::timelines_handler))
                 .fallback(|| async { StatusCode::NOT_FOUND }),
         )
         .route("/ws", get(routes::ws::ws_handler))
@@ -557,6 +558,62 @@ mod tests {
         let body = body_string(resp.into_body()).await;
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert!(v.is_array());
+    }
+
+    #[tokio::test]
+    async fn api_timelines_returns_empty_array() {
+        let app = make_router("");
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/timelines")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp.into_body()).await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v.is_array());
+    }
+
+    #[tokio::test]
+    async fn api_timelines_returns_json_with_fields() {
+        let web = make_web_state();
+        // Inject an event directly into timeline buckets via push_event
+        web.push_event(crate::util::EventRecord {
+            timestamp: 300,
+            domain: None,
+            domain_hash: "0000000000000001".to_string(),
+            client_ip: "10.0.0.1".to_string(),
+            action: "Blocked".to_string(),
+            flags: None,
+            flags_labels: vec![],
+        })
+        .await;
+        let app = build_router(web, "".to_string());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/timelines")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp.into_body()).await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v.is_array());
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert!(arr[0].get("ts").is_some());
+        assert!(arr[0].get("total").is_some());
+        assert!(arr[0].get("blocked").is_some());
+        assert!(arr[0].get("suspicious").is_some());
+        assert_eq!(arr[0]["total"], 1);
+        assert_eq!(arr[0]["blocked"], 1);
     }
 
     // ── IP helpers ─────────────────────────────────────────────────────────

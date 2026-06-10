@@ -237,7 +237,18 @@
 
     <!-- ── Timelines ─────────────────────────────────────────── -->
     <section x-show="tab === 'timelines'">
-      <p class="placeholder">Timelines — coming soon</p>
+      <div x-data="timelines()" x-init="init()">
+        <div class="toolbar">
+          <button class="btn" @click="load()" :disabled="loading">↺ Refresh</button>
+          <span class="text-dim" x-show="loading">Loading…</span>
+          <span class="text-error" x-show="error" x-text="error"></span>
+          <span class="text-dim" x-show="!loading && !error && lastUpdated"
+                x-text="'Updated: ' + lastUpdated"></span>
+        </div>
+        <div class="chart-container">
+          <canvas id="timeline-chart"></canvas>
+        </div>
+      </div>
     </section>
 
     <!-- ── About ─────────────────────────────────────────────── -->
@@ -277,8 +288,8 @@
       Alpine.store('auth', { token: '' });
     });
   </script>
-  <script src="/alpine.min.js" defer></script>
   <script src="/chart.min.js" defer></script>
+  <script src="/alpine.min.js" defer></script>
   <script>
   function queries() {
     return {
@@ -493,6 +504,134 @@
       blockedPct(row) {
         if (!row.count) return '—';
         return (row.blocked / row.count * 100).toFixed(1) + '%';
+      },
+    };
+  }
+
+  function timelines() {
+    return {
+      loading: false,
+      error: '',
+      lastUpdated: '',
+      _chart: null,
+      _interval: null,
+
+      init() {
+        this.load();
+        this._interval = setInterval(() => this.load(), 60000);
+      },
+
+      destroy() {
+        if (this._interval) { clearInterval(this._interval); this._interval = null; }
+        if (this._chart)    { this._chart.destroy();          this._chart = null; }
+      },
+
+      async load() {
+        this.loading = true;
+        this.error = '';
+        try {
+          const token = this.$store.auth.token;
+          const headers = token ? { Authorization: 'Bearer ' + token } : {};
+          const r = await fetch('/api/v1/timelines', { headers });
+          if (r.ok) {
+            const data = await r.json();
+            this.renderChart(data);
+            this.lastUpdated = new Date().toLocaleTimeString();
+          } else {
+            this.error = r.status === 401
+              ? 'Unauthorized — enter token above'
+              : `Error ${r.status}`;
+          }
+        } catch {
+          this.error = 'Failed to connect';
+        }
+        this.loading = false;
+      },
+
+      fmtLabel(ts) {
+        const d = new Date(ts * 1000);
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      },
+
+      renderChart(data) {
+        const labels       = data.map(b => this.fmtLabel(b.ts));
+        const totalData    = data.map(b => b.total);
+        const blockedData  = data.map(b => b.blocked);
+        const suspData     = data.map(b => b.suspicious);
+
+        const canvas = document.getElementById('timeline-chart');
+        if (!canvas) return;
+
+        if (this._chart) {
+          this._chart.data.labels             = labels;
+          this._chart.data.datasets[0].data   = totalData;
+          this._chart.data.datasets[1].data   = blockedData;
+          this._chart.data.datasets[2].data   = suspData;
+          this._chart.update();
+          return;
+        }
+
+        this._chart = new Chart(canvas.getContext('2d'), {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [
+              {
+                label: 'Total',
+                data: totalData,
+                borderColor: '#58a6ff',
+                backgroundColor: 'rgba(88,166,255,0.08)',
+                tension: 0.3,
+                fill: false,
+                pointRadius: 2,
+                pointHoverRadius: 4,
+              },
+              {
+                label: 'Blocked',
+                data: blockedData,
+                borderColor: '#f85149',
+                backgroundColor: 'rgba(248,81,73,0.08)',
+                tension: 0.3,
+                fill: false,
+                pointRadius: 2,
+                pointHoverRadius: 4,
+              },
+              {
+                label: 'Suspicious',
+                data: suspData,
+                borderColor: '#d29922',
+                backgroundColor: 'rgba(210,153,34,0.08)',
+                tension: 0.3,
+                fill: false,
+                pointRadius: 2,
+                pointHoverRadius: 4,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                position: 'top',
+                labels: { color: '#e6edf3' },
+              },
+            },
+            scales: {
+              x: {
+                ticks: { color: '#8b949e', maxRotation: 45, autoSkip: true, maxTicksLimit: 24 },
+                grid:   { color: '#30363d' },
+                border: { color: '#30363d' },
+              },
+              y: {
+                beginAtZero: true,
+                ticks:  { color: '#8b949e' },
+                grid:   { color: '#30363d' },
+                border: { color: '#30363d' },
+              },
+            },
+          },
+        });
       },
     };
   }

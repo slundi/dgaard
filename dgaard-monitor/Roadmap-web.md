@@ -87,13 +87,13 @@ _Focus: Interactive tables with filter, sort, and freeze, mirroring the TUI tabs
 - **Talkers tab**: Table from `GET /api/v1/talkers`. Columns: client / hostname, total requests, blocked count, first seen, last seen. Client-side column sort.
 - **Reverse DNS**: Backend performs a reverse DNS lookup for local IPs via `hickory-resolver` and caches results in `WebState`. Surfaced in the `/api/v1/talkers` `hostname` field and the Queries tab.
 
-## Phase 7: Timelines Tab
+## Phase 7: Timelines Tab ✅
 
 _Focus: 24-hour trend visualization with Chart.js._
 
-- [ ] 7.1. **Bucketed aggregation**: In `WebState`, maintain 288 five-minute buckets (24 h × 12). Each ingestor event increments the current bucket's counters (total, blocked, suspicious).
-- [ ] 7.2. **`GET /api/v1/timelines`**: Return the last N buckets as `[{ ts, total, blocked, suspicious }]`.
-- [ ] 7.3. **Timelines tab UI**: Chart.js line chart with three series (total / blocked / suspicious). Auto-refreshes every 60 seconds.
+- **Bucketed aggregation**: In `WebState`, maintain 288 five-minute buckets (24 h × 12). Each ingestor event increments the current bucket's counters (total, blocked, suspicious).
+- **`GET /api/v1/timelines`**: Return the last N buckets as `[{ ts, total, blocked, suspicious }]`.
+- **Timelines tab UI**: Chart.js line chart with three series (total / blocked / suspicious). Auto-refreshes every 60 seconds.
 
 ## Phase 8: Data & Persistence
 

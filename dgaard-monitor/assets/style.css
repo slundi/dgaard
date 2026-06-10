@@ -312,3 +312,13 @@ th.sortable:hover { color: var(--text); }
   margin-bottom: 0.75rem;
   padding: 0.35rem 0.75rem;
 }
+
+/* ── Timeline chart ──────────────────────────────────────────── */
+.chart-container {
+  position: relative;
+  height: 420px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem;
+}
