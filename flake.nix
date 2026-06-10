@@ -18,7 +18,7 @@
       flake-utils,
       rust-overlay,
     }:
-    flake-utils.lib.eachDefaultSystem (
+    (flake-utils.lib.eachDefaultSystem (
       system:
       let
         overlays = [ (import rust-overlay) ];
@@ -69,18 +69,26 @@
         # Define the rust toolchain from your toml
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
 
-        # Read project metadata from Cargo.toml for reuse below
-        cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+        # Read per-crate Cargo.toml files for package metadata
+        mkCrate =
+          name:
+          pkgs.rustPlatform.buildRustPackage {
+            pname = name;
+            version = (builtins.fromTOML (builtins.readFile ./${name}/Cargo.toml)).package.version;
+            src = ./.;
+            cargoLock.lockFile = ./Cargo.lock;
+            cargoBuildFlags = [
+              "-p"
+              name
+            ];
+          };
       in
       {
-        # `nix build` and `nix run` — builds the release binary
-        packages.default = pkgs.rustPlatform.buildRustPackage {
-          pname = cargoToml.package.name;
-          version = cargoToml.package.version;
-          src = ./.;
-          # Cargo.lock must be committed (true for executables — see .gitignore)
-          cargoLock.lockFile = ./Cargo.lock;
-        };
+        # `nix build .#dgaard` / `nix run .#dgaard`
+        packages.dgaard = mkCrate "dgaard";
+        packages.dgaard-daemon = mkCrate "dgaard-daemon";
+        packages.dgaard-monitor = mkCrate "dgaard-monitor";
+        packages.default = self.packages.${system}.dgaard;
 
         # `nix run .#codium` — VSCodium with all extensions pre-installed
         packages.codium = custom-codium;
@@ -119,5 +127,12 @@
           '';
         };
       }
-    );
+    ))
+    // {
+      nixosModules = {
+        dgaard = import ./nix/modules/dgaard.nix;
+        dgaard-daemon = import ./nix/modules/dgaard-daemon.nix;
+        dgaard-monitor = import ./nix/modules/dgaard-monitor.nix;
+      };
+    };
 }
