@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use toml_span::value::ValueInner;
 
 fn default_listen_addr() -> String {
     String::from("127.0.0.1:8080")
@@ -20,22 +20,18 @@ fn default_blocked_status_code() -> u16 {
 ///
 /// Maps to `dgaard-rest.toml`. All fields have sensible defaults so the
 /// server can start without a configuration file.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct RestConfig {
     /// Address and port the HTTP server binds to.
-    #[serde(default = "default_listen_addr")]
     pub listen_addr: String,
 
     /// Path to the dgaard-engine configuration file (`dgaard.toml`).
-    #[serde(default = "default_config_file")]
     pub config_file: String,
 
     /// `env_logger`-compatible log level filter (e.g. `"info"`, `"debug"`).
-    #[serde(default = "default_log_level")]
     pub log_level: String,
 
     /// HTTP status code returned for blocked domains: `200` or `403`.
-    #[serde(default = "default_blocked_status_code")]
     pub blocked_status_code: u16,
 }
 
@@ -51,8 +47,42 @@ impl Default for RestConfig {
 }
 
 impl RestConfig {
-    pub fn load(content: &str) -> Result<Self, toml::de::Error> {
-        toml::from_str(content)
+    pub fn load(content: &str) -> Result<Self, String> {
+        let value = toml_span::parse(content).map_err(|e| e.to_string())?;
+
+        let root = match value.as_ref() {
+            ValueInner::Table(t) => t,
+            _ => return Err("expected a TOML table at root".to_string()),
+        };
+
+        let mut cfg = RestConfig::default();
+
+        if let Some(v) = root.get("listen_addr") {
+            match v.as_ref() {
+                ValueInner::String(s) => cfg.listen_addr = s.to_string(),
+                _ => return Err("listen_addr: expected string".to_string()),
+            }
+        }
+        if let Some(v) = root.get("config_file") {
+            match v.as_ref() {
+                ValueInner::String(s) => cfg.config_file = s.to_string(),
+                _ => return Err("config_file: expected string".to_string()),
+            }
+        }
+        if let Some(v) = root.get("log_level") {
+            match v.as_ref() {
+                ValueInner::String(s) => cfg.log_level = s.to_string(),
+                _ => return Err("log_level: expected string".to_string()),
+            }
+        }
+        if let Some(v) = root.get("blocked_status_code") {
+            match v.as_ref() {
+                ValueInner::Integer(n) => cfg.blocked_status_code = *n as u16,
+                _ => return Err("blocked_status_code: expected integer".to_string()),
+            }
+        }
+
+        Ok(cfg)
     }
 }
 
