@@ -10,7 +10,7 @@ inotify.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "time", "signal", "fs"] }
-toml.workspace = true
+toml-span.workspace = true
 
 # to have an HTTP client availble to download lists
 http-body-util.workspace = true

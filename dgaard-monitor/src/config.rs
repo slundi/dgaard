@@ -1,41 +1,54 @@
 // Fields are declared for future use by service implementations.
 #![allow(dead_code)]
 
-use serde::Deserialize;
+use toml_span::{Span, value::ValueInner};
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("failed to read config file: {0}")]
     Io(#[from] std::io::Error),
-    #[error("failed to parse config file: {0}")]
-    Parse(#[from] toml::de::Error),
+    #[error("TOML syntax error: {0}")]
+    Parse(String),
+    #[error("invalid type for key '{key}': expected {expected} at {span:?}")]
+    InvalidType {
+        key: String,
+        expected: &'static str,
+        span: Span,
+    },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct Config {
     pub input: InputConfig,
-    #[serde(default)]
     pub persistence: PersistenceConfig,
-    #[serde(default)]
     pub tui: TuiConfig,
-    #[serde(default)]
     pub forwarding: ForwardingConfig,
-    #[serde(default)]
     pub api: ConnectivityConfig,
-    #[serde(default)]
     pub websocket: ConnectivityConfig,
-    #[serde(default)]
     pub mcp: ConnectivityConfig,
-    #[serde(default)]
     pub web: WebConfig,
 }
 
-#[derive(Debug, Deserialize)]
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            input: InputConfig::default(),
+            persistence: PersistenceConfig::default(),
+            tui: TuiConfig::default(),
+            forwarding: ForwardingConfig::default(),
+            api: ConnectivityConfig::default(),
+            websocket: ConnectivityConfig::default(),
+            mcp: ConnectivityConfig::default(),
+            web: WebConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct InputConfig {
-    #[serde(default = "default_socket")]
     pub socket: String,
-    #[serde(default = "default_index")]
     pub index: String,
     /// Optional path to the dgaard engine config file (`dgaard.toml`).
     /// When set, the monitor parses `[[security.custom_flags]]` from this file
@@ -62,13 +75,10 @@ impl Default for InputConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct PersistenceConfig {
-    #[serde(default = "default_db")]
     pub db: String,
-    #[serde(default = "default_events_retention_hours")]
     pub events_retention_hours: u32,
-    #[serde(default = "default_aggregates_retention_days")]
     pub aggregates_retention_days: u32,
 }
 
@@ -94,18 +104,13 @@ impl Default for PersistenceConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct TuiConfig {
     /// Terminal refresh interval in milliseconds.
-    #[serde(default = "default_tick_ms")]
     pub tick_ms: u64,
-    #[serde(default = "default_key_quit")]
     pub key_quit: String,
-    #[serde(default = "default_key_pause")]
     pub key_pause: String,
-    #[serde(default = "default_key_scroll_up")]
     pub key_scroll_up: String,
-    #[serde(default = "default_key_scroll_down")]
     pub key_scroll_down: String,
 }
 
@@ -145,18 +150,16 @@ impl Default for TuiConfig {
 /// replaced: `{timestamp}`, `{client_ip}`, `{action}`, `{domain}`.
 /// `forward_url` sends each matching event as an HTTP POST (JSON body).
 /// `filter` lists the action variants to forward; an empty list means *all*.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct ForwardingConfig {
     /// Append formatted lines to this file instead of stdout.
     pub file: Option<String>,
     /// Template string for each forwarded line.
-    #[serde(default = "default_template")]
     pub template: String,
     /// HTTP(S) endpoint to POST JSON events to (SOAR, Slack incoming webhook, …).
     pub forward_url: Option<String>,
     /// Action variants to forward. Empty list = forward everything.
     /// Valid values: "Allowed", "Proxied", "Blocked", "Suspicious", "HighlySuspicious".
-    #[serde(default)]
     pub filter: Vec<String>,
 }
 
@@ -176,17 +179,13 @@ impl Default for ForwardingConfig {
 }
 
 /// Shared connectivity config used for the REST API, WebSocket, and MCP endpoints.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct ConnectivityConfig {
-    #[serde(default)]
     pub enabled: bool,
-    #[serde(default = "default_listen")]
     pub listen: String,
     pub port: u16,
     /// Static bearer token required on every request.
-    #[serde(default = "default_token")]
     pub token: String,
-    #[serde(default = "default_root_path")]
     pub root_path: String,
 }
 
@@ -215,26 +214,19 @@ impl Default for ConnectivityConfig {
 }
 
 /// Configuration for the embedded web UI server.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct WebConfig {
-    #[serde(default)]
     pub enabled: bool,
-    #[serde(default = "default_listen")]
     pub listen: String,
-    #[serde(default = "default_web_port")]
     pub port: u16,
-    #[serde(default = "default_token")]
     pub token: String,
-    #[serde(default = "default_history_size")]
     pub history_size: usize,
     /// Minimum number of queries from a single client to the same domain
     /// before the pair is eligible for beaconing analysis.
-    #[serde(default = "default_beaconing_min_obs")]
     pub beaconing_min_observations: usize,
     /// Coefficient of Variation threshold (std_dev / mean of inter-arrival
     /// times).  Pairs with CoV below this value are flagged as potential
     /// beacons.  Lower = stricter.
-    #[serde(default = "default_beaconing_cov")]
     pub beaconing_cov_threshold: f64,
 }
 
@@ -268,11 +260,294 @@ impl Default for WebConfig {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Helper extraction functions
+// ---------------------------------------------------------------------------
+
+fn get_str<'a>(
+    table: &'a toml_span::value::Table<'a>,
+    key: &str,
+) -> Result<Option<&'a str>, ConfigError> {
+    match table.get(key) {
+        Some(v) => match v.as_ref() {
+            ValueInner::String(s) => Ok(Some(s.as_ref())),
+            _ => Err(ConfigError::InvalidType {
+                key: key.to_string(),
+                expected: "string",
+                span: v.span,
+            }),
+        },
+        None => Ok(None),
+    }
+}
+
+fn get_bool(table: &toml_span::value::Table<'_>, key: &str) -> Result<Option<bool>, ConfigError> {
+    match table.get(key) {
+        Some(v) => match v.as_ref() {
+            ValueInner::Boolean(b) => Ok(Some(*b)),
+            _ => Err(ConfigError::InvalidType {
+                key: key.to_string(),
+                expected: "boolean",
+                span: v.span,
+            }),
+        },
+        None => Ok(None),
+    }
+}
+
+fn get_integer(
+    table: &toml_span::value::Table<'_>,
+    key: &str,
+) -> Result<Option<i64>, ConfigError> {
+    match table.get(key) {
+        Some(v) => match v.as_ref() {
+            ValueInner::Integer(i) => Ok(Some(*i)),
+            _ => Err(ConfigError::InvalidType {
+                key: key.to_string(),
+                expected: "integer",
+                span: v.span,
+            }),
+        },
+        None => Ok(None),
+    }
+}
+
+/// Extract an optional float value from a table (also accepts integers as floats).
+fn get_float(table: &toml_span::value::Table<'_>, key: &str) -> Result<Option<f64>, ConfigError> {
+    match table.get(key) {
+        Some(v) => match v.as_ref() {
+            ValueInner::Float(f) => Ok(Some(*f)),
+            ValueInner::Integer(i) => Ok(Some(*i as f64)),
+            _ => Err(ConfigError::InvalidType {
+                key: key.to_string(),
+                expected: "float",
+                span: v.span,
+            }),
+        },
+        None => Ok(None),
+    }
+}
+
+fn get_string_array(
+    table: &toml_span::value::Table<'_>,
+    key: &str,
+) -> Result<Option<Vec<String>>, ConfigError> {
+    match table.get(key) {
+        Some(v) => match v.as_ref() {
+            ValueInner::Array(arr) => {
+                let mut result = Vec::with_capacity(arr.len());
+                for item in arr.iter() {
+                    match item.as_ref() {
+                        ValueInner::String(s) => result.push(s.to_string()),
+                        _ => {
+                            return Err(ConfigError::InvalidType {
+                                key: format!("{}[]", key),
+                                expected: "string",
+                                span: item.span,
+                            });
+                        }
+                    }
+                }
+                Ok(Some(result))
+            }
+            _ => Err(ConfigError::InvalidType {
+                key: key.to_string(),
+                expected: "array",
+                span: v.span,
+            }),
+        },
+        None => Ok(None),
+    }
+}
+
+fn get_table<'a>(
+    table: &'a toml_span::value::Table<'a>,
+    key: &str,
+) -> Result<Option<&'a toml_span::value::Table<'a>>, ConfigError> {
+    match table.get(key) {
+        Some(v) => match v.as_ref() {
+            ValueInner::Table(t) => Ok(Some(t)),
+            _ => Err(ConfigError::InvalidType {
+                key: key.to_string(),
+                expected: "table",
+                span: v.span,
+            }),
+        },
+        None => Ok(None),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Section parsers
+// ---------------------------------------------------------------------------
+
+fn parse_input(table: &toml_span::value::Table<'_>) -> Result<InputConfig, ConfigError> {
+    let mut cfg = InputConfig::default();
+    if let Some(s) = get_str(table, "socket")? {
+        cfg.socket = s.to_string();
+    }
+    if let Some(s) = get_str(table, "index")? {
+        cfg.index = s.to_string();
+    }
+    if let Some(s) = get_str(table, "engine_config_path")? {
+        cfg.engine_config_path = Some(s.to_string());
+    }
+    Ok(cfg)
+}
+
+fn parse_persistence(
+    table: &toml_span::value::Table<'_>,
+) -> Result<PersistenceConfig, ConfigError> {
+    let mut cfg = PersistenceConfig::default();
+    if let Some(s) = get_str(table, "db")? {
+        cfg.db = s.to_string();
+    }
+    if let Some(n) = get_integer(table, "events_retention_hours")? {
+        cfg.events_retention_hours = n as u32;
+    }
+    if let Some(n) = get_integer(table, "aggregates_retention_days")? {
+        cfg.aggregates_retention_days = n as u32;
+    }
+    Ok(cfg)
+}
+
+fn parse_tui(table: &toml_span::value::Table<'_>) -> Result<TuiConfig, ConfigError> {
+    let mut cfg = TuiConfig::default();
+    if let Some(n) = get_integer(table, "tick_ms")? {
+        cfg.tick_ms = n as u64;
+    }
+    if let Some(s) = get_str(table, "key_quit")? {
+        cfg.key_quit = s.to_string();
+    }
+    if let Some(s) = get_str(table, "key_pause")? {
+        cfg.key_pause = s.to_string();
+    }
+    if let Some(s) = get_str(table, "key_scroll_up")? {
+        cfg.key_scroll_up = s.to_string();
+    }
+    if let Some(s) = get_str(table, "key_scroll_down")? {
+        cfg.key_scroll_down = s.to_string();
+    }
+    Ok(cfg)
+}
+
+fn parse_forwarding(table: &toml_span::value::Table<'_>) -> Result<ForwardingConfig, ConfigError> {
+    let mut cfg = ForwardingConfig::default();
+    if let Some(s) = get_str(table, "file")? {
+        cfg.file = Some(s.to_string());
+    }
+    if let Some(s) = get_str(table, "template")? {
+        cfg.template = s.to_string();
+    }
+    if let Some(s) = get_str(table, "forward_url")? {
+        cfg.forward_url = Some(s.to_string());
+    }
+    if let Some(arr) = get_string_array(table, "filter")? {
+        cfg.filter = arr;
+    }
+    Ok(cfg)
+}
+
+fn parse_connectivity(
+    table: &toml_span::value::Table<'_>,
+) -> Result<ConnectivityConfig, ConfigError> {
+    let mut cfg = ConnectivityConfig::default();
+    if let Some(b) = get_bool(table, "enabled")? {
+        cfg.enabled = b;
+    }
+    if let Some(s) = get_str(table, "listen")? {
+        cfg.listen = s.to_string();
+    }
+    if let Some(n) = get_integer(table, "port")? {
+        cfg.port = n as u16;
+    }
+    if let Some(s) = get_str(table, "token")? {
+        cfg.token = s.to_string();
+    }
+    if let Some(s) = get_str(table, "root_path")? {
+        cfg.root_path = s.to_string();
+    }
+    Ok(cfg)
+}
+
+fn parse_web(table: &toml_span::value::Table<'_>) -> Result<WebConfig, ConfigError> {
+    let mut cfg = WebConfig::default();
+    if let Some(b) = get_bool(table, "enabled")? {
+        cfg.enabled = b;
+    }
+    if let Some(s) = get_str(table, "listen")? {
+        cfg.listen = s.to_string();
+    }
+    if let Some(n) = get_integer(table, "port")? {
+        cfg.port = n as u16;
+    }
+    if let Some(s) = get_str(table, "token")? {
+        cfg.token = s.to_string();
+    }
+    if let Some(n) = get_integer(table, "history_size")? {
+        cfg.history_size = n as usize;
+    }
+    if let Some(n) = get_integer(table, "beaconing_min_observations")? {
+        cfg.beaconing_min_observations = n as usize;
+    }
+    if let Some(f) = get_float(table, "beaconing_cov_threshold")? {
+        cfg.beaconing_cov_threshold = f;
+    }
+    Ok(cfg)
+}
+
+// ---------------------------------------------------------------------------
+// Config implementation
+// ---------------------------------------------------------------------------
+
 impl Config {
+    pub fn parse(content: &str) -> Result<Self, ConfigError> {
+        let mut cfg = Self::default();
+
+        let value = toml_span::parse(content).map_err(|e| ConfigError::Parse(e.to_string()))?;
+
+        let root = match value.as_ref() {
+            ValueInner::Table(t) => t,
+            _ => {
+                return Err(ConfigError::InvalidType {
+                    key: "root".to_string(),
+                    expected: "table",
+                    span: value.span,
+                });
+            }
+        };
+
+        if let Some(t) = get_table(root, "input")? {
+            cfg.input = parse_input(t)?;
+        }
+        if let Some(t) = get_table(root, "persistence")? {
+            cfg.persistence = parse_persistence(t)?;
+        }
+        if let Some(t) = get_table(root, "tui")? {
+            cfg.tui = parse_tui(t)?;
+        }
+        if let Some(t) = get_table(root, "forwarding")? {
+            cfg.forwarding = parse_forwarding(t)?;
+        }
+        if let Some(t) = get_table(root, "api")? {
+            cfg.api = parse_connectivity(t)?;
+        }
+        if let Some(t) = get_table(root, "websocket")? {
+            cfg.websocket = parse_connectivity(t)?;
+        }
+        if let Some(t) = get_table(root, "mcp")? {
+            cfg.mcp = parse_connectivity(t)?;
+        }
+        if let Some(t) = get_table(root, "web")? {
+            cfg.web = parse_web(t)?;
+        }
+
+        Ok(cfg)
+    }
+
     pub fn load(path: &str) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(path)?;
-        let config = toml::from_str(&content)?;
-        Ok(config)
+        Self::parse(&content)
     }
 }
 
