@@ -1,14 +1,22 @@
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::util::EventRecord;
 use crate::web::state::WebState;
+
+#[derive(Serialize)]
+struct QueryResponse {
+    #[serde(flatten)]
+    record: EventRecord,
+    hostname: Option<String>,
+}
 
 #[derive(Deserialize)]
 pub struct QueriesParams {
@@ -46,7 +54,7 @@ pub async fn queries_handler(
 
     let log = web.query_log.lock().await;
 
-    let results: Vec<EventRecord> = log
+    let results: Vec<QueryResponse> = log
         .iter()
         .rev()
         .filter(|record| {
@@ -64,7 +72,17 @@ pub async fn queries_handler(
         })
         .skip(offset)
         .take(limit)
-        .cloned()
+        .map(|record| {
+            let hostname = record
+                .client_ip
+                .parse::<IpAddr>()
+                .ok()
+                .and_then(|ip| web.hostname_cache.get(&ip).map(|h| h.clone()));
+            QueryResponse {
+                record: record.clone(),
+                hostname,
+            }
+        })
         .collect();
 
     drop(log);

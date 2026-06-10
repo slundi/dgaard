@@ -21,6 +21,9 @@ pub struct WebState {
     pub app: Arc<AppState>,
     pub query_log: Mutex<VecDeque<EventRecord>>,
     pub client_stats: DashMap<IpAddr, ClientStats>,
+    /// Reverse-DNS cache: IP → resolved PTR hostname.
+    /// Populated lazily by background tasks spawned from the ingestor.
+    pub hostname_cache: DashMap<IpAddr, String>,
     pub(crate) broadcast_tx: broadcast::Sender<EventRecord>,
     pub history_size: usize,
 }
@@ -32,6 +35,7 @@ impl WebState {
             app,
             query_log: Mutex::new(VecDeque::with_capacity(history_size.min(4096))),
             client_stats: DashMap::new(),
+            hostname_cache: DashMap::new(),
             broadcast_tx,
             history_size,
         }

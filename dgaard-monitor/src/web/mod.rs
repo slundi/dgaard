@@ -1,3 +1,4 @@
+mod rdns;
 mod routes;
 pub mod state;
 
@@ -163,6 +164,7 @@ async fn run_ingestor(app: Arc<AppState>, web: Arc<WebState>) {
                 let ip = bytes_to_ip(&event.client_ip);
                 let is_blocked = flags_of(&event.action).is_some();
                 let ts = event.timestamp;
+                let is_new_ip = !web.client_stats.contains_key(&ip);
                 web.client_stats
                     .entry(ip)
                     .and_modify(|s| {
@@ -178,6 +180,16 @@ async fn run_ingestor(app: Arc<AppState>, web: Arc<WebState>) {
                         first_seen: ts,
                         last_seen: ts,
                     });
+
+                // Resolve PTR once per new IP; store result in hostname_cache.
+                if is_new_ip && !web.hostname_cache.contains_key(&ip) {
+                    let web = Arc::clone(&web);
+                    tokio::spawn(async move {
+                        if let Some(name) = rdns::resolve(ip).await {
+                            web.hostname_cache.insert(ip, name);
+                        }
+                    });
+                }
 
                 web.push_event(record).await;
             }

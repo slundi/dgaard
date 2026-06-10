@@ -78,14 +78,14 @@ _Focus: Backend endpoints that power the UI and allow external integration._
 - **`GET /api/v1/talkers`**: Return per-client stats — `[{ client, hostname, count, blocked, first_seen, last_seen }]`.
 - **Input validation**: Reject invalid query params with HTTP 400. All errors return `{ "error": "..." }` JSON body.
 
-## Phase 6: Queries & Talkers Tabs
+## Phase 6: Queries & Talkers Tabs ✅
 
 _Focus: Interactive tables with filter, sort, and freeze, mirroring the TUI tabs._
 
-- [x] 6.1. **Queries tab**: Table fetched from `GET /api/v1/queries`. Columns: datetime, domain, client IP, action, flags. Alpine.js reactive filter by client IP or domain keyword. Full row highlight by action.
-- [x] 6.2. **Freeze toggle**: Button to pause live WebSocket updates for the Queries tab (equivalent to `space` in the TUI). Banner shown while frozen. Click again to resume.
-- [x] 6.3. **Talkers tab**: Table from `GET /api/v1/talkers`. Columns: client / hostname, total requests, blocked count, first seen, last seen. Client-side column sort.
-- [ ] 6.4. **Reverse DNS**: Backend performs a reverse DNS lookup for local IPs via `hickory-resolver` and caches results in `WebState`. Surfaced in the `/api/v1/talkers` `hostname` field and the Queries tab.
+- **Queries tab**: Table fetched from `GET /api/v1/queries`. Columns: datetime, domain, client IP, action, flags. Alpine.js reactive filter by client IP or domain keyword. Full row highlight by action.
+- **Freeze toggle**: Button to pause live WebSocket updates for the Queries tab (equivalent to `space` in the TUI). Banner shown while frozen. Click again to resume.
+- **Talkers tab**: Table from `GET /api/v1/talkers`. Columns: client / hostname, total requests, blocked count, first seen, last seen. Client-side column sort.
+- **Reverse DNS**: Backend performs a reverse DNS lookup for local IPs via `hickory-resolver` and caches results in `WebState`. Surfaced in the `/api/v1/talkers` `hostname` field and the Queries tab.
 
 ## Phase 7: Timelines Tab
 

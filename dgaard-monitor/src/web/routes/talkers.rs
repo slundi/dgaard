@@ -24,8 +24,8 @@ pub async fn talkers_handler(State(web): State<Arc<WebState>>) -> Json<Vec<Talke
             let ip = entry.key();
             let stats = entry.value();
             TalkerRecord {
+                hostname: web.hostname_cache.get(ip).map(|h| h.clone()),
                 client: ip.to_string(),
-                hostname: None,
                 count: stats.count,
                 blocked: stats.blocked,
                 first_seen: stats.first_seen,
