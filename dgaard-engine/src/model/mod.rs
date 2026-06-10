@@ -79,6 +79,11 @@ pub enum BlockReason {
     /// to a public upstream resolver serves no purpose for LAN clients and
     /// returns version/identity metadata that aids attacker reconnaissance.
     ChaosClass,
+
+    /// Hit a user-defined custom flag list (bits 16–31 of `StatBlockReason`).
+    /// Carries the bit index (16–31) that maps to a `[[security.custom_flags]]`
+    /// entry in the configuration.
+    CustomFlag(u8),
 }
 
 /// Messages sent over the stats channel to the collector.
@@ -186,43 +191,31 @@ impl StatMessage {
                     0 => StatAction::Allowed,
                     1 => StatAction::Proxied,
                     2 => {
-                        if payload.len() < 35 {
+                        if payload.len() < 37 {
                             return None;
                         }
-                        let bits = u16::from_le_bytes([payload[33], payload[34]]);
-                        match StatBlockReason::from_bits(bits) {
-                            Some(reason) => StatAction::Blocked(reason),
-                            None => {
-                                eprintln!("Unknown reason bits: 0x{:04x}", bits);
-                                return None;
-                            }
-                        }
+                        let bits = u32::from_le_bytes(
+                            payload[33..37].try_into().ok()?,
+                        );
+                        StatAction::Blocked(StatBlockReason::from_bits_retain(bits))
                     }
                     3 => {
-                        if payload.len() < 35 {
+                        if payload.len() < 37 {
                             return None;
                         }
-                        let bits = u16::from_le_bytes([payload[33], payload[34]]);
-                        match StatBlockReason::from_bits(bits) {
-                            Some(reason) => StatAction::Suspicious(reason),
-                            None => {
-                                eprintln!("Unknown reason bits: 0x{:04x}", bits);
-                                return None;
-                            }
-                        }
+                        let bits = u32::from_le_bytes(
+                            payload[33..37].try_into().ok()?,
+                        );
+                        StatAction::Suspicious(StatBlockReason::from_bits_retain(bits))
                     }
                     4 => {
-                        if payload.len() < 35 {
+                        if payload.len() < 37 {
                             return None;
                         }
-                        let bits = u16::from_le_bytes([payload[33], payload[34]]);
-                        match StatBlockReason::from_bits(bits) {
-                            Some(reason) => StatAction::HighlySuspicious(reason),
-                            None => {
-                                eprintln!("Unknown reason bits: 0x{:04x}", bits);
-                                return None;
-                            }
-                        }
+                        let bits = u32::from_le_bytes(
+                            payload[33..37].try_into().ok()?,
+                        );
+                        StatAction::HighlySuspicious(StatBlockReason::from_bits_retain(bits))
                     }
                     _ => return None,
                 };
@@ -483,6 +476,60 @@ mod tests {
         let event = StatEvent::new(2, addr, StatAction::Proxied);
         let v6 = std::net::Ipv6Addr::from(event.client_ip);
         assert_eq!(v6, "2001:db8::1".parse::<std::net::Ipv6Addr>().unwrap());
+    }
+
+    #[test]
+    fn stat_message_blocked_with_custom_bit_round_trip() {
+        // Custom flag bit 20 — sits in the upper half of the u32 field.
+        let custom_reason = StatBlockReason::from_bits_retain(1u32 << 20);
+        let event = StatEvent {
+            timestamp: 5000,
+            domain_hash: 99,
+            client_ip: [0u8; 16],
+            action: StatAction::Blocked(custom_reason),
+        };
+        let msg = StatMessage::Event(event);
+        let bytes = msg.serialize();
+        let decoded = StatMessage::deserialize(&bytes);
+        assert_eq!(decoded, Some(msg));
+    }
+
+    #[test]
+    fn stat_message_custom_and_builtin_bits_combined_round_trip() {
+        // Combination: a built-in bit (STATIC_BLACKLIST) AND a custom bit (bit 25).
+        let reason =
+            StatBlockReason::STATIC_BLACKLIST | StatBlockReason::from_bits_retain(1u32 << 25);
+        let event = StatEvent {
+            timestamp: 1,
+            domain_hash: 2,
+            client_ip: [0u8; 16],
+            action: StatAction::Suspicious(reason),
+        };
+        let msg = StatMessage::Event(event);
+        let bytes = msg.serialize();
+        let decoded = StatMessage::deserialize(&bytes).unwrap();
+        if let StatMessage::Event(ev) = decoded {
+            if let StatAction::Suspicious(r) = ev.action {
+                assert!(r.contains(StatBlockReason::STATIC_BLACKLIST));
+                assert_eq!(r.bits() & (1u32 << 25), 1u32 << 25);
+            } else {
+                panic!("wrong action variant");
+            }
+        } else {
+            panic!("wrong message variant");
+        }
+    }
+
+    #[test]
+    fn stat_message_reason_field_is_4_bytes() {
+        // Blocked event layout: 2(len) + 1(type) + 8(ts) + 8(hash) + 16(ip) + 1(action) + 4(reason) = 40
+        let msg = StatMessage::Event(StatEvent {
+            timestamp: 0,
+            domain_hash: 0,
+            client_ip: [0u8; 16],
+            action: StatAction::Blocked(StatBlockReason::empty()),
+        });
+        assert_eq!(msg.serialize().len(), 40);
     }
 
     #[test]

@@ -434,16 +434,16 @@ mod tests {
         [a, b, c, d, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     }
 
-    fn blocked(bits: u16) -> StatAction {
-        StatAction::Blocked(StatBlockReason::from_bits_truncate(bits))
+    fn blocked(bits: u32) -> StatAction {
+        StatAction::Blocked(StatBlockReason::from_bits_retain(bits))
     }
 
-    fn suspicious(bits: u16) -> StatAction {
-        StatAction::Suspicious(StatBlockReason::from_bits_truncate(bits))
+    fn suspicious(bits: u32) -> StatAction {
+        StatAction::Suspicious(StatBlockReason::from_bits_retain(bits))
     }
 
-    fn highly_suspicious(bits: u16) -> StatAction {
-        StatAction::HighlySuspicious(StatBlockReason::from_bits_truncate(bits))
+    fn highly_suspicious(bits: u32) -> StatAction {
+        StatAction::HighlySuspicious(StatBlockReason::from_bits_retain(bits))
     }
 
     // ── DashboardState::new ───────────────────────────────────────────────────

@@ -97,6 +97,7 @@ pub mod tests {
             geoip_reader: None,
             suspicious_country_codes: HashSet::new(),
             suspicious_country_score: 3,
+            custom_flag_maps: Vec::new(),
             seed: 42,
         }
     }
@@ -129,6 +130,7 @@ pub mod tests {
             geoip_reader: None,
             suspicious_country_codes: HashSet::new(),
             suspicious_country_score: 3,
+            custom_flag_maps: Vec::new(),
             seed: 42,
         }
     }
@@ -148,6 +150,7 @@ pub mod tests {
             geoip_reader: None,
             suspicious_country_codes: HashSet::new(),
             suspicious_country_score: 3,
+            custom_flag_maps: Vec::new(),
             seed: 42,
         }
     }
@@ -188,6 +191,7 @@ pub mod tests {
             geoip_reader: None,
             suspicious_country_codes: HashSet::new(),
             suspicious_country_score: 3,
+            custom_flag_maps: Vec::new(),
             seed: 42,
         }
     }

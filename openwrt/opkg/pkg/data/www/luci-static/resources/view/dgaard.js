@@ -116,6 +116,89 @@ function readField(id) {
 }
 
 // ---------------------------------------------------------------------------
+// Custom Flags — dynamic row widget
+// ---------------------------------------------------------------------------
+
+// Ever-increasing counter so removed rows never collide with new ones.
+var _cfCounter = 0;
+// Container node populated during render(); referenced by save handler.
+var _cfContainer = null;
+
+function _cfAddRow(container, flag) {
+    var idx = _cfCounter++;
+    flag = flag || {};
+
+    var bitOptions = [];
+    for (var b = 16; b <= 31; b++) {
+        bitOptions.push(E('option', {
+            value: String(b),
+            selected: (String(flag.bit) === String(b)) ? '' : null
+        }, String(b)));
+    }
+
+    var row = E('div', {
+        class: 'cf-row',
+        'data-cf-idx': String(idx),
+        style: 'border:1px solid #ccc; border-radius:4px; padding:10px 12px; margin-bottom:10px; background:#f9f9f9'
+    }, [
+        E('div', { style: 'display:grid; grid-template-columns:80px 1fr 1fr 80px; gap:10px; margin-bottom:8px; align-items:end' }, [
+            E('div', {}, [
+                E('label', { class: 'cbi-value-title', style: 'display:block; margin-bottom:2px' }, _('Bit (16–31)')),
+                E('select', {
+                    id: 'cf_bit_' + idx,
+                    class: 'cbi-input-select',
+                    style: 'width:100%'
+                }, bitOptions)
+            ]),
+            E('div', {}, [
+                E('label', { class: 'cbi-value-title', style: 'display:block; margin-bottom:2px' }, _('Code')),
+                textInput('cf_code_' + idx, flag.code || '', 'AI_GENERATED')
+            ]),
+            E('div', {}, [
+                E('label', { class: 'cbi-value-title', style: 'display:block; margin-bottom:2px' }, _('Name')),
+                textInput('cf_name_' + idx, flag.name || '', _('My Feed'))
+            ]),
+            E('div', {}, [
+                E('label', { class: 'cbi-value-title', style: 'display:block; margin-bottom:2px' }, _('Score')),
+                numberInput('cf_score_' + idx, flag.suspicious_score || 1, 1, 255)
+            ])
+        ]),
+        E('div', { style: 'margin-bottom:6px' }, [
+            E('label', { class: 'cbi-value-title', style: 'display:block; margin-bottom:2px' },
+                _('Domain list files (one path per line)')),
+            listArea('cf_paths_' + idx, flag.list_path || [], 3, '/etc/dgaard/custom-feed.txt')
+        ]),
+        E('div', { style: 'text-align:right' }, [
+            E('button', {
+                class: 'cbi-button cbi-button-negative',
+                click: function(ev) {
+                    var r = ev.target.closest('.cf-row');
+                    if (r) r.parentNode.removeChild(r);
+                }
+            }, _('Remove'))
+        ])
+    ]);
+
+    container.appendChild(row);
+    return row;
+}
+
+// Collect current flag state from the DOM into a payload object.
+// Re-indexes from 0 regardless of internal _cfCounter gaps.
+function _cfCollect(payload) {
+    var rows = _cfContainer ? _cfContainer.querySelectorAll('.cf-row') : [];
+    payload['custom_flags_count'] = String(rows.length);
+    for (var i = 0; i < rows.length; i++) {
+        var idx = rows[i].getAttribute('data-cf-idx');
+        payload['custom_flag_' + i + '_bit']               = readField('cf_bit_'   + idx);
+        payload['custom_flag_' + i + '_code']              = readField('cf_code_'  + idx);
+        payload['custom_flag_' + i + '_name']              = readField('cf_name_'  + idx);
+        payload['custom_flag_' + i + '_suspicious_score']  = readField('cf_score_' + idx);
+        payload['custom_flag_' + i + '_list_path_list']    = readField('cf_paths_' + idx);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main view
 // ---------------------------------------------------------------------------
 return view.extend({
@@ -127,6 +210,10 @@ return view.extend({
     render: function(data) {
         var cfg     = data[0] || {};
         var running = data[1];
+
+        // Reset custom flag state for this render pass.
+        _cfCounter   = 0;
+        _cfContainer = E('div', { id: 'cf_container' });
 
         // --- Status bar ---
         var statusBadge = E('span', {
@@ -192,6 +279,7 @@ return view.extend({
                     ];
                     var payload = {};
                     allKeys.forEach(function(k) { payload[k] = readField(k); });
+                    _cfCollect(payload);
                     callSetConfig(payload).then(function(res) {
                         if (res && res.result === 'ok') {
                             ui.addNotification(null, E('p', _('Configuration saved. Restart dgaard to apply.')), 'info');
@@ -373,6 +461,31 @@ return view.extend({
                 numberInput('tunneling_max_label_length', cfg.tunneling_max_label_length, 1)),
         ]);
 
+        // --- Custom Flags section ---
+        // Populate rows from cfg data (loaded from UCI cache).
+        var count = parseInt(cfg['custom_flags_count'] || '0', 10);
+        for (var ci = 0; ci < count; ci++) {
+            _cfAddRow(_cfContainer, {
+                bit:              cfg['custom_flag_' + ci + '_bit'],
+                code:             cfg['custom_flag_' + ci + '_code'],
+                name:             cfg['custom_flag_' + ci + '_name'],
+                suspicious_score: cfg['custom_flag_' + ci + '_suspicious_score'],
+                list_path:        cfg['custom_flag_' + ci + '_list_path_list'] || []
+            });
+        }
+
+        var customFlagsSection = section(_('Custom Threat Intelligence Flags'), [
+            E('p', { style: 'margin-bottom:10px; color:#555' },
+                _('Map up to 16 plain-text domain list files to custom bits 16–31 of StatBlockReason. ' +
+                  'Each hit adds the configured suspicion score. Bits must be unique (16–31).')),
+            _cfContainer,
+            E('button', {
+                class: 'cbi-button cbi-button-add',
+                style: 'margin-top:4px',
+                click: function() { _cfAddRow(_cfContainer, {}); }
+            }, _('+ Add Flag'))
+        ]);
+
         var upstreamSection = section(_('Upstream DNS'), [
             field('upstream_servers_list', _('Upstream servers'),
                 listArea('upstream_servers_list', cfg.upstream_servers_list, 3, '1.1.1.1:53\n9.9.9.9:53'),
@@ -475,6 +588,9 @@ return view.extend({
             E('div', { 'data-tab': 'sources', 'data-tab-title': _('Sources & TLD') }, [
                 tldSection,
                 sourcesSection,
+            ]),
+            E('div', { 'data-tab': 'custom_flags', 'data-tab-title': _('Custom Flags') }, [
+                customFlagsSection,
             ]),
         ]);
 

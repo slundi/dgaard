@@ -36,6 +36,11 @@ pub struct FilterEngine {
     pub suspicious_country_codes: HashSet<String>,
     pub suspicious_country_score: u8,
 
+    /// User-defined custom flag domain lookups.
+    /// Each entry is `(bit_index, suspicious_score, domain_hash_set)`.
+    /// Bit indices correspond to bits 16–31 of `StatBlockReason`.
+    pub custom_flag_maps: Vec<(u8, u8, HashMap<u64, ()>)>,
+
     /// Hash seed used for all domain fingerprinting within this engine instance.
     pub seed: u64,
 }
@@ -100,6 +105,7 @@ impl FilterEngine {
             geoip_reader: None,
             suspicious_country_codes: HashSet::with_capacity(0),
             suspicious_country_score: 3,
+            custom_flag_maps: Vec::with_capacity(0),
             seed: 0,
         }
     }
@@ -189,6 +195,7 @@ impl FilterEngine {
             geoip_reader: None,
             suspicious_country_codes: HashSet::new(),
             suspicious_country_score: 3,
+            custom_flag_maps: Vec::new(),
             seed,
         };
 
@@ -196,6 +203,7 @@ impl FilterEngine {
         engine.load_lexical_filters(config);
         engine.load_asn_filters(config);
         engine.load_geoip_filter(config);
+        engine.load_custom_flags(config);
 
         engine
     }
@@ -297,6 +305,53 @@ impl FilterEngine {
                 geo.database_path, e
             ),
         }
+    }
+
+    /// Load user-defined custom flag domain lists from configuration.
+    ///
+    /// For each `[[security.custom_flags]]` entry, reads every `list_path` file
+    /// as a plain-text domain list (one domain per line, `#` comments stripped)
+    /// and stores the hashed domain set alongside its bit index and score.
+    pub fn load_custom_flags(&mut self, config: &Config) {
+        for flag in &config.security.custom_flags {
+            let mut map: HashMap<u64, ()> = HashMap::new();
+            for path in &flag.list_path {
+                match Self::load_plain_domain_list(path, self.seed) {
+                    Ok(domains) => map.extend(domains),
+                    Err(e) => eprintln!(
+                        "Warning: Failed to load custom flag list {} (bit {}): {}",
+                        path, flag.bit, e
+                    ),
+                }
+            }
+            self.custom_flag_maps.push((flag.bit, flag.suspicious_score, map));
+        }
+    }
+
+    /// Read a plain-text domain list file and return a set of XxHash64 digests.
+    fn load_plain_domain_list(
+        path: &str,
+        seed: u64,
+    ) -> std::io::Result<HashMap<u64, ()>> {
+        use std::io::BufRead;
+        let file = std::fs::File::open(path)?;
+        let reader = std::io::BufReader::new(file);
+        let mut map = HashMap::new();
+        for line in reader.lines() {
+            let line = line?;
+            let line = line.trim();
+            let line = line
+                .find('#')
+                .map(|i| &line[..i])
+                .unwrap_or(line)
+                .trim();
+            if line.is_empty() {
+                continue;
+            }
+            let hash = twox_hash::XxHash64::oneshot(seed, line.as_bytes());
+            map.insert(hash, ());
+        }
+        Ok(map)
     }
 
     /// Return the ISO 3166-1 alpha-2 country code if `ip` is in a suspicious
@@ -482,5 +537,104 @@ mod tests {
         assert_eq!(&mask[..4], &[0xFF, 0xFF, 0xFF, 0xFF]);
         let expected_net: std::net::Ipv6Addr = "2001:db8::".parse().unwrap();
         assert_eq!(net, expected_net.octets());
+    }
+
+    // ── custom_flag_maps ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_load_custom_flags_empty_when_no_config() {
+        let mut engine = make_engine();
+        let cfg = Config::default();
+        engine.load_custom_flags(&cfg);
+        assert!(engine.custom_flag_maps.is_empty());
+    }
+
+    #[test]
+    fn test_load_custom_flags_from_file() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "evil.example.com").unwrap();
+        writeln!(f, "# this is a comment").unwrap();
+        writeln!(f, "bad.tld").unwrap();
+        writeln!(f, "  spaced.domain.net  ").unwrap();
+        f.flush().unwrap();
+
+        let mut cfg = Config::default();
+        cfg.security.custom_flags.push(crate::config::CustomFlagConfig {
+            bit: 16,
+            code: "TEST".to_string(),
+            name: "Test Flag".to_string(),
+            description: String::new(),
+            suspicious_score: 5,
+            list_path: vec![f.path().to_str().unwrap().to_string()],
+        });
+
+        let mut engine = make_engine();
+        engine.load_custom_flags(&cfg);
+
+        assert_eq!(engine.custom_flag_maps.len(), 1);
+        let (bit, score, ref map) = engine.custom_flag_maps[0];
+        assert_eq!(bit, 16);
+        assert_eq!(score, 5);
+
+        for domain in &["evil.example.com", "bad.tld", "spaced.domain.net"] {
+            let hash = twox_hash::XxHash64::oneshot(SEED, domain.as_bytes());
+            assert!(map.contains_key(&hash), "expected '{}' to be in the map", domain);
+        }
+        // Comment line must not appear
+        let comment_hash = twox_hash::XxHash64::oneshot(SEED, b"# this is a comment");
+        assert!(!map.contains_key(&comment_hash));
+    }
+
+    #[test]
+    fn test_load_custom_flags_missing_file_logs_warning_not_panic() {
+        let mut cfg = Config::default();
+        cfg.security.custom_flags.push(crate::config::CustomFlagConfig {
+            bit: 17,
+            code: "MISSING".to_string(),
+            name: String::new(),
+            description: String::new(),
+            suspicious_score: 1,
+            list_path: vec!["/nonexistent/path/custom.txt".to_string()],
+        });
+
+        let mut engine = make_engine();
+        // Should not panic — missing file emits a warning and yields an empty map.
+        engine.load_custom_flags(&cfg);
+        assert_eq!(engine.custom_flag_maps.len(), 1);
+        let (_, _, ref map) = engine.custom_flag_maps[0];
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_load_custom_flags_multiple_list_paths_merged() {
+        use std::io::Write;
+        let mut f1 = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f1, "a.com").unwrap();
+        let mut f2 = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f2, "b.com").unwrap();
+
+        let mut cfg = Config::default();
+        cfg.security.custom_flags.push(crate::config::CustomFlagConfig {
+            bit: 18,
+            code: "MERGED".to_string(),
+            name: String::new(),
+            description: String::new(),
+            suspicious_score: 2,
+            list_path: vec![
+                f1.path().to_str().unwrap().to_string(),
+                f2.path().to_str().unwrap().to_string(),
+            ],
+        });
+
+        let mut engine = make_engine();
+        engine.load_custom_flags(&cfg);
+
+        let (_, _, ref map) = engine.custom_flag_maps[0];
+        assert_eq!(map.len(), 2);
+        let h_a = twox_hash::XxHash64::oneshot(SEED, b"a.com");
+        let h_b = twox_hash::XxHash64::oneshot(SEED, b"b.com");
+        assert!(map.contains_key(&h_a));
+        assert!(map.contains_key(&h_b));
     }
 }

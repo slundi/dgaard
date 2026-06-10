@@ -55,6 +55,7 @@ pub fn format_reason(reason: &BlockReason) -> String {
         BlockReason::SpecialUseDomain => String::from("SpecialUseDomain"),
         BlockReason::PtrLeak => String::from("PtrLeak"),
         BlockReason::ChaosClass => String::from("ChaosClass"),
+        BlockReason::CustomFlag(bit) => format!("CustomFlag({})", bit),
     }
 }
 

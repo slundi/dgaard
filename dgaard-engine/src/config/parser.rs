@@ -205,6 +205,39 @@ fn get_table<'a>(
     }
 }
 
+/// Extract an optional array of tables from a table (for `[[section]]` entries).
+fn get_table_array<'a>(
+    table: &'a toml_span::value::Table<'a>,
+    key: &str,
+) -> Result<Option<Vec<&'a toml_span::value::Table<'a>>>, ConfigError> {
+    match table.get(key) {
+        Some(v) => match v.as_ref() {
+            ValueInner::Array(arr) => {
+                let mut result = Vec::with_capacity(arr.len());
+                for item in arr.iter() {
+                    match item.as_ref() {
+                        ValueInner::Table(t) => result.push(t),
+                        _ => {
+                            return Err(ConfigError::InvalidType {
+                                key: format!("{}[]", key),
+                                expected: "table",
+                                span: item.span,
+                            });
+                        }
+                    }
+                }
+                Ok(Some(result))
+            }
+            _ => Err(ConfigError::InvalidType {
+                key: key.to_string(),
+                expected: "array of tables",
+                span: v.span,
+            }),
+        },
+        None => Ok(None),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Section parsers
 // ---------------------------------------------------------------------------
@@ -567,6 +600,91 @@ fn parse_scoring(table: &toml_span::value::Table<'_>) -> Result<ScoringConfig, C
     Ok(cfg)
 }
 
+/// Parse a single `[[security.custom_flags]]` entry.
+fn parse_custom_flag(
+    table: &toml_span::value::Table<'_>,
+    parent_span: toml_span::Span,
+) -> Result<CustomFlagConfig, ConfigError> {
+    let bit = get_integer(table, "bit")?
+        .ok_or_else(|| ConfigError::MissingKey {
+            key: "bit".to_string(),
+            span: parent_span,
+        })? as i64;
+
+    if !(16..=31).contains(&bit) {
+        return Err(ConfigError::InvalidValue {
+            key: "bit".to_string(),
+            message: format!("must be in range 16–31, got {}", bit),
+            span: parent_span,
+        });
+    }
+
+    let code = get_str(table, "code")?
+        .ok_or_else(|| ConfigError::MissingKey {
+            key: "code".to_string(),
+            span: parent_span,
+        })?
+        .to_string();
+
+    let name = get_str(table, "name")?.unwrap_or("").to_string();
+    let description = get_str(table, "description")?.unwrap_or("").to_string();
+
+    let suspicious_score = get_integer(table, "suspicious_score")?
+        .unwrap_or(1)
+        .clamp(0, 255) as u8;
+
+    let list_path = get_string_array(table, "list_path")?.unwrap_or_default();
+
+    Ok(CustomFlagConfig {
+        bit: bit as u8,
+        code,
+        name,
+        description,
+        suspicious_score,
+        list_path,
+    })
+}
+
+/// Parse `[[security.custom_flags]]` array and validate constraints.
+fn parse_custom_flags(
+    table: &toml_span::value::Table<'_>,
+) -> Result<Vec<CustomFlagConfig>, ConfigError> {
+    let entries = match get_table_array(table, "custom_flags")? {
+        Some(v) => v,
+        None => return Ok(Vec::new()),
+    };
+
+    if entries.len() > 16 {
+        return Err(ConfigError::InvalidValue {
+            key: "custom_flags".to_string(),
+            message: format!(
+                "at most 16 custom flags are allowed (bits 16–31), got {}",
+                entries.len()
+            ),
+            span: toml_span::Span::default(),
+        });
+    }
+
+    let mut flags = Vec::with_capacity(entries.len());
+    let mut seen_bits = std::collections::HashSet::new();
+
+    for entry_table in entries {
+        let flag = parse_custom_flag(entry_table, toml_span::Span::default())?;
+
+        if !seen_bits.insert(flag.bit) {
+            return Err(ConfigError::InvalidValue {
+                key: "bit".to_string(),
+                message: format!("duplicate custom flag bit {}", flag.bit),
+                span: toml_span::Span::default(),
+            });
+        }
+
+        flags.push(flag);
+    }
+
+    Ok(flags)
+}
+
 /// Parse `[security]` section with all sub-sections.
 fn parse_security(table: &toml_span::value::Table<'_>) -> Result<SecurityConfig, ConfigError> {
     let mut cfg = SecurityConfig::default();
@@ -607,6 +725,8 @@ fn parse_security(table: &toml_span::value::Table<'_>) -> Result<SecurityConfig,
     if let Some(t) = get_table(table, "special_use")? {
         cfg.special_use = parse_special_use(t)?;
     }
+
+    cfg.custom_flags = parse_custom_flags(table)?;
 
     Ok(cfg)
 }
@@ -1945,5 +2065,207 @@ mod tests {
             let err = get_table(t, "server").unwrap_err();
             assert!(matches!(err, ConfigError::InvalidType { ref key, .. } if key == "server"));
         });
+    }
+
+    // -----------------------------------------------------------------------
+    // custom_flags
+    // -----------------------------------------------------------------------
+
+    fn toml_config(content: &str) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f
+    }
+
+    #[test]
+    fn parse_custom_flags_empty_when_absent() {
+        let f = toml_config("[security]\n");
+        let cfg = Config::load(f.path()).unwrap();
+        assert!(cfg.security.custom_flags.is_empty());
+    }
+
+    #[test]
+    fn parse_custom_flags_single_entry() {
+        let f = toml_config(
+            r#"
+[[security.custom_flags]]
+bit = 16
+code = "AI_GENERATED"
+name = "AI-Generated Domain"
+description = "Domains flagged as AI-generated."
+suspicious_score = 4
+list_path = ["/etc/dgaard/ai-domains.txt"]
+"#,
+        );
+        let cfg = Config::load(f.path()).unwrap();
+        assert_eq!(cfg.security.custom_flags.len(), 1);
+        let flag = &cfg.security.custom_flags[0];
+        assert_eq!(flag.bit, 16);
+        assert_eq!(flag.code, "AI_GENERATED");
+        assert_eq!(flag.name, "AI-Generated Domain");
+        assert_eq!(flag.suspicious_score, 4);
+        assert_eq!(flag.list_path, vec!["/etc/dgaard/ai-domains.txt"]);
+    }
+
+    #[test]
+    fn parse_custom_flags_multiple_entries() {
+        let f = toml_config(
+            r#"
+[[security.custom_flags]]
+bit = 16
+code = "AI_GENERATED"
+suspicious_score = 4
+list_path = []
+
+[[security.custom_flags]]
+bit = 17
+code = "HONEYPOT"
+suspicious_score = 8
+list_path = ["/etc/dgaard/honeypots.txt"]
+"#,
+        );
+        let cfg = Config::load(f.path()).unwrap();
+        assert_eq!(cfg.security.custom_flags.len(), 2);
+        assert_eq!(cfg.security.custom_flags[0].bit, 16);
+        assert_eq!(cfg.security.custom_flags[1].bit, 17);
+        assert_eq!(cfg.security.custom_flags[1].code, "HONEYPOT");
+    }
+
+    #[test]
+    fn parse_custom_flags_bit_below_16_is_rejected() {
+        let f = toml_config(
+            r#"
+[[security.custom_flags]]
+bit = 15
+code = "BAD"
+suspicious_score = 1
+list_path = []
+"#,
+        );
+        assert!(
+            Config::load(f.path()).is_err(),
+            "bit 15 (built-in range) should be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_custom_flags_bit_above_31_is_rejected() {
+        let f = toml_config(
+            r#"
+[[security.custom_flags]]
+bit = 32
+code = "BAD"
+suspicious_score = 1
+list_path = []
+"#,
+        );
+        assert!(
+            Config::load(f.path()).is_err(),
+            "bit 32 (out of u32 custom range) should be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_custom_flags_duplicate_bit_is_rejected() {
+        let f = toml_config(
+            r#"
+[[security.custom_flags]]
+bit = 20
+code = "FIRST"
+suspicious_score = 2
+list_path = []
+
+[[security.custom_flags]]
+bit = 20
+code = "SECOND"
+suspicious_score = 3
+list_path = []
+"#,
+        );
+        assert!(
+            Config::load(f.path()).is_err(),
+            "duplicate bit index should be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_custom_flags_max_16_entries_accepted() {
+        let mut toml = String::new();
+        for i in 0..16u8 {
+            toml.push_str(&format!(
+                "[[security.custom_flags]]\nbit = {}\ncode = \"F{}\"\nsuspicious_score = 1\nlist_path = []\n\n",
+                16 + i, i
+            ));
+        }
+        let f = toml_config(&toml);
+        let cfg = Config::load(f.path()).unwrap();
+        assert_eq!(cfg.security.custom_flags.len(), 16);
+    }
+
+    #[test]
+    fn parse_custom_flags_17_entries_rejected() {
+        let mut toml = String::new();
+        for i in 0..17u8 {
+            toml.push_str(&format!(
+                "[[security.custom_flags]]\nbit = {}\ncode = \"F{}\"\nsuspicious_score = 1\nlist_path = []\n\n",
+                16 + i, i
+            ));
+        }
+        let f = toml_config(&toml);
+        assert!(
+            Config::load(f.path()).is_err(),
+            "17 entries (> max 16) should be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_custom_flags_missing_bit_is_rejected() {
+        let f = toml_config(
+            r#"
+[[security.custom_flags]]
+code = "NOBIT"
+suspicious_score = 1
+list_path = []
+"#,
+        );
+        assert!(
+            Config::load(f.path()).is_err(),
+            "missing required 'bit' field should be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_custom_flags_missing_code_is_rejected() {
+        let f = toml_config(
+            r#"
+[[security.custom_flags]]
+bit = 16
+suspicious_score = 1
+list_path = []
+"#,
+        );
+        assert!(
+            Config::load(f.path()).is_err(),
+            "missing required 'code' field should be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_custom_flags_optional_fields_default() {
+        let f = toml_config(
+            r#"
+[[security.custom_flags]]
+bit = 31
+code = "MINIMAL"
+"#,
+        );
+        let cfg = Config::load(f.path()).unwrap();
+        let flag = &cfg.security.custom_flags[0];
+        assert_eq!(flag.bit, 31);
+        assert_eq!(flag.name, "");
+        assert_eq!(flag.description, "");
+        assert_eq!(flag.suspicious_score, 1);
+        assert!(flag.list_path.is_empty());
     }
 }

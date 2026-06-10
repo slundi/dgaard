@@ -731,6 +731,35 @@ impl Default for GeoIpConfig {
 // [security]
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// [[security.custom_flags]]
+// ---------------------------------------------------------------------------
+
+/// A single user-defined threat intelligence feed mapped to a custom
+/// `StatBlockReason` bit (bits 16–31).
+///
+/// Each entry registers a plain-text domain list and binds it to a specific
+/// bit in the upper half of the `StatBlockReason` u32 field. A domain hit
+/// adds `suspicious_score` to the query's suspicion total and sets the
+/// corresponding bit in telemetry.
+///
+/// Maps to a `[[security.custom_flags]]` array-of-tables entry.
+#[derive(Debug, PartialEq, Clone)]
+pub struct CustomFlagConfig {
+    /// Bit index in `StatBlockReason` (must be in range 16–31, unique).
+    pub bit: u8,
+    /// Short machine-readable identifier used in JSON/log output (e.g. `"AI_GENERATED"`).
+    pub code: String,
+    /// Human-readable label shown in the TUI and CLI.
+    pub name: String,
+    /// Freeform description (informational only, not transmitted on the wire).
+    pub description: String,
+    /// Suspicion score points added when this flag is triggered.
+    pub suspicious_score: u8,
+    /// Paths to plain-text domain list files (one domain per line, `#` comments stripped).
+    pub list_path: Vec<String>,
+}
+
 /// Aggregated security sub-configuration.
 ///
 /// Maps to the `[security.*]` family of sections in the configuration file.
@@ -759,6 +788,8 @@ pub struct SecurityConfig {
     pub geo_ip: GeoIpConfig,
     /// RFC 6761 special-use domain isolation.
     pub special_use: SpecialUseConfig,
+    /// User-defined custom threat intelligence feeds mapped to bits 16–31.
+    pub custom_flags: Vec<CustomFlagConfig>,
 }
 
 // ---------------------------------------------------------------------------

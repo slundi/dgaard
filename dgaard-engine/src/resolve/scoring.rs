@@ -2,6 +2,7 @@
 
 use super::heuristics::check_lexical;
 use super::matcher::{is_blocked, is_nrd, is_suffix_blocked};
+use twox_hash::XxHash64;
 use crate::config::Config;
 use crate::dga::entropy::{calculate_entropy, calculate_entropy_fast, is_consonant_suspicious};
 use crate::filter::engine::FilterEngine;
@@ -97,6 +98,17 @@ pub fn compute_score(domain: &str, filter: &FilterEngine, config: &Config) -> Su
                 score_points::CONSONANT_CLUSTER,
                 BlockReason::LexicalAnalysis,
             );
+        }
+    }
+
+    // Custom flag checks — user-defined domain lists mapped to bits 16–31.
+    for (bit, flag_score, map) in &filter.custom_flag_maps {
+        let hash = XxHash64::oneshot(filter.seed, domain.as_bytes());
+        if map.contains_key(&hash) {
+            score.add(*flag_score, BlockReason::CustomFlag(*bit));
+            if score.total >= blocking_threshold {
+                return score;
+            }
         }
     }
 
@@ -485,5 +497,84 @@ mod tests {
         };
         score_answer(&mut score, &answer, &engine, &config);
         assert_eq!(score.total, score_points::LOW_TTL);
+    }
+
+    // ── custom flag scoring ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_compute_score_custom_flag_hit_adds_score() {
+        use std::io::Write;
+        // Write a plain-text domain list with one entry.
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "flagged.example.com").unwrap();
+        f.flush().unwrap();
+
+        let mut cfg = Config::default();
+        cfg.security.custom_flags.push(crate::config::CustomFlagConfig {
+            bit: 20,
+            code: "TEST".to_string(),
+            name: String::new(),
+            description: String::new(),
+            suspicious_score: 6,
+            list_path: vec![f.path().to_str().unwrap().to_string()],
+        });
+
+        let mut engine = create_test_engine(&[], &[], &[]);
+        engine.load_custom_flags(&cfg);
+
+        let score = compute_score("flagged.example.com", &engine, &cfg);
+        assert_eq!(score.total, 6);
+        assert!(
+            score.reasons.iter().any(|r| matches!(r, crate::model::BlockReason::CustomFlag(20))),
+            "expected CustomFlag(20) in reasons"
+        );
+    }
+
+    #[test]
+    fn test_compute_score_custom_flag_miss_adds_nothing() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "other.example.com").unwrap();
+
+        let mut cfg = Config::default();
+        cfg.security.custom_flags.push(crate::config::CustomFlagConfig {
+            bit: 21,
+            code: "MISS".to_string(),
+            name: String::new(),
+            description: String::new(),
+            suspicious_score: 5,
+            list_path: vec![f.path().to_str().unwrap().to_string()],
+        });
+
+        let mut engine = create_test_engine(&[], &[], &[]);
+        engine.load_custom_flags(&cfg);
+
+        let score = compute_score("clean.example.com", &engine, &cfg);
+        assert_eq!(score.total, 0);
+        assert!(!score.reasons.iter().any(|r| matches!(r, crate::model::BlockReason::CustomFlag(_))));
+    }
+
+    #[test]
+    fn test_compute_score_custom_flag_blocks_when_score_reaches_threshold() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "malware.tld").unwrap();
+
+        let mut cfg = Config::default();
+        cfg.security.scoring.blocking_threshold = 5;
+        cfg.security.custom_flags.push(crate::config::CustomFlagConfig {
+            bit: 22,
+            code: "MALWARE".to_string(),
+            name: String::new(),
+            description: String::new(),
+            suspicious_score: 10,
+            list_path: vec![f.path().to_str().unwrap().to_string()],
+        });
+
+        let mut engine = create_test_engine(&[], &[], &[]);
+        engine.load_custom_flags(&cfg);
+
+        let score = compute_score("malware.tld", &engine, &cfg);
+        assert!(score.total >= cfg.security.scoring.blocking_threshold);
     }
 }

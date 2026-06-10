@@ -47,9 +47,9 @@ pub struct EventsTool {
     /// Filter by action variant.
     /// Valid values: "Allowed", "Proxied", "Blocked", "Suspicious", "HighlySuspicious".
     pub action: Option<String>,
-    /// Filter by block-reason bitmask (u16). Only events whose reason bits contain ALL supplied
+    /// Filter by block-reason bitmask (u32). Only events whose reason bits contain ALL supplied
     /// bits are returned. Has no effect when used without a matching action.
-    pub flags: Option<u16>,
+    pub flags: Option<u32>,
     /// Maximum number of results to return. Defaults to 200; capped at 1 000.
     pub limit: Option<u64>,
 }
@@ -69,7 +69,7 @@ struct EventRecord {
     /// Action variant name.
     action: String,
     /// Raw block-reason bitmask; `null` for Allowed and Proxied events.
-    flags: Option<u16>,
+    flags: Option<u32>,
     /// Human-readable labels for each set bit in `flags`.
     flags_labels: Vec<String>,
 }
@@ -93,54 +93,8 @@ fn flags_of(action: &StatAction) -> Option<StatBlockReason> {
     }
 }
 
-fn reason_labels(r: StatBlockReason) -> Vec<&'static str> {
-    let mut v = Vec::new();
-    if r.contains(StatBlockReason::STATIC_BLACKLIST) {
-        v.push("STATIC_BLACKLIST");
-    }
-    if r.contains(StatBlockReason::ABP_RULE) {
-        v.push("ABP_RULE");
-    }
-    if r.contains(StatBlockReason::HIGH_ENTROPY) {
-        v.push("HIGH_ENTROPY");
-    }
-    if r.contains(StatBlockReason::LEXICAL_ANALYSIS) {
-        v.push("LEXICAL_ANALYSIS");
-    }
-    if r.contains(StatBlockReason::BANNED_KEYWORD) {
-        v.push("BANNED_KEYWORD");
-    }
-    if r.contains(StatBlockReason::INVALID_STRUCTURE) {
-        v.push("INVALID_STRUCTURE");
-    }
-    if r.contains(StatBlockReason::SUSPICIOUS_IDN) {
-        v.push("SUSPICIOUS_IDN");
-    }
-    if r.contains(StatBlockReason::NRD_LIST) {
-        v.push("NRD_LIST");
-    }
-    if r.contains(StatBlockReason::TLD_EXCLUDED) {
-        v.push("TLD_EXCLUDED");
-    }
-    if r.contains(StatBlockReason::SUSPICIOUS) {
-        v.push("SUSPICIOUS");
-    }
-    if r.contains(StatBlockReason::CNAME_CLOAKING) {
-        v.push("CNAME_CLOAKING");
-    }
-    if r.contains(StatBlockReason::FORBIDDEN_QTYPE) {
-        v.push("FORBIDDEN_QTYPE");
-    }
-    if r.contains(StatBlockReason::DNS_REBINDING) {
-        v.push("DNS_REBINDING");
-    }
-    if r.contains(StatBlockReason::LOW_TTL) {
-        v.push("LOW_TTL");
-    }
-    if r.contains(StatBlockReason::ASN_BLOCKED) {
-        v.push("ASN_BLOCKED");
-    }
-    v
+fn reason_labels(r: StatBlockReason) -> Vec<String> {
+    crate::util::reason_labels(r)
 }
 
 // ── Handler ────────────────────────────────────────────────────────────────────
@@ -260,11 +214,7 @@ async fn handle_events(
                 client_ip: ip_to_string(&ev.client_ip),
                 action: action_name(&ev.action).to_string(),
                 flags: reason.map(|r| r.bits()),
-                flags_labels: reason
-                    .map_or_else(Vec::new, reason_labels)
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect(),
+                flags_labels: reason.map_or_else(Vec::new, reason_labels),
             })
         })
         .collect();
@@ -402,9 +352,9 @@ mod tests {
     fn reason_labels_lists_set_bits() {
         let r = StatBlockReason::STATIC_BLACKLIST | StatBlockReason::HIGH_ENTROPY;
         let labels = reason_labels(r);
-        assert!(labels.contains(&"STATIC_BLACKLIST"));
-        assert!(labels.contains(&"HIGH_ENTROPY"));
-        assert!(!labels.contains(&"ABP_RULE"));
+        assert!(labels.iter().any(|l| l.as_str() == "STATIC_BLACKLIST"));
+        assert!(labels.iter().any(|l| l.as_str() == "HIGH_ENTROPY"));
+        assert!(!labels.iter().any(|l| l.as_str() == "ABP_RULE"));
     }
 
     #[test]

@@ -29,8 +29,8 @@ struct EventsQuery {
     domain: Option<String>,
     /// Filter by action variant: Allowed, Proxied, Blocked, Suspicious, HighlySuspicious.
     action: Option<String>,
-    /// Filter by block-reason bitmask (u16). Events must contain ALL supplied bits.
-    flags: Option<u16>,
+    /// Filter by block-reason bitmask (u32). Events must contain ALL supplied bits.
+    flags: Option<u32>,
     /// Maximum number of results. Defaults to 200; capped at 1 000.
     limit: Option<u64>,
 }
@@ -54,7 +54,7 @@ async fn query_events(state: &AppState, q: &EventsQuery) -> Result<Vec<EventReco
         .map(|s| parse_filter_ip(s).ok_or_else(|| format!("invalid IP address: {s}")))
         .transpose()?;
 
-    let required_flags: Option<StatBlockReason> = q.flags.map(StatBlockReason::from_bits_truncate);
+    let required_flags: Option<StatBlockReason> = q.flags.map(StatBlockReason::from_bits_retain);
 
     let events_snapshot: Vec<_> = {
         let stats = state.stats.read().await;

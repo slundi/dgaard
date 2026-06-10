@@ -59,10 +59,12 @@ pub enum StatAction {
 }
 
 bitflags! {
-    /// Compact block reason flags for telemetry (u16 bitflags).
+    /// Compact block reason flags for telemetry (u32 bitflags).
+    /// Bits 0–15 are built-in reasons. Bits 16–31 are user-defined custom flags
+    /// configured via `[[security.custom_flags]]` in the TOML config.
     /// Multiple reasons can be combined with `|` to represent composite signals.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct StatBlockReason: u16 {
+    pub struct StatBlockReason: u32 {
         /// Hit a static blacklist
         const STATIC_BLACKLIST = 1 << 0;
         /// Matched an ABP/wildcard rule
@@ -95,6 +97,7 @@ bitflags! {
         const ASN_BLOCKED = 1 << 14;
         /// Response resolves to an IP in a suspicious GeoIP country
         const SUSPICIOUS_GEO_IP = 1 << 15;
+        // Bits 16–31 are reserved for user-defined custom flags (custom_flags feature).
     }
 }
 
@@ -119,13 +122,17 @@ impl From<&BlockReason> for StatBlockReason {
             BlockReason::GeoIpSuspicious(_) => StatBlockReason::SUSPICIOUS_GEO_IP,
             // StatBlockReason is a u16 with all 16 bits allocated. SpecialUseDomain shares
             // INVALID_STRUCTURE until StatBlockReason is widened to u32 (custom_flags feature).
+            // SpecialUseDomain, PtrLeak, ChaosClass previously shared built-in bits
+            // while StatBlockReason was u16. Now that the field is u32 they could have
+            // dedicated bits, but they are not yet assigned — keep sharing for now so
+            // existing dashboards/decoders see no change in the built-in bit layout.
             BlockReason::SpecialUseDomain => StatBlockReason::INVALID_STRUCTURE,
-            // PtrLeak is the outbound counterpart of DnsRebinding (both protect the
-            // private/public IP boundary). Shares the bit until u32 widening.
             BlockReason::PtrLeak => StatBlockReason::DNS_REBINDING,
-            // ChaosClass is a forbidden query class, same category as ForbiddenQType.
-            // Shares the bit until u32 widening.
             BlockReason::ChaosClass => StatBlockReason::FORBIDDEN_QTYPE,
+            // User-defined custom flag: set the bit at position `bit` (valid range 16–31).
+            BlockReason::CustomFlag(bit) => {
+                StatBlockReason::from_bits_retain(1u32 << bit)
+            }
         }
     }
 }
@@ -217,5 +224,39 @@ mod tests {
         assert!(combined.contains(StatBlockReason::SUSPICIOUS_IDN));
         assert!(!combined.contains(StatBlockReason::ABP_RULE));
         assert_eq!(combined.bits(), (1 << 2) | (1 << 6));
+    }
+
+    #[test]
+    fn test_stat_block_reason_is_u32() {
+        // Ensure the backing type is u32 so bits 16–31 are available.
+        let all_built_in = StatBlockReason::SUSPICIOUS_GEO_IP.bits();
+        assert_eq!(all_built_in, 1u32 << 15);
+    }
+
+    #[test]
+    fn test_custom_flag_bit_16_maps_to_correct_mask() {
+        let r = StatBlockReason::from(&BlockReason::CustomFlag(16));
+        assert_eq!(r.bits(), 1u32 << 16);
+    }
+
+    #[test]
+    fn test_custom_flag_bit_31_maps_to_correct_mask() {
+        let r = StatBlockReason::from(&BlockReason::CustomFlag(31));
+        assert_eq!(r.bits(), 1u32 << 31);
+    }
+
+    #[test]
+    fn test_custom_flag_does_not_overlap_built_in_bits() {
+        for bit in 16u8..=31 {
+            let custom = StatBlockReason::from(&BlockReason::CustomFlag(bit));
+            // No built-in constant should share a bit with any custom flag.
+            let built_in_mask: u32 = 0x0000_FFFF;
+            assert_eq!(
+                custom.bits() & built_in_mask,
+                0,
+                "custom bit {} overlaps built-in bits",
+                bit
+            );
+        }
     }
 }

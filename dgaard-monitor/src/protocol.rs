@@ -1,8 +1,10 @@
 use bitflags::bitflags;
 
 bitflags! {
+    /// Mirrors `dgaard_engine::StatBlockReason`.
+    /// Bits 0–15 are built-in reasons; bits 16–31 are user-defined custom flags.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct StatBlockReason: u16 {
+    pub struct StatBlockReason: u32 {
         const STATIC_BLACKLIST  = 1 << 0;
         const ABP_RULE          = 1 << 1;
         const HIGH_ENTROPY      = 1 << 2;
@@ -18,6 +20,8 @@ bitflags! {
         const DNS_REBINDING     = 1 << 12;
         const LOW_TTL           = 1 << 13;
         const ASN_BLOCKED       = 1 << 14;
+        const SUSPICIOUS_GEO_IP = 1 << 15;
+        // Bits 16–31 are reserved for user-defined custom flags.
     }
 }
 
@@ -92,25 +96,31 @@ impl StatMessage {
                     0 => StatAction::Allowed,
                     1 => StatAction::Proxied,
                     2 => {
-                        if payload.len() < 35 {
+                        if payload.len() < 37 {
                             return None;
                         }
-                        let reason = u16::from_le_bytes([payload[33], payload[34]]);
-                        StatAction::Blocked(StatBlockReason::from_bits_truncate(reason))
+                        let reason = u32::from_le_bytes(
+                            payload[33..37].try_into().ok()?,
+                        );
+                        StatAction::Blocked(StatBlockReason::from_bits_retain(reason))
                     }
                     3 => {
-                        if payload.len() < 35 {
+                        if payload.len() < 37 {
                             return None;
                         }
-                        let reason = u16::from_le_bytes([payload[33], payload[34]]);
-                        StatAction::Suspicious(StatBlockReason::from_bits_truncate(reason))
+                        let reason = u32::from_le_bytes(
+                            payload[33..37].try_into().ok()?,
+                        );
+                        StatAction::Suspicious(StatBlockReason::from_bits_retain(reason))
                     }
                     4 => {
-                        if payload.len() < 35 {
+                        if payload.len() < 37 {
                             return None;
                         }
-                        let reason = u16::from_le_bytes([payload[33], payload[34]]);
-                        StatAction::HighlySuspicious(StatBlockReason::from_bits_truncate(reason))
+                        let reason = u32::from_le_bytes(
+                            payload[33..37].try_into().ok()?,
+                        );
+                        StatAction::HighlySuspicious(StatBlockReason::from_bits_retain(reason))
                     }
                     _ => return None,
                 };
@@ -153,8 +163,8 @@ impl StatMessage {
                         | StatAction::Suspicious(_)
                         | StatAction::HighlySuspicious(_)
                 );
-                // payload = timestamp(8) + domain_hash(8) + client_ip(16) + action(1) [+ reason(2)]
-                let payload_len = 8 + 8 + 16 + 1 + if has_reason { 2 } else { 0 };
+                // payload = timestamp(8) + domain_hash(8) + client_ip(16) + action(1) [+ reason(4)]
+                let payload_len = 8 + 8 + 16 + 1 + if has_reason { 4 } else { 0 };
                 let msg_len = (1 + payload_len) as u16;
 
                 let mut buf = Vec::with_capacity(2 + 1 + payload_len);
@@ -270,7 +280,8 @@ mod tests {
             | StatBlockReason::FORBIDDEN_QTYPE
             | StatBlockReason::DNS_REBINDING
             | StatBlockReason::LOW_TTL
-            | StatBlockReason::ASN_BLOCKED;
+            | StatBlockReason::ASN_BLOCKED
+            | StatBlockReason::SUSPICIOUS_GEO_IP;
         let msg = StatMessage::Event(make_event(StatAction::Blocked(reason)));
         let bytes = msg.serialize();
         let decoded = StatMessage::deserialize(&bytes).unwrap();
@@ -317,8 +328,8 @@ mod tests {
         let msg = StatMessage::Event(make_event(StatAction::Allowed));
         assert_eq!(msg.serialize().len(), 36);
 
-        // Blocked event: 36 + 2(reason) = 38
+        // Blocked event: 36 + 4(reason) = 40
         let msg = StatMessage::Event(make_event(StatAction::Blocked(StatBlockReason::empty())));
-        assert_eq!(msg.serialize().len(), 38);
+        assert_eq!(msg.serialize().len(), 40);
     }
 }

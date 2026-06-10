@@ -37,6 +37,11 @@ pub struct InputConfig {
     pub socket: String,
     #[serde(default = "default_index")]
     pub index: String,
+    /// Optional path to the dgaard engine config file (`dgaard.toml`).
+    /// When set, the monitor parses `[[security.custom_flags]]` from this file
+    /// to resolve custom bit indices (16–31) to their configured `code` labels.
+    /// Bits with no matching entry render as `CUSTOM_BIT_<n>`.
+    pub engine_config_path: Option<String>,
 }
 
 fn default_socket() -> String {
@@ -52,6 +57,7 @@ impl Default for InputConfig {
         Self {
             socket: default_socket(),
             index: default_index(),
+            engine_config_path: None,
         }
     }
 }

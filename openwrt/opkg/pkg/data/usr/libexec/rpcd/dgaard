@@ -95,6 +95,63 @@ _toml_val() {
     ' "$CONFIG_TOML"
 }
 
+# Parse [[security.custom_flags]] array-of-tables and emit flat cache lines.
+# Emits lines:  custom_flag_N_bit=, custom_flag_N_code=, etc.
+# Emits a final: custom_flags_count=N
+_toml_custom_flags_to_cache() {
+    awk '
+        BEGIN { idx = -1; count = 0; bit = ""; code = ""; name_ = ""; score = "1"; paths = "" }
+
+        /^\[\[security\.custom_flags\]\]/ {
+            if (idx >= 0) flush()
+            idx++; count++; bit = ""; code = ""; name_ = ""; score = "1"; paths = ""
+            next
+        }
+
+        # Any other section header closes the current flag entry
+        idx >= 0 && /^\[/ {
+            flush()
+            idx = -1
+            next
+        }
+
+        idx >= 0 {
+            line = $0
+            sub(/[[:space:]]*#.*$/, "", line)   # strip inline comments
+            sub(/^[[:space:]]+/, "", line)       # ltrim
+            if (line !~ /^[a-zA-Z_]/) next
+
+            key = line; sub(/[[:space:]]*=.*$/, "", key)
+            val = line; sub(/^[^=]*=[[:space:]]*/, "", val)
+
+            if (key == "bit")              { gsub(/[[:space:]]/, "", val); bit   = val }
+            if (key == "code")             { gsub(/"/, "", val);           code  = val }
+            if (key == "name")             { gsub(/"/, "", val);           name_ = val }
+            if (key == "suspicious_score") { gsub(/[[:space:]]/, "", val); score = val }
+            if (key == "list_path") {
+                # Inline array only: ["path1", "path2"]
+                gsub(/[\[\] ]/, "", val)
+                gsub(/"/, "", val)
+                n = split(val, a, ",")
+                paths = ""
+                for (i = 1; i <= n; i++) {
+                    if (a[i] != "") paths = (paths == "" ? a[i] : paths "\\n" a[i])
+                }
+            }
+        }
+
+        END { if (idx >= 0) flush(); printf "custom_flags_count=%d\n", count }
+
+        function flush() {
+            printf "custom_flag_%d_bit=%s\n",               idx, bit
+            printf "custom_flag_%d_code=%s\n",              idx, code
+            printf "custom_flag_%d_name=%s\n",              idx, name_
+            printf "custom_flag_%d_suspicious_score=%s\n",  idx, score
+            printf "custom_flag_%d_list_path_list=%s\n",    idx, paths
+        }
+    ' "$CONFIG_TOML"
+}
+
 # Read an array (inline or multi-line) for key under [section] header.
 # Outputs items joined by literal \n (two chars: backslash + n).
 # Usage: _toml_array "section.subsection" "key"
@@ -378,6 +435,31 @@ cache_size = $mem_cache_sz
 use_bloom_filter = $use_bloom
 expected_total_domains = $expected_dom
 TOML
+
+    # Append [[security.custom_flags]] array-of-tables entries
+    local flags_count
+    flags_count=$(_get custom_flags_count)
+    if [ -n "$flags_count" ] && [ "$flags_count" != "0" ]; then
+        local i=0
+        while [ "$i" -lt "$flags_count" ]; do
+            local cf_bit cf_code cf_name cf_score cf_paths
+            cf_bit=$(_get   "custom_flag_${i}_bit")
+            cf_code=$(_get  "custom_flag_${i}_code")
+            cf_name=$(_get  "custom_flag_${i}_name")
+            cf_score=$(_get "custom_flag_${i}_suspicious_score")
+            cf_paths=$(_get_list "custom_flag_${i}_list_path_list")
+            cat >> "$CONFIG_TOML" <<FLAG
+
+[[security.custom_flags]]
+bit = $cf_bit
+code = "$cf_code"
+name = "$cf_name"
+suspicious_score = $cf_score
+list_path = $(_toml_str_array "$cf_paths")
+FLAG
+            i=$((i + 1))
+        done
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -470,6 +552,9 @@ tunneling_enabled=$(_toml_val tunneling_detection enabled)
 tunneling_max_subdomains_per_minute=$(_toml_val tunneling_detection max_subdomains_per_minute)
 tunneling_max_label_length=$(_toml_val tunneling_detection max_label_length)
 EOF
+
+    # Append custom flag entries (array-of-tables requires dedicated parser)
+    _toml_custom_flags_to_cache >> "$UCI_CACHE"
 }
 
 # ---------------------------------------------------------------------------

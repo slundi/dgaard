@@ -37,3 +37,6 @@ log.workspace = true
 
 bitflags.workspace = true
 maxminddb.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

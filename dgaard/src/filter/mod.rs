@@ -195,6 +195,7 @@ pub async fn reload_lists() {
         geoip_reader: None,
         suspicious_country_codes: std::collections::HashSet::new(),
         suspicious_country_score: 3,
+        custom_flag_maps: Vec::new(),
         seed,
     };
 

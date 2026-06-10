@@ -61,7 +61,7 @@ pub async fn stats_handler(State(web): State<Arc<WebState>>) -> Json<StatsRespon
         })
         .count() as u64;
 
-    let mut reason_tally: HashMap<&'static str, u64> = HashMap::new();
+    let mut reason_tally: HashMap<String, u64> = HashMap::new();
     for (_, ev) in stats.window_events() {
         let reason = match &ev.action {
             StatAction::Blocked(r)

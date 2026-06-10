@@ -52,52 +52,74 @@ pub fn flags_of(action: &StatAction) -> Option<StatBlockReason> {
     }
 }
 
-pub fn reason_labels(r: StatBlockReason) -> Vec<&'static str> {
+pub fn reason_labels(r: StatBlockReason) -> Vec<String> {
+    reason_labels_with_defs(r, &[])
+}
+
+/// Like `reason_labels` but resolves custom bits 16–31 using the supplied
+/// registry. Each entry is `(bit_index, code_string)`. Bits not found in the
+/// registry fall back to `"CUSTOM_BIT_<n>"`.
+pub fn reason_labels_with_defs(r: StatBlockReason, defs: &[(u8, String)]) -> Vec<String> {
     let mut v = Vec::new();
     if r.contains(StatBlockReason::STATIC_BLACKLIST) {
-        v.push("STATIC_BLACKLIST");
+        v.push("STATIC_BLACKLIST".to_string());
     }
     if r.contains(StatBlockReason::ABP_RULE) {
-        v.push("ABP_RULE");
+        v.push("ABP_RULE".to_string());
     }
     if r.contains(StatBlockReason::HIGH_ENTROPY) {
-        v.push("HIGH_ENTROPY");
+        v.push("HIGH_ENTROPY".to_string());
     }
     if r.contains(StatBlockReason::LEXICAL_ANALYSIS) {
-        v.push("LEXICAL_ANALYSIS");
+        v.push("LEXICAL_ANALYSIS".to_string());
     }
     if r.contains(StatBlockReason::BANNED_KEYWORD) {
-        v.push("BANNED_KEYWORD");
+        v.push("BANNED_KEYWORD".to_string());
     }
     if r.contains(StatBlockReason::INVALID_STRUCTURE) {
-        v.push("INVALID_STRUCTURE");
+        v.push("INVALID_STRUCTURE".to_string());
     }
     if r.contains(StatBlockReason::SUSPICIOUS_IDN) {
-        v.push("SUSPICIOUS_IDN");
+        v.push("SUSPICIOUS_IDN".to_string());
     }
     if r.contains(StatBlockReason::NRD_LIST) {
-        v.push("NRD_LIST");
+        v.push("NRD_LIST".to_string());
     }
     if r.contains(StatBlockReason::TLD_EXCLUDED) {
-        v.push("TLD_EXCLUDED");
+        v.push("TLD_EXCLUDED".to_string());
     }
     if r.contains(StatBlockReason::SUSPICIOUS) {
-        v.push("SUSPICIOUS");
+        v.push("SUSPICIOUS".to_string());
     }
     if r.contains(StatBlockReason::CNAME_CLOAKING) {
-        v.push("CNAME_CLOAKING");
+        v.push("CNAME_CLOAKING".to_string());
     }
     if r.contains(StatBlockReason::FORBIDDEN_QTYPE) {
-        v.push("FORBIDDEN_QTYPE");
+        v.push("FORBIDDEN_QTYPE".to_string());
     }
     if r.contains(StatBlockReason::DNS_REBINDING) {
-        v.push("DNS_REBINDING");
+        v.push("DNS_REBINDING".to_string());
     }
     if r.contains(StatBlockReason::LOW_TTL) {
-        v.push("LOW_TTL");
+        v.push("LOW_TTL".to_string());
     }
     if r.contains(StatBlockReason::ASN_BLOCKED) {
-        v.push("ASN_BLOCKED");
+        v.push("ASN_BLOCKED".to_string());
+    }
+    if r.contains(StatBlockReason::SUSPICIOUS_GEO_IP) {
+        v.push("SUSPICIOUS_GEO_IP".to_string());
+    }
+    // Custom bits 16–31
+    let bits = r.bits();
+    for bit in 16u8..=31 {
+        if bits & (1u32 << bit) != 0 {
+            let label = defs
+                .iter()
+                .find(|(b, _)| *b == bit)
+                .map(|(_, code)| code.clone())
+                .unwrap_or_else(|| format!("CUSTOM_BIT_{}", bit));
+            v.push(label);
+        }
     }
     v
 }
@@ -113,7 +135,7 @@ pub struct EventRecord {
     pub client_ip: String,
     pub action: String,
     /// Raw block-reason bitmask; `null` for Allowed and Proxied events.
-    pub flags: Option<u16>,
+    pub flags: Option<u32>,
     /// Human-readable labels for each set bit in `flags`.
     pub flags_labels: Vec<String>,
 }
@@ -129,11 +151,7 @@ pub fn event_to_record(event: &StatEvent, domain_map: &HashMap<u64, String>) -> 
         client_ip: ip_to_string(&event.client_ip),
         action: action_name(&event.action).to_string(),
         flags: reason.map(|r| r.bits()),
-        flags_labels: reason
-            .map_or_else(Vec::new, reason_labels)
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
+        flags_labels: reason.map_or_else(Vec::new, reason_labels),
     }
 }
 
@@ -183,9 +201,9 @@ mod tests {
     fn reason_labels_lists_set_bits() {
         let r = StatBlockReason::STATIC_BLACKLIST | StatBlockReason::HIGH_ENTROPY;
         let labels = reason_labels(r);
-        assert!(labels.contains(&"STATIC_BLACKLIST"));
-        assert!(labels.contains(&"HIGH_ENTROPY"));
-        assert!(!labels.contains(&"ABP_RULE"));
+        assert!(labels.iter().any(|l| l.as_str() == "STATIC_BLACKLIST"));
+        assert!(labels.iter().any(|l| l.as_str() == "HIGH_ENTROPY"));
+        assert!(!labels.iter().any(|l| l.as_str() == "ABP_RULE"));
     }
 
     #[test]
