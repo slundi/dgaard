@@ -93,6 +93,13 @@
         # `nix run .#codium` — VSCodium with all extensions pre-installed
         packages.codium = custom-codium;
 
+        # NixOS module evaluation tests — `nix build .#checks.<system>.dgaard-*-module`
+        checks = {
+          dgaard-daemon-module = pkgs.callPackage ./nix/tests/dgaard-daemon.nix { };
+          dgaard-monitor-module = pkgs.callPackage ./nix/tests/dgaard-monitor.nix { };
+          dgaard-module = pkgs.callPackage ./nix/tests/dgaard.nix { };
+        };
+
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             rustToolchain
