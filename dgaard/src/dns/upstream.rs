@@ -182,20 +182,21 @@ fn extract_qname_labels(packet: &[u8], mut pos: usize) -> Option<Vec<Vec<u8>>> {
 /// Verify that the QNAME echoed in the response question section matches the
 /// QNAME we sent, byte-for-byte (case-sensitive).
 ///
-/// Returns `true` if the labels match or if either packet is too malformed to
-/// extract a QNAME (we let other validation layers handle those). Returns
-/// `false` only when both QNAMEs are parseable and differ — the response is
-/// forged or from a non-RFC-compliant resolver.
+/// Returns `true` only when both QNAMEs parse cleanly and are identical.
+/// Returns `false` in all other cases — including when either packet is
+/// malformed — so that unparsable responses are never forwarded to clients.
+/// There is no downstream QNAME validation after the upstream call, so this
+/// function must fail closed.
 fn verify_0x20(sent: &[u8], response: &[u8]) -> bool {
     const QNAME_OFFSET: usize = 12;
 
     let sent_labels = match extract_qname_labels(sent, QNAME_OFFSET) {
         Some(l) => l,
-        None => return true, // can't parse our own QNAME — don't reject
+        None => return false, // can't parse our own QNAME — fail closed
     };
     let resp_labels = match extract_qname_labels(response, QNAME_OFFSET) {
         Some(l) => l,
-        None => return true, // malformed response — let other checks handle it
+        None => return false, // malformed response — reject rather than forward
     };
 
     sent_labels.len() == resp_labels.len()
@@ -364,9 +365,19 @@ mod tests {
     }
 
     #[test]
-    fn verify_0x20_accepts_when_response_malformed() {
-        // Malformed response → don't reject (other checks will catch it)
-        assert!(verify_0x20(EXAMPLE_COM_QUERY, &[0x00, 0x01]));
+    fn verify_0x20_rejects_malformed_response() {
+        // Malformed response (too short to contain a QNAME) must be rejected.
+        // Fail-closed: no downstream check validates the QNAME after the upstream
+        // call, so forwarding an unparsable response is unsafe.
+        assert!(!verify_0x20(EXAMPLE_COM_QUERY, &[0x00, 0x01]));
+    }
+
+    #[test]
+    fn verify_0x20_rejects_malformed_sent_packet() {
+        // If the outgoing packet itself is too short to parse, reject rather than
+        // pass.  This guards against the corner case where apply_0x20 was skipped
+        // and the raw packet passed down is unexpectedly truncated.
+        assert!(!verify_0x20(&[0x00, 0x01], EXAMPLE_COM_QUERY));
     }
 
     #[test]
