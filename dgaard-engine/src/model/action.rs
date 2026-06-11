@@ -130,7 +130,16 @@ impl From<&BlockReason> for StatBlockReason {
             BlockReason::PtrLeak => StatBlockReason::DNS_REBINDING,
             BlockReason::ChaosClass => StatBlockReason::FORBIDDEN_QTYPE,
             // User-defined custom flag: set the bit at position `bit` (valid range 16–31).
-            BlockReason::CustomFlag(bit) => StatBlockReason::from_bits_retain(1u32 << bit),
+            // The config parser enforces this range, but BlockReason::CustomFlag is a public
+            // type — guard defensively so no caller can trigger a panic (debug) or a wrapping
+            // shift (release) that silently corrupts built-in bit flags.
+            BlockReason::CustomFlag(bit) => {
+                if (16u8..=31).contains(bit) {
+                    StatBlockReason::from_bits_retain(1u32 << bit)
+                } else {
+                    StatBlockReason::empty()
+                }
+            }
         }
     }
 }
@@ -241,6 +250,61 @@ mod tests {
     fn test_custom_flag_bit_31_maps_to_correct_mask() {
         let r = StatBlockReason::from(&BlockReason::CustomFlag(31));
         assert_eq!(r.bits(), 1u32 << 31);
+    }
+
+    #[test]
+    fn custom_flag_bit_at_boundary_16_is_accepted() {
+        let r = StatBlockReason::from(&BlockReason::CustomFlag(16));
+        assert_eq!(r.bits(), 1u32 << 16);
+    }
+
+    #[test]
+    fn custom_flag_bit_at_boundary_31_is_accepted() {
+        let r = StatBlockReason::from(&BlockReason::CustomFlag(31));
+        assert_eq!(r.bits(), 1u32 << 31);
+    }
+
+    // Out-of-range inputs: these panicked in debug and wrapped silently in
+    // release before the guard was added.
+
+    #[test]
+    fn custom_flag_bit_32_returns_empty() {
+        // Was: panic in debug (shift overflow), 1u32<<0 = STATIC_BLACKLIST in release.
+        let r = StatBlockReason::from(&BlockReason::CustomFlag(32));
+        assert_eq!(r, StatBlockReason::empty(), "bit 32 must not corrupt flags");
+    }
+
+    #[test]
+    fn custom_flag_bit_255_returns_empty() {
+        // Was: panic in debug, 1u32<<(255%32)=1u32<<31 in release.
+        let r = StatBlockReason::from(&BlockReason::CustomFlag(255));
+        assert_eq!(
+            r,
+            StatBlockReason::empty(),
+            "bit 255 must not corrupt flags"
+        );
+    }
+
+    #[test]
+    fn custom_flag_bit_15_returns_empty() {
+        // Built-in range: would have set SUSPICIOUS_GEO_IP (bit 15) before the guard.
+        let r = StatBlockReason::from(&BlockReason::CustomFlag(15));
+        assert_eq!(
+            r,
+            StatBlockReason::empty(),
+            "bit 15 must not corrupt built-in flags"
+        );
+    }
+
+    #[test]
+    fn custom_flag_bit_0_returns_empty() {
+        // Would have set STATIC_BLACKLIST (bit 0) before the guard.
+        let r = StatBlockReason::from(&BlockReason::CustomFlag(0));
+        assert_eq!(
+            r,
+            StatBlockReason::empty(),
+            "bit 0 must not corrupt built-in flags"
+        );
     }
 
     #[test]
