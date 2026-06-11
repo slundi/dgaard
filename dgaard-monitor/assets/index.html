@@ -118,7 +118,7 @@
             <div class="panel-title">Flag Distribution</div>
             <template x-for="r in (stats.top_reasons ?? []).slice(0, 8)" :key="r.reason">
               <div class="flag-row">
-                <span class="flag-label" :title="r.reason" x-text="flagLabel(r.reason)"></span>
+                <span class="flag-label" :title="flagDesc(r.reason)" x-text="flagLabel(r.reason)"></span>
                 <div class="flag-track">
                   <div class="flag-fill" :class="'flag-fill-' + flagTier(r.reason)"
                        :style="'width:' + (maxReason > 0 ? Math.round(r.count / maxReason * 100) : 0) + '%'">
@@ -397,28 +397,28 @@
   <script src="/alpine.min.js" defer></script>
   <script>
   const FLAG_INFO = {
-    STATIC_BLACKLIST:  { emoji: '⛔', tier: 'red'    },
-    ABP_RULE:          { emoji: '🧱', tier: 'red'    },
-    HIGH_ENTROPY:      { emoji: '🎲', tier: 'yellow' },
-    LEXICAL_ANALYSIS:  { emoji: '🔤', tier: 'yellow' },
-    BANNED_KEYWORD:    { emoji: '🚷', tier: 'muted'  },
-    INVALID_STRUCTURE: { emoji: '🔧', tier: 'muted'  },
-    SUSPICIOUS_IDN:    { emoji: '🌐', tier: 'yellow' },
-    NRD_LIST:          { emoji: '🆕', tier: 'yellow' },
-    TLD_EXCLUDED:      { emoji: '🌍', tier: 'muted'  },
-    SUSPICIOUS:        { emoji: '🤔', tier: 'yellow' },
-    CNAME_CLOAKING:    { emoji: '🪤', tier: 'red'    },
-    FORBIDDEN_QTYPE:   { emoji: '🔒', tier: 'muted'  },
-    DNS_REBINDING:     { emoji: '🔄', tier: 'red'    },
-    LOW_TTL:           { emoji: '⏱️', tier: 'yellow' },
-    ASN_BLOCKED:       { emoji: '🛡️', tier: 'red'    },
-    SUSPICIOUS_GEO_IP: { emoji: '🗺️', tier: 'yellow' },
+    STATIC_BLACKLIST:  { emoji: '⛔', tier: 'red',    desc: 'Domain is on a static blocklist' },
+    ABP_RULE:          { emoji: '🧱', tier: 'red',    desc: 'Matched an AdBlock Plus wildcard rule' },
+    HIGH_ENTROPY:      { emoji: '🎲', tier: 'yellow', desc: 'High Shannon entropy — likely DGA (Domain Generation Algorithm)' },
+    LEXICAL_ANALYSIS:  { emoji: '🔤', tier: 'yellow', desc: 'Failed lexical analysis — suspicious character patterns' },
+    BANNED_KEYWORD:    { emoji: '🚷', tier: 'muted',  desc: 'Contains a banned keyword (parental control policy)' },
+    INVALID_STRUCTURE: { emoji: '🔧', tier: 'muted',  desc: 'Invalid domain structure — abnormal depth, length, or special-use domain' },
+    SUSPICIOUS_IDN:    { emoji: '🌐', tier: 'yellow', desc: 'Suspicious IDN/Punycode encoding — possible homograph attack' },
+    NRD_LIST:          { emoji: '🆕', tier: 'yellow', desc: 'Newly Registered Domain — high risk, created very recently' },
+    TLD_EXCLUDED:      { emoji: '🌍', tier: 'muted',  desc: 'Top-Level Domain is excluded by policy' },
+    SUSPICIOUS:        { emoji: '🤔', tier: 'yellow', desc: 'Scored as suspicious by heuristic analysis' },
+    CNAME_CLOAKING:    { emoji: '🪤', tier: 'red',    desc: 'CNAME chain resolves to a blocklisted domain (CNAME cloaking)' },
+    FORBIDDEN_QTYPE:   { emoji: '🔒', tier: 'muted',  desc: 'Query type is forbidden by policy (e.g. ANY, CHAOS class)' },
+    DNS_REBINDING:     { emoji: '🔄', tier: 'red',    desc: 'Public domain resolves to a private IP — DNS rebinding attack' },
+    LOW_TTL:           { emoji: '⏱️', tier: 'yellow', desc: 'Abnormally low TTL — possible fast-flux or C2 infrastructure' },
+    ASN_BLOCKED:       { emoji: '🛡️', tier: 'red',    desc: 'Resolved IP belongs to a blocked Autonomous System (ASN)' },
+    SUSPICIOUS_GEO_IP: { emoji: '🗺️', tier: 'yellow', desc: 'Resolved IP is in a high-risk geographic region' },
   };
 
   function _flagInfo(reason) {
     if (FLAG_INFO[reason]) return FLAG_INFO[reason];
-    if (reason && reason.startsWith('CUSTOM_BIT_')) return { emoji: '🔧', tier: 'muted' };
-    return { emoji: '', tier: 'muted' };
+    if (reason && reason.startsWith('CUSTOM_BIT_')) return { emoji: '🔧', tier: 'muted', desc: 'User-defined custom flag' };
+    return { emoji: '', tier: 'muted', desc: '' };
   }
 
   function escHtml(s) {
@@ -429,7 +429,8 @@
     if (!labels || labels.length === 0) return '';
     return labels.map(lbl => {
       const info = _flagInfo(lbl);
-      return `<span class="flag-chip flag-chip-${info.tier}">${info.emoji} ${escHtml(lbl)}</span>`;
+      const tip = escHtml(info.desc || lbl);
+      return `<span class="flag-chip flag-chip-${info.tier}" title="${tip}">${info.emoji} ${escHtml(lbl)}</span>`;
     }).join('');
   }
 
@@ -440,6 +441,10 @@
   function flagLabel(reason) {
     const info = _flagInfo(reason);
     return info.emoji ? info.emoji + ' ' + reason : reason;
+  }
+
+  function flagDesc(reason) {
+    return _flagInfo(reason).desc || reason;
   }
 
   function queries() {
