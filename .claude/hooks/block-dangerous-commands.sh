@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # PreToolUse hook: blocks dangerous Bash commands.
 # Receives JSON on stdin with tool_name and tool_input.
 
