@@ -100,7 +100,7 @@
                   <td x-text="row.domain ?? row.domain_hash"></td>
                   <td x-text="row.client_ip"></td>
                   <td :class="actionClass(row.action)" x-text="row.action"></td>
-                  <td x-text="(row.flags_labels ?? []).join(', ')"></td>
+                  <td x-html="renderFlags(row.flags_labels)"></td>
                 </tr>
               </template>
               <tr x-show="events.length === 0">
@@ -118,9 +118,9 @@
             <div class="panel-title">Flag Distribution</div>
             <template x-for="r in (stats.top_reasons ?? []).slice(0, 8)" :key="r.reason">
               <div class="flag-row">
-                <span class="flag-label" :title="r.reason" x-text="r.reason"></span>
+                <span class="flag-label" :title="r.reason" x-text="flagLabel(r.reason)"></span>
                 <div class="flag-track">
-                  <div class="flag-fill"
+                  <div class="flag-fill" :class="'flag-fill-' + flagTier(r.reason)"
                        :style="'width:' + (maxReason > 0 ? Math.round(r.count / maxReason * 100) : 0) + '%'">
                   </div>
                 </div>
@@ -211,7 +211,7 @@
                 <td x-text="row.domain ?? row.domain_hash"></td>
                 <td x-text="row.client_ip"></td>
                 <td :class="actionClass(row.action)" x-text="row.action"></td>
-                <td x-text="(row.flags_labels ?? []).join(', ')"></td>
+                <td x-html="renderFlags(row.flags_labels)"></td>
               </tr>
             </template>
             <tr x-show="filtered.length === 0 && !loading">
@@ -396,6 +396,52 @@
   <script src="/chart.min.js" defer></script>
   <script src="/alpine.min.js" defer></script>
   <script>
+  const FLAG_INFO = {
+    STATIC_BLACKLIST:  { emoji: '⛔', tier: 'red'    },
+    ABP_RULE:          { emoji: '🧱', tier: 'red'    },
+    HIGH_ENTROPY:      { emoji: '🎲', tier: 'yellow' },
+    LEXICAL_ANALYSIS:  { emoji: '🔤', tier: 'yellow' },
+    BANNED_KEYWORD:    { emoji: '🚷', tier: 'muted'  },
+    INVALID_STRUCTURE: { emoji: '🔧', tier: 'muted'  },
+    SUSPICIOUS_IDN:    { emoji: '🌐', tier: 'yellow' },
+    NRD_LIST:          { emoji: '🆕', tier: 'yellow' },
+    TLD_EXCLUDED:      { emoji: '🌍', tier: 'muted'  },
+    SUSPICIOUS:        { emoji: '🤔', tier: 'yellow' },
+    CNAME_CLOAKING:    { emoji: '🪤', tier: 'red'    },
+    FORBIDDEN_QTYPE:   { emoji: '🔒', tier: 'muted'  },
+    DNS_REBINDING:     { emoji: '🔄', tier: 'red'    },
+    LOW_TTL:           { emoji: '⏱️', tier: 'yellow' },
+    ASN_BLOCKED:       { emoji: '🛡️', tier: 'red'    },
+    SUSPICIOUS_GEO_IP: { emoji: '🗺️', tier: 'yellow' },
+  };
+
+  function _flagInfo(reason) {
+    if (FLAG_INFO[reason]) return FLAG_INFO[reason];
+    if (reason && reason.startsWith('CUSTOM_BIT_')) return { emoji: '🔧', tier: 'muted' };
+    return { emoji: '', tier: 'muted' };
+  }
+
+  function escHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function renderFlags(labels) {
+    if (!labels || labels.length === 0) return '';
+    return labels.map(lbl => {
+      const info = _flagInfo(lbl);
+      return `<span class="flag-chip flag-chip-${info.tier}">${info.emoji} ${escHtml(lbl)}</span>`;
+    }).join('');
+  }
+
+  function flagTier(reason) {
+    return _flagInfo(reason).tier;
+  }
+
+  function flagLabel(reason) {
+    const info = _flagInfo(reason);
+    return info.emoji ? info.emoji + ' ' + reason : reason;
+  }
+
   function queries() {
     return {
       rows: [],
