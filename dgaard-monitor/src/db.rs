@@ -207,6 +207,7 @@ impl Database {
     /// Return `(client_ip, domain_hash, domain_name, timestamp)` rows for all
     /// (client, domain) pairs that have at least `min_observations` events,
     /// ordered by `client_ip, domain_hash, timestamp` for sequential grouping.
+    #[allow(clippy::type_complexity)]
     pub fn query_beaconing_timestamps(
         &self,
         min_observations: i64,

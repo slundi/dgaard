@@ -2,6 +2,7 @@ mod shutdown;
 mod stat_collector;
 
 use std::{
+    net::IpAddr,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -35,6 +36,54 @@ use tokio::{
 };
 
 use crate::GLOBAL_SEED;
+
+/// Returns `true` if `ip` falls within any of the CIDR ranges in `networks`.
+///
+/// Malformed entries are silently skipped. An empty list allows every source
+/// (fail-open) so a misconfigured ACL does not black-hole the proxy.
+fn is_ip_allowed(ip: IpAddr, networks: &[String]) -> bool {
+    if networks.is_empty() {
+        return true;
+    }
+    for cidr in networks {
+        let Some((addr_str, prefix_str)) = cidr.split_once('/') else {
+            continue;
+        };
+        let Ok(prefix_len) = prefix_str.parse::<u32>() else {
+            continue;
+        };
+        match (ip, addr_str.parse::<IpAddr>()) {
+            (IpAddr::V4(src), Ok(IpAddr::V4(net))) => {
+                if prefix_len > 32 {
+                    continue;
+                }
+                let mask = if prefix_len == 0 {
+                    0u32
+                } else {
+                    u32::MAX << (32 - prefix_len)
+                };
+                if u32::from(src) & mask == u32::from(net) & mask {
+                    return true;
+                }
+            }
+            (IpAddr::V6(src), Ok(IpAddr::V6(net))) => {
+                if prefix_len > 128 {
+                    continue;
+                }
+                let mask = if prefix_len == 0 {
+                    0u128
+                } else {
+                    u128::MAX << (128 - prefix_len)
+                };
+                if u128::from(src) & mask == u128::from(net) & mask {
+                    return true;
+                }
+            }
+            _ => continue,
+        }
+    }
+    false
+}
 
 /// Initialize the stats channel and store the sender globally.
 /// Returns the receiver for the collector task.
@@ -162,6 +211,9 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
                         result = tokio_socket.recv_from(&mut buf) => {
                             match result {
                                 Ok((len, addr)) => {
+                                    if !is_ip_allowed(addr.ip(), &CONFIG.load().server.allowed_networks) {
+                                        continue;
+                                    }
                                     let packet = buf[..len].to_vec();
                                     let socket_inner = Arc::clone(&tokio_socket);
                                     let task_guard = worker_guard.clone();
@@ -235,6 +287,9 @@ async fn worker_loop(
             result = tokio_socket.recv_from(&mut buf) => {
                 match result {
                     Ok((len, addr)) => {
+                        if !is_ip_allowed(addr.ip(), &CONFIG.load().server.allowed_networks) {
+                            continue;
+                        }
                         let packet = buf[..len].to_vec();
                         let socket_inner = Arc::clone(&tokio_socket);
                         let task_guard = guard.clone();
@@ -387,6 +442,102 @@ mod tests {
 
     // Serialise tests that mutate the global CONFIG via reload_config_from_path.
     static TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(Mutex::default);
+
+    // -----------------------------------------------------------------------
+    // is_ip_allowed tests
+    // -----------------------------------------------------------------------
+
+    fn nets(cidrs: &[&str]) -> Vec<String> {
+        cidrs.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn empty_networks_allows_any_ip() {
+        let ip: IpAddr = "203.0.113.1".parse().unwrap();
+        assert!(is_ip_allowed(ip, &[]));
+    }
+
+    #[test]
+    fn exact_ipv4_host_route_matches() {
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        assert!(is_ip_allowed(ip, &nets(&["127.0.0.1/32"])));
+    }
+
+    #[test]
+    fn ipv4_outside_range_is_denied() {
+        let ip: IpAddr = "203.0.113.1".parse().unwrap();
+        assert!(!is_ip_allowed(
+            ip,
+            &nets(&["127.0.0.1/32", "192.168.1.0/24"])
+        ));
+    }
+
+    #[test]
+    fn ipv4_inside_subnet_is_allowed() {
+        let ip: IpAddr = "192.168.1.42".parse().unwrap();
+        assert!(is_ip_allowed(ip, &nets(&["192.168.1.0/24"])));
+    }
+
+    #[test]
+    fn ipv4_subnet_boundary_first_addr_allowed() {
+        let ip: IpAddr = "192.168.1.0".parse().unwrap();
+        assert!(is_ip_allowed(ip, &nets(&["192.168.1.0/24"])));
+    }
+
+    #[test]
+    fn ipv4_subnet_boundary_last_addr_allowed() {
+        let ip: IpAddr = "192.168.1.255".parse().unwrap();
+        assert!(is_ip_allowed(ip, &nets(&["192.168.1.0/24"])));
+    }
+
+    #[test]
+    fn ipv4_one_beyond_subnet_denied() {
+        let ip: IpAddr = "192.168.2.0".parse().unwrap();
+        assert!(!is_ip_allowed(ip, &nets(&["192.168.1.0/24"])));
+    }
+
+    #[test]
+    fn ipv4_slash_zero_allows_all() {
+        let ip: IpAddr = "203.0.113.99".parse().unwrap();
+        assert!(is_ip_allowed(ip, &nets(&["0.0.0.0/0"])));
+    }
+
+    #[test]
+    fn ipv6_loopback_allowed_in_v6_net() {
+        let ip: IpAddr = "::1".parse().unwrap();
+        assert!(is_ip_allowed(ip, &nets(&["::1/128"])));
+    }
+
+    #[test]
+    fn ipv6_inside_subnet_allowed() {
+        let ip: IpAddr = "2001:db8::42".parse().unwrap();
+        assert!(is_ip_allowed(ip, &nets(&["2001:db8::/32"])));
+    }
+
+    #[test]
+    fn ipv6_outside_subnet_denied() {
+        let ip: IpAddr = "2001:db9::1".parse().unwrap();
+        assert!(!is_ip_allowed(ip, &nets(&["2001:db8::/32"])));
+    }
+
+    #[test]
+    fn malformed_cidr_entry_is_skipped() {
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        // Only entry is malformed — should fail closed (return false)
+        assert!(!is_ip_allowed(ip, &nets(&["not-a-cidr"])));
+    }
+
+    #[test]
+    fn mixed_valid_and_malformed_entries() {
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        assert!(is_ip_allowed(ip, &nets(&["bad/entry", "10.0.0.0/8"])));
+    }
+
+    #[test]
+    fn ipv4_addr_against_ipv6_cidr_is_denied() {
+        let ip: IpAddr = "192.168.1.1".parse().unwrap();
+        assert!(!is_ip_allowed(ip, &nets(&["::1/128"])));
+    }
 
     // -----------------------------------------------------------------------
     // Hot reload tests

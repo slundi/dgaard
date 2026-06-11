@@ -659,7 +659,7 @@ fn parse_custom_flag(
     let bit = get_integer(table, "bit")?.ok_or_else(|| ConfigError::MissingKey {
         key: "bit".to_string(),
         span: parent_span,
-    })? as i64;
+    })?;
 
     if !(16..=31).contains(&bit) {
         return Err(ConfigError::InvalidValue {

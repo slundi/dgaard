@@ -19,7 +19,7 @@ pub enum ConfigError {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Config {
     pub input: InputConfig,
     pub persistence: PersistenceConfig,
@@ -29,21 +29,6 @@ pub struct Config {
     pub websocket: ConnectivityConfig,
     pub mcp: ConnectivityConfig,
     pub web: WebConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            input: InputConfig::default(),
-            persistence: PersistenceConfig::default(),
-            tui: TuiConfig::default(),
-            forwarding: ForwardingConfig::default(),
-            api: ConnectivityConfig::default(),
-            websocket: ConnectivityConfig::default(),
-            mcp: ConnectivityConfig::default(),
-            web: WebConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug)]

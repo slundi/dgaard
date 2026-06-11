@@ -95,7 +95,7 @@ pub(crate) async fn forward_to_upstream(packet: &[u8]) -> std::io::Result<Vec<u8
 /// For each label byte that is an ASCII letter, bit 5 is randomly set or
 /// cleared, toggling between upper- and lower-case. All other bytes (digits,
 /// hyphens, length prefix, null terminator) are left untouched.
-fn apply_0x20(packet: &mut Vec<u8>) -> bool {
+fn apply_0x20(packet: &mut [u8]) -> bool {
     const QNAME_OFFSET: usize = 12;
     if packet.len() <= QNAME_OFFSET {
         return false;

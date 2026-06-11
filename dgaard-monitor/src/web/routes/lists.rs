@@ -57,16 +57,16 @@ pub async fn lists_handler(
         .filter_map(|(hash, domain)| {
             let entry_type = classify(domain);
 
-            if let Some(ref t) = params.list_type {
-                if entry_type != t.as_str() {
-                    return None;
-                }
+            if let Some(ref t) = params.list_type
+                && entry_type != t.as_str()
+            {
+                return None;
             }
 
-            if let Some(ref q) = search {
-                if !domain.to_lowercase().contains(q.as_str()) {
-                    return None;
-                }
+            if let Some(ref q) = search
+                && !domain.to_lowercase().contains(q.as_str())
+            {
+                return None;
             }
 
             let hits = stats.domain_hits.get(hash).copied().unwrap_or(0);
