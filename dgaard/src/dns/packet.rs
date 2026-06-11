@@ -17,6 +17,25 @@ pub struct DnsPacket {
     pub qclass: u16,
 }
 
+/// Encode a DNS `Message` to wire bytes.
+///
+/// If `to_vec()` fails (extremely rare — only possible if hickory cannot
+/// encode its own in-memory representation), returns a hand-built 12-byte
+/// SERVFAIL header carrying the original transaction ID. This guarantees
+/// callers always send a parseable DNS response instead of a 0-byte datagram,
+/// which clients cannot interpret and will retry aggressively.
+fn encode_response(msg: Message) -> Vec<u8> {
+    let id = msg.metadata.id;
+    msg.to_vec().unwrap_or_else(|_| {
+        // Minimal valid DNS response header (RFC 1035 §4.1.1):
+        //   Flags: QR=1 Opcode=0 AA=0 TC=0 RD=1 RA=1 Z=0 RCODE=SERVFAIL(2)
+        //          → 0x81 0x82
+        //   All section counts = 0
+        let [hi, lo] = id.to_be_bytes();
+        vec![hi, lo, 0x81, 0x82, 0, 0, 0, 0, 0, 0, 0, 0]
+    })
+}
+
 impl DnsPacket {
     /// Parses raw UDP bytes into a DNS Message and extracts the query domain
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
@@ -49,7 +68,7 @@ impl DnsPacket {
         response.metadata.recursion_available = true;
         response.metadata.authoritative = true;
 
-        response.to_vec().unwrap_or_default()
+        encode_response(response)
     }
 
     /// Generates a REFUSED response for queries the server is configured to reject.
@@ -61,7 +80,7 @@ impl DnsPacket {
         response.metadata.message_type = MessageType::Response;
         response.metadata.response_code = ResponseCode::Refused;
         response.metadata.recursion_available = true;
-        response.to_vec().unwrap_or_default()
+        encode_response(response)
     }
 
     /// Build a NOERROR response containing a synthetic A or AAAA answer for `ip`.
@@ -93,7 +112,7 @@ impl DnsPacket {
             }
         }
 
-        response.to_vec().unwrap_or_default()
+        encode_response(response)
     }
 
     /// Generates a SERVFAIL response for upstream errors.
@@ -104,7 +123,7 @@ impl DnsPacket {
         response.metadata.response_code = ResponseCode::ServFail;
         response.metadata.recursion_available = true;
 
-        response.to_vec().unwrap_or_default()
+        encode_response(response)
     }
 }
 
@@ -167,6 +186,37 @@ mod tests {
         assert!(result.is_some());
         let dns_packet = result.unwrap();
         assert!(!dns_packet.domain.ends_with('.'));
+    }
+
+    // --- encode_response fallback ---
+
+    #[test]
+    fn encode_response_fallback_bytes_are_parseable_servfail() {
+        // Directly verify the 12-byte fallback is a valid DNS SERVFAIL with the
+        // correct transaction ID, so we know clients can parse it.
+        let id = 0xAB_CDu16;
+        let [hi, lo] = id.to_be_bytes();
+        let bytes = vec![hi, lo, 0x81, 0x82, 0, 0, 0, 0, 0, 0, 0, 0];
+        let msg = Message::from_vec(&bytes).unwrap();
+        assert_eq!(msg.metadata.id, id);
+        assert_eq!(msg.metadata.message_type, MessageType::Response);
+        assert_eq!(msg.metadata.response_code, ResponseCode::ServFail);
+        assert!(msg.answers.is_empty());
+    }
+
+    #[test]
+    fn encode_response_returns_serialized_bytes_on_success() {
+        let pkt = [
+            0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
+            b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00,
+            0x01,
+        ];
+        let query = DnsPacket::from_bytes(&pkt).unwrap();
+        let bytes = DnsPacket::build_nxdomain_response(&query.message);
+        assert!(!bytes.is_empty());
+        // Must parse cleanly — encode_response must not have fallen back.
+        let msg = Message::from_vec(&bytes).unwrap();
+        assert_eq!(msg.metadata.response_code, ResponseCode::NXDomain);
     }
 
     fn make_query(qtype_a_or_aaaa: &str) -> Vec<u8> {
