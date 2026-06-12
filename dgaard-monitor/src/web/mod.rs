@@ -11,7 +11,7 @@ use axum::{
     http::{StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use rust_embed::Embed;
 use tokio::sync::{broadcast, watch};
@@ -65,6 +65,7 @@ async fn serve_asset(Path(path): Path<String>) -> Response {
 
 async fn require_bearer(
     token: Arc<String>,
+    web: Arc<WebState>,
     request: axum::extract::Request,
     next: Next,
 ) -> Response {
@@ -78,16 +79,19 @@ async fn require_bearer(
         .and_then(|v| v.to_str().ok())
         .map(|v| constant_time_eq(v.as_bytes(), expected_bearer.as_bytes()))
         .unwrap_or(false);
-    // Browsers cannot set custom headers on WebSocket connections, so /ws also
-    // accepts a ?token= query parameter.
-    let query_ok = request.uri().path() == "/ws"
+    // Browsers cannot set Authorization headers on WebSocket upgrades, so /ws
+    // accepts a short-lived one-time ticket from POST /api/v1/ws-ticket.
+    // The ticket is consumed on first use so it cannot be replayed even if it
+    // appears in a server log or browser history.
+    let ticket_ok = !bearer_ok
+        && request.uri().path() == "/ws"
         && request
             .uri()
             .query()
-            .and_then(|q| q.split('&').find(|p| p.starts_with("token=")))
-            .map(|p| constant_time_eq(p["token=".len()..].as_bytes(), token.as_bytes()))
+            .and_then(|q| q.split('&').find(|p| p.starts_with("ticket=")))
+            .map(|p| validate_ticket(&web, &p["ticket=".len()..]))
             .unwrap_or(false);
-    if bearer_ok || query_ok {
+    if bearer_ok || ticket_ok {
         next.run(request).await
     } else {
         (
@@ -96,6 +100,15 @@ async fn require_bearer(
         )
             .into_response()
     }
+}
+
+/// Consume a one-time ticket, returning `true` if it existed and has not expired.
+fn validate_ticket(web: &WebState, ticket: &str) -> bool {
+    use std::time::Instant;
+    web.ws_tickets
+        .remove(ticket)
+        .map(|(_, expiry)| expiry > Instant::now())
+        .unwrap_or(false)
 }
 
 // ── Router ─────────────────────────────────────────────────────────────────
@@ -108,15 +121,17 @@ fn build_router(web: Arc<WebState>, token: String) -> Router {
     // between the static-asset catch-all and nested protected routers.
     let auth_layer = {
         let token = Arc::clone(&token);
+        let web_auth = Arc::clone(&web);
         axum::middleware::from_fn(move |req: axum::extract::Request, next: Next| {
             let token = Arc::clone(&token);
+            let web_auth = Arc::clone(&web_auth);
             async move {
                 let needs_auth = {
                     let p = req.uri().path();
                     p.starts_with("/api/v1") || p == "/ws"
                 };
                 if needs_auth {
-                    require_bearer(token, req, next).await
+                    require_bearer(token, web_auth, req, next).await
                 } else {
                     next.run(req).await
                 }
@@ -139,6 +154,7 @@ fn build_router(web: Arc<WebState>, token: String) -> Router {
                 .route("/timelines", get(routes::timeline::timelines_handler))
                 .route("/lists", get(routes::lists::lists_handler))
                 .route("/beaconing", get(routes::beaconing::beaconing_handler))
+                .route("/ws-ticket", post(routes::ws_ticket::ws_ticket_handler))
                 .fallback(|| async { StatusCode::NOT_FOUND }),
         )
         .route("/ws", get(routes::ws::ws_handler))
@@ -429,7 +445,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ws_correct_query_token_passes_auth() {
+    async fn ws_raw_token_in_query_string_is_rejected() {
+        // The old ?token= fallback is gone; raw tokens in the URL are never accepted.
         let app = make_router("secret");
         let resp = app
             .oneshot(
@@ -440,17 +457,115 @@ mod tests {
             )
             .await
             .unwrap();
-        // Auth passed; plain HTTP to WS endpoint → 400, not 401.
-        assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
-    async fn ws_wrong_query_token_returns_401() {
+    async fn ws_ticket_endpoint_requires_auth() {
         let app = make_router("secret");
         let resp = app
             .oneshot(
                 Request::builder()
-                    .uri("/ws?token=wrong")
+                    .method("POST")
+                    .uri("/api/v1/ws-ticket")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn ws_ticket_flow_passes_auth() {
+        let app = make_router("secret");
+
+        // Step 1: obtain a one-time ticket.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/ws-ticket")
+                    .header("authorization", "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp.into_body()).await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let ticket = v["ticket"].as_str().unwrap().to_string();
+
+        // Step 2: use the ticket to upgrade the WebSocket connection.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/ws?ticket={ticket}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Auth passed; plain HTTP to WS endpoint without upgrade → 400, not 401.
+        assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn ws_ticket_is_single_use() {
+        let app = make_router("secret");
+
+        // Obtain a ticket.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/ws-ticket")
+                    .header("authorization", "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body_string(resp.into_body()).await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let ticket = v["ticket"].as_str().unwrap().to_string();
+
+        // First use succeeds (auth passes → plain HTTP → 400 on WS endpoint).
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/ws?ticket={ticket}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // Second use with the same ticket is rejected.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/ws?ticket={ticket}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn ws_unknown_ticket_returns_401() {
+        let app = make_router("secret");
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/ws?ticket=deadbeefdeadbeef")
                     .body(Body::empty())
                     .unwrap(),
             )

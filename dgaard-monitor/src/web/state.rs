@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
 use dashmap::DashMap;
 use tokio::sync::{Mutex, broadcast};
@@ -52,6 +53,10 @@ pub struct WebState {
     pub beaconing_min_observations: usize,
     /// Coefficient of Variation threshold below which a pair is flagged.
     pub beaconing_cov_threshold: f64,
+    /// Short-lived one-time WebSocket upgrade tickets.
+    /// Keyed by the ticket string; value is the expiry `Instant`.
+    /// Issued by `POST /api/v1/ws-ticket` and consumed on first WebSocket use.
+    pub ws_tickets: DashMap<String, Instant>,
 }
 
 impl WebState {
@@ -68,6 +73,7 @@ impl WebState {
             history_size,
             beaconing_min_observations: 5,
             beaconing_cov_threshold: 0.15,
+            ws_tickets: DashMap::new(),
         }
     }
 

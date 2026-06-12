@@ -781,6 +781,7 @@ dependencies = [
  "crossterm",
  "dashmap",
  "futures-util",
+ "getrandom 0.4.2",
  "gumdrop",
  "hickory-resolver",
  "http-body-util",

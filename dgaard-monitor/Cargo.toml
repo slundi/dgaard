@@ -27,6 +27,7 @@ axum.workspace = true
 constant_time_eq.workspace = true
 dashmap.workspace = true
 futures-util.workspace = true
+getrandom.workspace = true
 rust-embed.workspace = true
 tokio-tungstenite.workspace = true
 

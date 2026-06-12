@@ -7,3 +7,4 @@ pub(super) mod stats;
 pub(super) mod talkers;
 pub(super) mod timeline;
 pub(super) mod ws;
+pub(super) mod ws_ticket;
