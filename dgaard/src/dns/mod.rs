@@ -196,10 +196,7 @@ pub(crate) async fn handle_query(
         }
         Action::Drop => {
             STATS_COUNTERS.increment_blocked();
-            (
-                DnsPacket::build_nxdomain_response(&dns_packet.message),
-                None, // Don't log drops
-            )
+            return Ok(());
         }
         Action::LocalResolve(ip) | Action::Respond(ip) => {
             STATS_COUNTERS.increment_allowed();
