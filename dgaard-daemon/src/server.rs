@@ -130,17 +130,27 @@ pub async fn sighup_reload_task(state: Arc<ArcSwap<EngineState>>, config_file: S
 
     while sighup.recv().await.is_some() {
         log::info!("SIGHUP: reloading engine config from {config_file}");
-        match EngineConfig::load(Path::new(&config_file)) {
-            Ok(new_cfg) => {
-                let new_engine = FilterEngine::build_from_files(&new_cfg, HASH_SEED);
-                state.store(Arc::new(EngineState {
-                    engine: new_engine,
-                    config: new_cfg,
-                }));
+        let path = config_file.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let new_cfg = EngineConfig::load(Path::new(&path)).map_err(|e| e.to_string())?;
+            let new_engine = FilterEngine::build_from_files(&new_cfg, HASH_SEED);
+            Ok::<EngineState, String>(EngineState {
+                engine: new_engine,
+                config: new_cfg,
+            })
+        })
+        .await;
+
+        match result {
+            Ok(Ok(new_state)) => {
+                state.store(Arc::new(new_state));
                 log::info!("SIGHUP: engine reloaded");
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 log::warn!("SIGHUP: reload failed ({e}), keeping current config");
+            }
+            Err(e) => {
+                log::warn!("SIGHUP: reload task panicked: {e}");
             }
         }
     }
