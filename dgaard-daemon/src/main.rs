@@ -84,7 +84,7 @@ async fn main() {
         config: engine_config,
     }));
 
-    let listener = bind_listener(&daemon_cfg.socket_path).unwrap_or_else(|e| {
+    let (listener, _socket_guard) = bind_listener(&daemon_cfg.socket_path).unwrap_or_else(|e| {
         log::error!("Failed to bind {}: {e}", daemon_cfg.socket_path);
         std::process::exit(1);
     });

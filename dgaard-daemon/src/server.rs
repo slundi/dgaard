@@ -16,9 +16,23 @@ pub struct EngineState {
     pub config: EngineConfig,
 }
 
+/// Removes the Unix socket file when dropped so the filesystem is always
+/// cleaned up on both graceful shutdown and panic.
+#[derive(Debug)]
+pub struct SocketGuard(String);
+
+impl Drop for SocketGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Bind the Unix socket, removing any stale file first, then restrict
 /// permissions to owner-only (`0o600`).
-pub fn bind_listener(socket_path: &str) -> std::io::Result<UnixListener> {
+///
+/// Returns the listener paired with a `SocketGuard` that removes the socket
+/// file when dropped.
+pub fn bind_listener(socket_path: &str) -> std::io::Result<(UnixListener, SocketGuard)> {
     if Path::new(socket_path).exists() {
         std::fs::remove_file(socket_path)?;
     }
@@ -27,7 +41,7 @@ pub fn bind_listener(socket_path: &str) -> std::io::Result<UnixListener> {
         socket_path,
         std::os::unix::fs::PermissionsExt::from_mode(0o600),
     )?;
-    Ok(listener)
+    Ok((listener, SocketGuard(socket_path.to_owned())))
 }
 
 /// Wait for SIGTERM or SIGINT, whichever arrives first.
@@ -136,6 +150,27 @@ mod tests {
 
     fn temp_socket_path(tag: &str) -> String {
         format!("/tmp/dgaard_daemon_test_{tag}_{}", std::process::id())
+    }
+
+    // ── SocketGuard ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn socket_guard_removes_file_on_drop() {
+        let path = temp_socket_path("guard_drop");
+        std::fs::write(&path, b"").unwrap();
+        assert!(Path::new(&path).exists(), "file should exist before drop");
+        drop(SocketGuard(path.clone()));
+        assert!(
+            !Path::new(&path).exists(),
+            "file should be removed after guard is dropped"
+        );
+    }
+
+    #[test]
+    fn socket_guard_is_silent_when_file_already_gone() {
+        let path = temp_socket_path("guard_missing");
+        // No file created — drop must not panic
+        drop(SocketGuard(path));
     }
 
     // ── bind_listener ─────────────────────────────────────────────────────────
