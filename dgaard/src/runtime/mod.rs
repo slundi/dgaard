@@ -28,7 +28,10 @@ use tokio::{
     net::UdpSocket,
     runtime::Builder,
     signal::unix::{SignalKind, signal},
-    sync::watch::{self, Sender},
+    sync::{
+        Semaphore,
+        watch::{self, Sender},
+    },
 };
 
 use crate::GLOBAL_SEED;
@@ -40,6 +43,27 @@ fn init_stats_channel() -> StatsReceiver {
     // Store sender globally for DNS handlers to use
     let _ = STATS_SENDER.set(sender);
     receiver
+}
+
+/// Build a minimal DNS SERVFAIL response for `query` without full packet
+/// parsing — used in the overload path where spawning a task is not possible.
+///
+/// Copies the two-byte transaction ID from the query, sets QR=1 and
+/// RCODE=SERVFAIL (2), preserves the RD bit, and zeroes the record counts.
+/// Returns `None` if the query is too short to contain a transaction ID.
+fn build_minimal_servfail(query: &[u8]) -> Option<[u8; 12]> {
+    if query.len() < 2 {
+        return None;
+    }
+    let mut resp = [0u8; 12];
+    resp[0] = query[0]; // transaction ID high byte
+    resp[1] = query[1]; // transaction ID low byte
+    // QR=1 (response), Opcode=0, AA=0, TC=0, RD preserved from query
+    resp[2] = 0x80 | (query.get(2).copied().unwrap_or(0) & 0x01);
+    // RA=1, RCODE=2 (SERVFAIL)
+    resp[3] = 0x82;
+    // QDCOUNT / ANCOUNT / NSCOUNT / ARCOUNT all zero
+    Some(resp)
 }
 
 pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error>> {
@@ -65,9 +89,13 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
 
         let tokio_socket = get_socket(&CONFIG.load().server.listen_addr)?;
 
+        let semaphore = Arc::new(Semaphore::new(
+            CONFIG.load().server.runtime.max_concurrent_queries,
+        ));
+
         println!("Dgaard listening on {}", CONFIG.load().server.listen_addr);
 
-        worker_loop(tokio_socket, &guard, &shutdown_tx).await;
+        worker_loop(tokio_socket, &guard, &shutdown_tx, semaphore).await;
 
         // Wait for all active tasks to complete
         wait_for_tasks(&guard).await;
@@ -105,16 +133,20 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
         let stats_receiver = init_stats_channel();
         tokio::spawn(stats_collector_task(stats_receiver, shutdown_rx.clone()));
 
+        let semaphore = Arc::new(Semaphore::new(
+            CONFIG.load().server.runtime.max_concurrent_queries,
+        ));
+
         let mut handles = Vec::new();
 
         for _ in 0..cpus {
             let worker_guard = guard.clone();
+            let worker_semaphore = Arc::clone(&semaphore);
             let mut worker_shutdown_rx = shutdown_rx.clone();
 
             handles.push(tokio::spawn(async move {
                 let addr = &CONFIG.load().server.listen_addr;
                 let tokio_socket = get_socket(addr).expect("Failed to bind socket");
-                // worker_loop(tokio_socket, &worker_guard, &worker_shutdown_tx).await;
                 let mut buf = [0u8; 4096];
 
                 loop {
@@ -134,8 +166,18 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
                                     let socket_inner = Arc::clone(&tokio_socket);
                                     let task_guard = worker_guard.clone();
 
-                                    // Spawn a task for each request to keep the proxy non-blocking
+                                    let permit = match Arc::clone(&worker_semaphore).try_acquire_owned() {
+                                        Ok(p) => p,
+                                        Err(_) => {
+                                            if let Some(resp) = build_minimal_servfail(&packet) {
+                                                let _ = tokio_socket.send_to(&resp, addr).await;
+                                            }
+                                            continue;
+                                        }
+                                    };
+
                                     tokio::spawn(async move {
+                                        let _permit = permit;
                                         let _guard = TaskGuard::new(&task_guard);
                                         if let Err(e) = handle_query(socket_inner, packet, addr).await {
                                             eprintln!("Error handling query from {}: {}", addr, e);
@@ -175,6 +217,7 @@ async fn worker_loop(
     tokio_socket: Arc<UdpSocket>,
     guard: &ShutdownGuard,
     shutdown_tx: &Sender<bool>,
+    semaphore: Arc<Semaphore>,
 ) {
     // Buffer for incoming DNS packets (DNS over UDP is typically 512 bytes,
     // but can be larger with EDNS0, so 4096 is a safe buffer size).
@@ -196,8 +239,18 @@ async fn worker_loop(
                         let socket_inner = Arc::clone(&tokio_socket);
                         let task_guard = guard.clone();
 
-                        // Spawn a task for each request to keep the proxy non-blocking
+                        let permit = match Arc::clone(&semaphore).try_acquire_owned() {
+                            Ok(p) => p,
+                            Err(_) => {
+                                if let Some(resp) = build_minimal_servfail(&packet) {
+                                    let _ = tokio_socket.send_to(&resp, addr).await;
+                                }
+                                continue;
+                            }
+                        };
+
                         tokio::spawn(async move {
+                            let _permit = permit;
                             let _guard = TaskGuard::new(&task_guard);
                             if let Err(e) = handle_query(socket_inner, packet, addr).await {
                                 eprintln!("Error handling query from {}: {}", addr, e);
@@ -283,6 +336,54 @@ pub(crate) fn init_global_seed() {
 mod tests {
     use super::*;
     use std::sync::{LazyLock, Mutex};
+
+    // -----------------------------------------------------------------------
+    // build_minimal_servfail
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn servfail_copies_transaction_id() {
+        let query = [0xAB, 0xCD, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+        let resp = build_minimal_servfail(&query).unwrap();
+        assert_eq!(resp[0], 0xAB);
+        assert_eq!(resp[1], 0xCD);
+    }
+
+    #[test]
+    fn servfail_sets_qr_and_rcode() {
+        let query = [0x00, 0x01, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]; // RD=1
+        let resp = build_minimal_servfail(&query).unwrap();
+        assert_eq!(resp[2] & 0x80, 0x80, "QR bit must be set");
+        assert_eq!(resp[3] & 0x0F, 2, "RCODE must be SERVFAIL (2)");
+    }
+
+    #[test]
+    fn servfail_preserves_rd_bit() {
+        let mut query = [0x00, 0x01, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+        query[2] = 0x01; // RD=1
+        let resp_rd = build_minimal_servfail(&query).unwrap();
+        assert_eq!(resp_rd[2] & 0x01, 1);
+
+        query[2] = 0x00; // RD=0
+        let resp_no_rd = build_minimal_servfail(&query).unwrap();
+        assert_eq!(resp_no_rd[2] & 0x01, 0);
+    }
+
+    #[test]
+    fn servfail_zeroes_record_counts() {
+        let query = [
+            0xAB, 0xCD, 0x01, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        ];
+        let resp = build_minimal_servfail(&query).unwrap();
+        assert_eq!(&resp[4..12], &[0u8; 8], "all record counts must be zero");
+    }
+
+    #[test]
+    fn servfail_returns_none_for_short_input() {
+        assert!(build_minimal_servfail(&[]).is_none());
+        assert!(build_minimal_servfail(&[0xAB]).is_none());
+        assert!(build_minimal_servfail(&[0xAB, 0xCD]).is_some());
+    }
 
     // Serialise tests that mutate the global CONFIG via reload_config_from_path.
     static TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(Mutex::default);

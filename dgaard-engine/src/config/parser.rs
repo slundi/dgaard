@@ -278,6 +278,9 @@ fn parse_runtime(table: &toml_span::value::Table<'_>) -> Result<RuntimeConfig, C
     if let Some(n) = get_integer(table, "max_blocking_threads")? {
         cfg.max_blocking_threads = n as usize;
     }
+    if let Some(n) = get_integer(table, "max_concurrent_queries")? {
+        cfg.max_concurrent_queries = n as usize;
+    }
 
     Ok(cfg)
 }
@@ -605,11 +608,10 @@ fn parse_custom_flag(
     table: &toml_span::value::Table<'_>,
     parent_span: toml_span::Span,
 ) -> Result<CustomFlagConfig, ConfigError> {
-    let bit = get_integer(table, "bit")?
-        .ok_or_else(|| ConfigError::MissingKey {
-            key: "bit".to_string(),
-            span: parent_span,
-        })? as i64;
+    let bit = get_integer(table, "bit")?.ok_or_else(|| ConfigError::MissingKey {
+        key: "bit".to_string(),
+        span: parent_span,
+    })? as i64;
 
     if !(16..=31).contains(&bit) {
         return Err(ConfigError::InvalidValue {

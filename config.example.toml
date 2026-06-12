@@ -35,6 +35,12 @@ stack_size = 2097152
 # Capacity of the request queue per worker before rejecting requests.
 max_blocking_threads = 512
 
+# Maximum number of DNS queries that may be in-flight simultaneously.
+# When this limit is reached, new queries receive a SERVFAIL response
+# immediately instead of spawning a new task, preventing OOM under UDP floods.
+# Reduce to 128–256 on memory-constrained OpenWrt devices.
+max_concurrent_queries = 1024
+
 [security.structure]
 # Maximum number of dots (.) in a domain.
 # More than 5 often indicates tunneling (e.g., data.part1.bin.zone.com)

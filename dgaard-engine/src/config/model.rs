@@ -36,6 +36,16 @@ pub struct RuntimeConfig {
     /// Depth of the per-worker blocking task queue before new requests are
     /// rejected with a backpressure error.
     pub max_blocking_threads: usize,
+
+    /// Maximum number of DNS queries that may be in-flight simultaneously.
+    ///
+    /// When this limit is reached, new incoming UDP datagrams receive a
+    /// SERVFAIL response immediately instead of spawning another task.
+    /// This prevents unbounded `tokio::spawn` growth under a UDP flood, which
+    /// would otherwise exhaust memory on embedded targets.
+    ///
+    /// Reduce to 128–256 on memory-constrained OpenWrt devices.
+    pub max_concurrent_queries: usize,
 }
 
 impl Default for RuntimeConfig {
@@ -44,6 +54,7 @@ impl Default for RuntimeConfig {
             worker_threads: WorkerThreads::Auto,
             stack_size: 2 * 1024 * 1024, // 2 MiB
             max_blocking_threads: 512,
+            max_concurrent_queries: 1024,
         }
     }
 }
@@ -1191,6 +1202,7 @@ mod tests {
         assert_eq!(rt.worker_threads, WorkerThreads::Auto);
         assert_eq!(rt.stack_size, 2 * 1024 * 1024);
         assert_eq!(rt.max_blocking_threads, 512);
+        assert_eq!(rt.max_concurrent_queries, 1024);
     }
 
     // -----------------------------------------------------------------------
