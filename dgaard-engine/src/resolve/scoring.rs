@@ -2,11 +2,11 @@
 
 use super::heuristics::check_lexical;
 use super::matcher::{is_blocked, is_nrd, is_suffix_blocked};
-use twox_hash::XxHash64;
 use crate::config::Config;
 use crate::dga::entropy::{calculate_entropy, calculate_entropy_fast, is_consonant_suspicious};
 use crate::filter::engine::FilterEngine;
 use crate::model::{BlockReason, InspectedAnswer, SuspicionScore, score_points};
+use twox_hash::XxHash64;
 
 /// Maximum domain length before adding suspicion points.
 const LONG_DOMAIN_THRESHOLD: usize = 60;
@@ -510,14 +510,16 @@ mod tests {
         f.flush().unwrap();
 
         let mut cfg = Config::default();
-        cfg.security.custom_flags.push(crate::config::CustomFlagConfig {
-            bit: 20,
-            code: "TEST".to_string(),
-            name: String::new(),
-            description: String::new(),
-            suspicious_score: 6,
-            list_path: vec![f.path().to_str().unwrap().to_string()],
-        });
+        cfg.security
+            .custom_flags
+            .push(crate::config::CustomFlagConfig {
+                bit: 20,
+                code: "TEST".to_string(),
+                name: String::new(),
+                description: String::new(),
+                suspicious_score: 6,
+                list_path: vec![f.path().to_str().unwrap().to_string()],
+            });
 
         let mut engine = create_test_engine(&[], &[], &[]);
         engine.load_custom_flags(&cfg);
@@ -525,7 +527,10 @@ mod tests {
         let score = compute_score("flagged.example.com", &engine, &cfg);
         assert_eq!(score.total, 6);
         assert!(
-            score.reasons.iter().any(|r| matches!(r, crate::model::BlockReason::CustomFlag(20))),
+            score
+                .reasons
+                .iter()
+                .any(|r| matches!(r, crate::model::BlockReason::CustomFlag(20))),
             "expected CustomFlag(20) in reasons"
         );
     }
@@ -537,21 +542,28 @@ mod tests {
         writeln!(f, "other.example.com").unwrap();
 
         let mut cfg = Config::default();
-        cfg.security.custom_flags.push(crate::config::CustomFlagConfig {
-            bit: 21,
-            code: "MISS".to_string(),
-            name: String::new(),
-            description: String::new(),
-            suspicious_score: 5,
-            list_path: vec![f.path().to_str().unwrap().to_string()],
-        });
+        cfg.security
+            .custom_flags
+            .push(crate::config::CustomFlagConfig {
+                bit: 21,
+                code: "MISS".to_string(),
+                name: String::new(),
+                description: String::new(),
+                suspicious_score: 5,
+                list_path: vec![f.path().to_str().unwrap().to_string()],
+            });
 
         let mut engine = create_test_engine(&[], &[], &[]);
         engine.load_custom_flags(&cfg);
 
         let score = compute_score("clean.example.com", &engine, &cfg);
         assert_eq!(score.total, 0);
-        assert!(!score.reasons.iter().any(|r| matches!(r, crate::model::BlockReason::CustomFlag(_))));
+        assert!(
+            !score
+                .reasons
+                .iter()
+                .any(|r| matches!(r, crate::model::BlockReason::CustomFlag(_)))
+        );
     }
 
     #[test]
@@ -562,14 +574,16 @@ mod tests {
 
         let mut cfg = Config::default();
         cfg.security.scoring.blocking_threshold = 5;
-        cfg.security.custom_flags.push(crate::config::CustomFlagConfig {
-            bit: 22,
-            code: "MALWARE".to_string(),
-            name: String::new(),
-            description: String::new(),
-            suspicious_score: 10,
-            list_path: vec![f.path().to_str().unwrap().to_string()],
-        });
+        cfg.security
+            .custom_flags
+            .push(crate::config::CustomFlagConfig {
+                bit: 22,
+                code: "MALWARE".to_string(),
+                name: String::new(),
+                description: String::new(),
+                suspicious_score: 10,
+                list_path: vec![f.path().to_str().unwrap().to_string()],
+            });
 
         let mut engine = create_test_engine(&[], &[], &[]);
         engine.load_custom_flags(&cfg);

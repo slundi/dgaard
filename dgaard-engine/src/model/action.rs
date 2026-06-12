@@ -130,9 +130,7 @@ impl From<&BlockReason> for StatBlockReason {
             BlockReason::PtrLeak => StatBlockReason::DNS_REBINDING,
             BlockReason::ChaosClass => StatBlockReason::FORBIDDEN_QTYPE,
             // User-defined custom flag: set the bit at position `bit` (valid range 16–31).
-            BlockReason::CustomFlag(bit) => {
-                StatBlockReason::from_bits_retain(1u32 << bit)
-            }
+            BlockReason::CustomFlag(bit) => StatBlockReason::from_bits_retain(1u32 << bit),
         }
     }
 }

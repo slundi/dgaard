@@ -194,27 +194,21 @@ impl StatMessage {
                         if payload.len() < 37 {
                             return None;
                         }
-                        let bits = u32::from_le_bytes(
-                            payload[33..37].try_into().ok()?,
-                        );
+                        let bits = u32::from_le_bytes(payload[33..37].try_into().ok()?);
                         StatAction::Blocked(StatBlockReason::from_bits_retain(bits))
                     }
                     3 => {
                         if payload.len() < 37 {
                             return None;
                         }
-                        let bits = u32::from_le_bytes(
-                            payload[33..37].try_into().ok()?,
-                        );
+                        let bits = u32::from_le_bytes(payload[33..37].try_into().ok()?);
                         StatAction::Suspicious(StatBlockReason::from_bits_retain(bits))
                     }
                     4 => {
                         if payload.len() < 37 {
                             return None;
                         }
-                        let bits = u32::from_le_bytes(
-                            payload[33..37].try_into().ok()?,
-                        );
+                        let bits = u32::from_le_bytes(payload[33..37].try_into().ok()?);
                         StatAction::HighlySuspicious(StatBlockReason::from_bits_retain(bits))
                     }
                     _ => return None,

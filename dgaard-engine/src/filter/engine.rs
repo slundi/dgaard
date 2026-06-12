@@ -324,15 +324,13 @@ impl FilterEngine {
                     ),
                 }
             }
-            self.custom_flag_maps.push((flag.bit, flag.suspicious_score, map));
+            self.custom_flag_maps
+                .push((flag.bit, flag.suspicious_score, map));
         }
     }
 
     /// Read a plain-text domain list file and return a set of XxHash64 digests.
-    fn load_plain_domain_list(
-        path: &str,
-        seed: u64,
-    ) -> std::io::Result<HashMap<u64, ()>> {
+    fn load_plain_domain_list(path: &str, seed: u64) -> std::io::Result<HashMap<u64, ()>> {
         use std::io::BufRead;
         let file = std::fs::File::open(path)?;
         let reader = std::io::BufReader::new(file);
@@ -340,11 +338,7 @@ impl FilterEngine {
         for line in reader.lines() {
             let line = line?;
             let line = line.trim();
-            let line = line
-                .find('#')
-                .map(|i| &line[..i])
-                .unwrap_or(line)
-                .trim();
+            let line = line.find('#').map(|i| &line[..i]).unwrap_or(line).trim();
             if line.is_empty() {
                 continue;
             }
@@ -560,14 +554,16 @@ mod tests {
         f.flush().unwrap();
 
         let mut cfg = Config::default();
-        cfg.security.custom_flags.push(crate::config::CustomFlagConfig {
-            bit: 16,
-            code: "TEST".to_string(),
-            name: "Test Flag".to_string(),
-            description: String::new(),
-            suspicious_score: 5,
-            list_path: vec![f.path().to_str().unwrap().to_string()],
-        });
+        cfg.security
+            .custom_flags
+            .push(crate::config::CustomFlagConfig {
+                bit: 16,
+                code: "TEST".to_string(),
+                name: "Test Flag".to_string(),
+                description: String::new(),
+                suspicious_score: 5,
+                list_path: vec![f.path().to_str().unwrap().to_string()],
+            });
 
         let mut engine = make_engine();
         engine.load_custom_flags(&cfg);
@@ -579,7 +575,11 @@ mod tests {
 
         for domain in &["evil.example.com", "bad.tld", "spaced.domain.net"] {
             let hash = twox_hash::XxHash64::oneshot(SEED, domain.as_bytes());
-            assert!(map.contains_key(&hash), "expected '{}' to be in the map", domain);
+            assert!(
+                map.contains_key(&hash),
+                "expected '{}' to be in the map",
+                domain
+            );
         }
         // Comment line must not appear
         let comment_hash = twox_hash::XxHash64::oneshot(SEED, b"# this is a comment");
@@ -589,14 +589,16 @@ mod tests {
     #[test]
     fn test_load_custom_flags_missing_file_logs_warning_not_panic() {
         let mut cfg = Config::default();
-        cfg.security.custom_flags.push(crate::config::CustomFlagConfig {
-            bit: 17,
-            code: "MISSING".to_string(),
-            name: String::new(),
-            description: String::new(),
-            suspicious_score: 1,
-            list_path: vec!["/nonexistent/path/custom.txt".to_string()],
-        });
+        cfg.security
+            .custom_flags
+            .push(crate::config::CustomFlagConfig {
+                bit: 17,
+                code: "MISSING".to_string(),
+                name: String::new(),
+                description: String::new(),
+                suspicious_score: 1,
+                list_path: vec!["/nonexistent/path/custom.txt".to_string()],
+            });
 
         let mut engine = make_engine();
         // Should not panic — missing file emits a warning and yields an empty map.
@@ -615,17 +617,19 @@ mod tests {
         writeln!(f2, "b.com").unwrap();
 
         let mut cfg = Config::default();
-        cfg.security.custom_flags.push(crate::config::CustomFlagConfig {
-            bit: 18,
-            code: "MERGED".to_string(),
-            name: String::new(),
-            description: String::new(),
-            suspicious_score: 2,
-            list_path: vec![
-                f1.path().to_str().unwrap().to_string(),
-                f2.path().to_str().unwrap().to_string(),
-            ],
-        });
+        cfg.security
+            .custom_flags
+            .push(crate::config::CustomFlagConfig {
+                bit: 18,
+                code: "MERGED".to_string(),
+                name: String::new(),
+                description: String::new(),
+                suspicious_score: 2,
+                list_path: vec![
+                    f1.path().to_str().unwrap().to_string(),
+                    f2.path().to_str().unwrap().to_string(),
+                ],
+            });
 
         let mut engine = make_engine();
         engine.load_custom_flags(&cfg);
