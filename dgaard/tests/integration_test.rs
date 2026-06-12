@@ -277,9 +277,9 @@ fn rcode(resp: &[u8]) -> u8 {
 enum StatAction {
     Allowed,
     Proxied,
-    Blocked(u16), // StatBlockReason bitflags
-    Suspicious(u16),
-    HighlySuspicious(u16),
+    Blocked(u32), // StatBlockReason bitflags
+    Suspicious(u32),
+    HighlySuspicious(u32),
 }
 
 #[derive(Debug)]
@@ -295,10 +295,10 @@ enum StatMessage {
 }
 
 // StatBlockReason bit positions (from dgaard/src/model/action.rs)
-const REASON_STATIC_BLACKLIST: u16 = 1 << 0;
-const REASON_HIGH_ENTROPY: u16 = 1 << 2;
-const REASON_SUSPICIOUS_IDN: u16 = 1 << 6;
-const REASON_FORBIDDEN_QTYPE: u16 = 1 << 11;
+const REASON_STATIC_BLACKLIST: u32 = 1 << 0;
+const REASON_HIGH_ENTROPY: u32 = 1 << 2;
+const REASON_SUSPICIOUS_IDN: u32 = 1 << 6;
+const REASON_FORBIDDEN_QTYPE: u32 = 1 << 11;
 
 /// Drain any messages already buffered on the stream (server-side catchup on connect).
 ///
@@ -321,7 +321,7 @@ fn drain_pending_messages(stream: &mut UnixStream) {
 /// [msg_len: u16 LE][type: u8][payload...]
 ///
 /// DomainMapping (0x00): [hash: u64 LE][domain_len: u16 LE][domain: UTF-8]
-/// Event         (0x01): [ts: u64 LE][hash: u64 LE][ip: 16][action: u8][reason?: u16 LE]
+/// Event         (0x01): [ts: u64 LE][hash: u64 LE][ip: 16][action: u8][reason?: u32 LE]
 /// ```
 fn read_stat_message(stream: &mut UnixStream) -> Option<StatMessage> {
     let mut len_buf = [0u8; 2];
@@ -349,7 +349,7 @@ fn read_stat_message(stream: &mut UnixStream) -> Option<StatMessage> {
             Some(StatMessage::DomainMapping { hash, domain })
         }
         0x01 => {
-            // Event: [ts:8][hash:8][ip:16][action:1][reason?:2]
+            // Event: [ts:8][hash:8][ip:16][action:1][reason?:4]
             if data.len() < 33 {
                 return None;
             }
@@ -359,10 +359,10 @@ fn read_stat_message(stream: &mut UnixStream) -> Option<StatMessage> {
                 0 => StatAction::Allowed,
                 1 => StatAction::Proxied,
                 2..=4 => {
-                    if data.len() < 35 {
+                    if data.len() < 37 {
                         return None;
                     }
-                    let bits = u16::from_le_bytes([data[33], data[34]]);
+                    let bits = u32::from_le_bytes(data[33..37].try_into().ok()?);
                     match action_byte {
                         2 => StatAction::Blocked(bits),
                         3 => StatAction::Suspicious(bits),
