@@ -69,6 +69,17 @@ impl DaemonConfig {
             }
         }
 
+        const KNOWN: &[&str] = &["socket_path", "config_file", "log_level"];
+        for (key, _) in root.iter() {
+            if !KNOWN.contains(&key.name.as_ref()) {
+                eprintln!(
+                    "dgaard-daemon: unrecognised config key '{}' (known: {})",
+                    key.name,
+                    KNOWN.join(", ")
+                );
+            }
+        }
+
         Ok(cfg)
     }
 }
@@ -123,5 +134,18 @@ log_level = "debug"
     #[test]
     fn load_invalid_toml_returns_error() {
         assert!(DaemonConfig::load("not = [valid toml").is_err());
+    }
+
+    #[test]
+    fn load_toml_with_unknown_key_still_succeeds() {
+        // A misspelled key must not cause an error — the daemon should start
+        // with defaults and warn the operator (via eprintln).
+        let toml = r#"
+socket_path = "/tmp/test.sock"
+typo_socket_path = "/typo/ignored.sock"
+"#;
+        let cfg = DaemonConfig::load(toml).unwrap();
+        // The valid key is applied; the typo is silently warned and discarded.
+        assert_eq!(cfg.socket_path, "/tmp/test.sock");
     }
 }
