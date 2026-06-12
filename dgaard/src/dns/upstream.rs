@@ -50,18 +50,31 @@ pub(crate) async fn forward_to_upstream(packet: &[u8]) -> std::io::Result<Vec<u8
             continue;
         }
 
-        // Wait for response with timeout
+        // Wait for a response from the expected upstream address within the
+        // timeout window. Datagrams arriving from any other source are silently
+        // discarded and we keep waiting — a spoofed packet must not win the
+        // race against the legitimate resolver.
         let mut buf = [0u8; 4096];
-        match timeout(timeout_duration, upstream_socket.recv_from(&mut buf)).await {
-            Ok(Ok((len, _))) => {
-                let response = buf[..len].to_vec();
-                // Verify 0x20 echo: reject forged / case-normalizing responses.
-                if use_0x20 && !verify_0x20(&outgoing, &response) {
-                    continue;
-                }
-                return Ok(response);
+        let deadline = tokio::time::Instant::now() + timeout_duration;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
             }
-            Ok(Err(_)) | Err(_) => continue,
+            match timeout(remaining, upstream_socket.recv_from(&mut buf)).await {
+                Ok(Ok((len, src))) => {
+                    if src != addr {
+                        continue;
+                    }
+                    let response = buf[..len].to_vec();
+                    // Verify 0x20 echo: reject forged / case-normalizing responses.
+                    if use_0x20 && !verify_0x20(&outgoing, &response) {
+                        continue;
+                    }
+                    return Ok(response);
+                }
+                Ok(Err(_)) | Err(_) => break,
+            }
         }
     }
 
@@ -361,6 +374,59 @@ mod tests {
         let query = build_response_with_qname(q_qname);
         let response = build_response_with_qname(r_qname);
         assert!(!verify_0x20(&query, &response));
+    }
+
+    // --- Source address validation ---
+
+    /// Regression test: a datagram arriving from an address other than the
+    /// upstream server must be discarded and must not be returned as a valid
+    /// response.  We simulate this by binding two sockets: a "spoofed" sender
+    /// that replies immediately from a different port, and a "real" upstream
+    /// that replies slightly later but from the expected address.
+    #[tokio::test]
+    async fn recv_from_ignores_unexpected_source() {
+        use tokio::net::UdpSocket;
+
+        // Bind the fake "upstream" server and an attacker socket on localhost.
+        let real_upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let attacker = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        let real_addr: SocketAddr = real_upstream.local_addr().unwrap();
+
+        // Bind a client socket that will play the role of the proxy.
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let client_addr = client.local_addr().unwrap();
+
+        // The attacker fires a forged response before the real upstream does.
+        let forged = b"FORGED_RESPONSE";
+        attacker.send_to(forged, client_addr).await.unwrap();
+
+        // The real upstream sends the legitimate response.
+        let legit = b"LEGIT_RESPONSE__";
+        real_upstream.send_to(legit, client_addr).await.unwrap();
+
+        // The client must reject the forged datagram and return the legitimate one.
+        let mut buf = [0u8; 64];
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        let mut received: Option<Vec<u8>> = None;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, client.recv_from(&mut buf)).await {
+                Ok(Ok((len, src))) => {
+                    if src != real_addr {
+                        continue;
+                    }
+                    received = Some(buf[..len].to_vec());
+                    break;
+                }
+                _ => break,
+            }
+        }
+
+        assert_eq!(received.as_deref(), Some(legit.as_slice()));
     }
 
     // --- IPv6 upstream support tests (unchanged) ---
