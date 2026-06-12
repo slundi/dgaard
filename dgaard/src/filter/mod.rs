@@ -110,7 +110,30 @@ pub(crate) async fn load_source(
 ///
 /// Builds a new `FilterEngine` from scratch and atomically replaces the
 /// global `CURRENT_ENGINE`. Called at startup and on SIGHUP.
+///
+/// The whole operation is bounded by `sources.reload_timeout_secs`; set it
+/// to `0` to disable the timeout.
 pub async fn reload_lists() {
+    let timeout_secs = CONFIG.load().sources.reload_timeout_secs;
+    if timeout_secs == 0 {
+        reload_lists_inner().await;
+    } else {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(u64::from(timeout_secs)),
+            reload_lists_inner(),
+        )
+        .await
+        {
+            Ok(()) => {}
+            Err(_) => eprintln!(
+                "Error: list reload timed out after {}s — previous engine retained",
+                timeout_secs
+            ),
+        }
+    }
+}
+
+async fn reload_lists_inner() {
     println!("Loading filter lists...");
     let client = build_https_client();
     let cfg = CONFIG.load();

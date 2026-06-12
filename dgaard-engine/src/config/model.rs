@@ -1008,6 +1008,13 @@ pub struct SourcesConfig {
     ///
     /// Set to an empty string `""` to disable.
     pub browser_rules_path: String,
+
+    /// Maximum time in seconds allowed for a full list reload (all sources).
+    ///
+    /// If the reload does not finish within this deadline the operation is
+    /// aborted and an error is printed; the previously loaded engine remains
+    /// active.  Set to `0` to disable the timeout entirely.
+    pub reload_timeout_secs: u32,
 }
 
 impl Default for SourcesConfig {
@@ -1026,6 +1033,7 @@ impl Default for SourcesConfig {
             retry_delay_mins: 30,
             host_index_path: String::from("/var/dgaard/host_mapping.bin"),
             browser_rules_path: String::from("/var/dgaard/browser_rules.txt"),
+            reload_timeout_secs: 15,
         }
     }
 }

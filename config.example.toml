@@ -390,6 +390,10 @@ whitelists = [
 update_interval_hours = 24
 # If the download fails, how long to wait before retrying
 retry_delay_mins = 30
+# Maximum seconds allowed for a full list reload (all sources combined).
+# If the deadline is exceeded the operation is aborted and the previously
+# loaded engine stays active. Set to 0 to disable the timeout entirely.
+reload_timeout_secs = 30
 
 # Binary index mapping each xxh3_64 hash to its source domain string.
 # External tools (dashboard, scripts) can use this file to resolve a hash

@@ -888,6 +888,9 @@ fn parse_sources(table: &toml_span::value::Table<'_>) -> Result<SourcesConfig, C
     if let Some(s) = get_str(table, "browser_rules_path")? {
         cfg.browser_rules_path = s.to_string();
     }
+    if let Some(n) = get_typed_integer::<u32>(table, "reload_timeout_secs")? {
+        cfg.reload_timeout_secs = n;
+    }
 
     Ok(cfg)
 }
@@ -1783,6 +1786,7 @@ mod tests {
             retry_delay_mins = 15
             host_index_path = "/tmp/my_index.bin"
             browser_rules_path = "/tmp/browser.txt"
+            reload_timeout_secs = 30
         "#;
         let cfg = Config::parse(toml).unwrap();
         assert_eq!(cfg.sources.nrd_list_path, "/custom/nrd.txt");
@@ -1795,6 +1799,23 @@ mod tests {
         assert_eq!(cfg.sources.retry_delay_mins, 15);
         assert_eq!(cfg.sources.host_index_path, "/tmp/my_index.bin");
         assert_eq!(cfg.sources.browser_rules_path, "/tmp/browser.txt");
+        assert_eq!(cfg.sources.reload_timeout_secs, 30);
+    }
+
+    #[test]
+    fn parse_sources_reload_timeout_default() {
+        let cfg = Config::parse("[sources]").unwrap();
+        assert_eq!(cfg.sources.reload_timeout_secs, 15);
+    }
+
+    #[test]
+    fn parse_sources_reload_timeout_zero_disables() {
+        let toml = r#"
+            [sources]
+            reload_timeout_secs = 0
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert_eq!(cfg.sources.reload_timeout_secs, 0);
     }
 
     #[test]
