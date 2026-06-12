@@ -16,6 +16,8 @@ use axum::{
 use rust_embed::Embed;
 use tokio::sync::{broadcast, watch};
 
+use constant_time_eq::constant_time_eq;
+
 use crate::config::WebConfig;
 use crate::state::AppState;
 use crate::util::{event_to_record, flags_of};
@@ -69,11 +71,12 @@ async fn require_bearer(
     if token.is_empty() {
         return next.run(request).await;
     }
+    let expected_bearer = format!("Bearer {}", token.as_str());
     let bearer_ok = request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .map(|v| v == format!("Bearer {}", token.as_str()))
+        .map(|v| constant_time_eq(v.as_bytes(), expected_bearer.as_bytes()))
         .unwrap_or(false);
     // Browsers cannot set custom headers on WebSocket connections, so /ws also
     // accepts a ?token= query parameter.
@@ -82,7 +85,7 @@ async fn require_bearer(
             .uri()
             .query()
             .and_then(|q| q.split('&').find(|p| p.starts_with("token=")))
-            .map(|p| &p["token=".len()..] == token.as_str())
+            .map(|p| constant_time_eq(p["token=".len()..].as_bytes(), token.as_bytes()))
             .unwrap_or(false);
     if bearer_ok || query_ok {
         next.run(request).await
