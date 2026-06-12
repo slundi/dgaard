@@ -105,6 +105,39 @@ fn get_integer(table: &toml_span::value::Table<'_>, key: &str) -> Result<Option<
     }
 }
 
+/// Extract and range-validate an optional integer, converting it to the
+/// target unsigned type `T` via `TryFrom<i64>`.
+///
+/// Returns `ConfigError::InvalidValue` — with the problematic value and the
+/// source span — when the TOML integer is negative or exceeds `T::MAX`.
+fn get_typed_integer<T>(
+    table: &toml_span::value::Table<'_>,
+    key: &str,
+) -> Result<Option<T>, ConfigError>
+where
+    T: TryFrom<i64>,
+{
+    match table.get(key) {
+        Some(v) => match v.as_ref() {
+            ValueInner::Integer(n) => {
+                T::try_from(*n)
+                    .map(Some)
+                    .map_err(|_| ConfigError::InvalidValue {
+                        key: key.to_string(),
+                        message: format!("value {} is out of range for this field", n),
+                        span: v.span,
+                    })
+            }
+            _ => Err(ConfigError::InvalidType {
+                key: key.to_string(),
+                expected: "integer",
+                span: v.span,
+            }),
+        },
+        None => Ok(None),
+    }
+}
+
 /// Extract an optional float value from a table (also accepts integers as floats).
 fn get_float(table: &toml_span::value::Table<'_>, key: &str) -> Result<Option<f32>, ConfigError> {
     match table.get(key) {
@@ -253,7 +286,14 @@ fn parse_runtime(table: &toml_span::value::Table<'_>) -> Result<RuntimeConfig, C
                 cfg.worker_threads = WorkerThreads::Auto;
             }
             ValueInner::Integer(n) => {
-                cfg.worker_threads = WorkerThreads::Count(*n as usize);
+                let count = usize::try_from(*n).ok().filter(|&c| c > 0).ok_or_else(|| {
+                    ConfigError::InvalidValue {
+                        key: "worker_threads".to_string(),
+                        message: format!("thread count must be a positive integer, got {}", n),
+                        span: v.span,
+                    }
+                })?;
+                cfg.worker_threads = WorkerThreads::Count(count);
             }
             ValueInner::String(s) => {
                 return Err(ConfigError::InvalidValue {
@@ -272,14 +312,14 @@ fn parse_runtime(table: &toml_span::value::Table<'_>) -> Result<RuntimeConfig, C
         }
     }
 
-    if let Some(n) = get_integer(table, "stack_size")? {
-        cfg.stack_size = n as usize;
+    if let Some(n) = get_typed_integer::<usize>(table, "stack_size")? {
+        cfg.stack_size = n;
     }
-    if let Some(n) = get_integer(table, "max_blocking_threads")? {
-        cfg.max_blocking_threads = n as usize;
+    if let Some(n) = get_typed_integer::<usize>(table, "max_blocking_threads")? {
+        cfg.max_blocking_threads = n;
     }
-    if let Some(n) = get_integer(table, "max_concurrent_queries")? {
-        cfg.max_concurrent_queries = n as usize;
+    if let Some(n) = get_typed_integer::<usize>(table, "max_concurrent_queries")? {
+        cfg.max_concurrent_queries = n;
     }
 
     Ok(cfg)
@@ -360,20 +400,20 @@ fn parse_server(table: &toml_span::value::Table<'_>) -> Result<ServerConfig, Con
 fn parse_structure(table: &toml_span::value::Table<'_>) -> Result<StructureConfig, ConfigError> {
     let mut cfg = StructureConfig::default();
 
-    if let Some(n) = get_integer(table, "max_subdomain_depth")? {
-        cfg.max_subdomain_depth = n as u8;
+    if let Some(n) = get_typed_integer::<u8>(table, "max_subdomain_depth")? {
+        cfg.max_subdomain_depth = n;
     }
-    if let Some(n) = get_integer(table, "max_domain_length")? {
-        cfg.max_domain_length = n as u16;
+    if let Some(n) = get_typed_integer::<u16>(table, "max_domain_length")? {
+        cfg.max_domain_length = n;
     }
     if let Some(b) = get_bool(table, "force_lowercase_ascii")? {
         cfg.force_lowercase_ascii = b;
     }
-    if let Some(n) = get_integer(table, "max_txt_record_length")? {
-        cfg.max_txt_record_length = n as u16;
+    if let Some(n) = get_typed_integer::<u16>(table, "max_txt_record_length")? {
+        cfg.max_txt_record_length = n;
     }
-    if let Some(n) = get_integer(table, "max_answers_per_query")? {
-        cfg.max_answers_per_query = n as u8;
+    if let Some(n) = get_typed_integer::<u8>(table, "max_answers_per_query")? {
+        cfg.max_answers_per_query = n;
     }
     if let Some(b) = get_bool(table, "block_chaos_class")? {
         cfg.block_chaos_class = b;
@@ -412,14 +452,14 @@ fn parse_intelligence(
     if let Some(b) = get_bool(table, "entropy_fast")? {
         cfg.entropy_fast = b;
     }
-    if let Some(n) = get_integer(table, "min_word_length")? {
-        cfg.min_word_length = n as usize;
+    if let Some(n) = get_typed_integer::<usize>(table, "min_word_length")? {
+        cfg.min_word_length = n;
     }
     if let Some(f) = get_float(table, "consonant_ratio_threshold")? {
         cfg.consonant_ratio_threshold = f;
     }
-    if let Some(n) = get_integer(table, "max_consonant_sequence")? {
-        cfg.max_consonant_sequence = n as usize;
+    if let Some(n) = get_typed_integer::<usize>(table, "max_consonant_sequence")? {
+        cfg.max_consonant_sequence = n;
     }
     if let Some(b) = get_bool(table, "use_ngram_model")? {
         cfg.use_ngram_model = b;
@@ -469,17 +509,17 @@ fn parse_idn(table: &toml_span::value::Table<'_>) -> Result<IdnConfig, ConfigErr
 fn parse_behavior(table: &toml_span::value::Table<'_>) -> Result<BehaviorConfig, ConfigError> {
     let mut cfg = BehaviorConfig::default();
 
-    if let Some(n) = get_integer(table, "nxdomain_threshold")? {
-        cfg.nxdomain_threshold = n as u32;
+    if let Some(n) = get_typed_integer::<u32>(table, "nxdomain_threshold")? {
+        cfg.nxdomain_threshold = n;
     }
-    if let Some(n) = get_integer(table, "nxdomain_window")? {
-        cfg.nxdomain_window = n as u32;
+    if let Some(n) = get_typed_integer::<u32>(table, "nxdomain_window")? {
+        cfg.nxdomain_window = n;
     }
-    if let Some(n) = get_integer(table, "max_subdomains_per_minute")? {
-        cfg.max_subdomains_per_minute = n as u32;
+    if let Some(n) = get_typed_integer::<u32>(table, "max_subdomains_per_minute")? {
+        cfg.max_subdomains_per_minute = n;
     }
-    if let Some(n) = get_integer(table, "max_label_length")? {
-        cfg.max_label_length = n as u8;
+    if let Some(n) = get_typed_integer::<u8>(table, "max_label_length")? {
+        cfg.max_label_length = n;
     }
 
     Ok(cfg)
@@ -495,7 +535,15 @@ fn parse_qtype_warden(
         cfg.enabled = b;
     }
     if let Some(arr) = get_integer_array(table, "blocked_types")? {
-        cfg.blocked_types = arr.into_iter().map(|n| n as u16).collect();
+        let mut types = Vec::with_capacity(arr.len());
+        for n in arr {
+            types.push(u16::try_from(n).map_err(|_| ConfigError::InvalidValue {
+                key: "blocked_types".to_string(),
+                message: format!("DNS type value {} is out of range 0–65535", n),
+                span: toml_span::Span::default(),
+            })?);
+        }
+        cfg.blocked_types = types;
     }
 
     Ok(cfg)
@@ -508,11 +556,11 @@ fn parse_low_ttl(table: &toml_span::value::Table<'_>) -> Result<LowTtlConfig, Co
     if let Some(b) = get_bool(table, "enabled")? {
         cfg.enabled = b;
     }
-    if let Some(n) = get_integer(table, "threshold_secs")? {
-        cfg.threshold_secs = n as u32;
+    if let Some(n) = get_typed_integer::<u32>(table, "threshold_secs")? {
+        cfg.threshold_secs = n;
     }
-    if let Some(n) = get_integer(table, "min_ttl_floor_secs")? {
-        cfg.min_ttl_floor_secs = Some(n as u32);
+    if let Some(n) = get_typed_integer::<u32>(table, "min_ttl_floor_secs")? {
+        cfg.min_ttl_floor_secs = Some(n);
     }
 
     Ok(cfg)
@@ -576,8 +624,8 @@ fn parse_geo_ip(table: &toml_span::value::Table<'_>) -> Result<GeoIpConfig, Conf
     if let Some(arr) = get_string_array(table, "suspicious_countries")? {
         cfg.suspicious_countries = arr;
     }
-    if let Some(n) = get_integer(table, "suspicious_country_score")? {
-        cfg.suspicious_country_score = n as u8;
+    if let Some(n) = get_typed_integer::<u8>(table, "suspicious_country_score")? {
+        cfg.suspicious_country_score = n;
     }
 
     Ok(cfg)
@@ -587,14 +635,14 @@ fn parse_geo_ip(table: &toml_span::value::Table<'_>) -> Result<GeoIpConfig, Conf
 fn parse_scoring(table: &toml_span::value::Table<'_>) -> Result<ScoringConfig, ConfigError> {
     let mut cfg = ScoringConfig::default();
 
-    if let Some(n) = get_integer(table, "blocking_threshold")? {
-        cfg.blocking_threshold = n as u8;
+    if let Some(n) = get_typed_integer::<u8>(table, "blocking_threshold")? {
+        cfg.blocking_threshold = n;
     }
-    if let Some(n) = get_integer(table, "highly_suspicious_threshold")? {
-        cfg.highly_suspicious_threshold = n as u8;
+    if let Some(n) = get_typed_integer::<u8>(table, "highly_suspicious_threshold")? {
+        cfg.highly_suspicious_threshold = n;
     }
-    if let Some(n) = get_integer(table, "suspicious_threshold")? {
-        cfg.suspicious_threshold = n as u8;
+    if let Some(n) = get_typed_integer::<u8>(table, "suspicious_threshold")? {
+        cfg.suspicious_threshold = n;
     }
     if let Some(b) = get_bool(table, "log_suspicious")? {
         cfg.log_suspicious = b;
@@ -631,9 +679,7 @@ fn parse_custom_flag(
     let name = get_str(table, "name")?.unwrap_or("").to_string();
     let description = get_str(table, "description")?.unwrap_or("").to_string();
 
-    let suspicious_score = get_integer(table, "suspicious_score")?
-        .unwrap_or(1)
-        .clamp(0, 255) as u8;
+    let suspicious_score: u8 = get_typed_integer(table, "suspicious_score")?.unwrap_or(1);
 
     let list_path = get_string_array(table, "list_path")?.unwrap_or_default();
 
@@ -740,8 +786,8 @@ fn parse_upstream(table: &toml_span::value::Table<'_>) -> Result<UpstreamConfig,
     if let Some(arr) = get_string_array(table, "servers")? {
         cfg.servers = arr;
     }
-    if let Some(n) = get_integer(table, "timeout_ms")? {
-        cfg.timeout_ms = n as u64;
+    if let Some(n) = get_typed_integer::<u64>(table, "timeout_ms")? {
+        cfg.timeout_ms = n;
     }
     if let Some(b) = get_bool(table, "use_0x20_randomization")? {
         cfg.use_0x20_randomization = b;
@@ -775,11 +821,11 @@ fn parse_nxdomain_hunting(
     if let Some(b) = get_bool(table, "enabled")? {
         cfg.enabled = b;
     }
-    if let Some(n) = get_integer(table, "threshold")? {
-        cfg.threshold = n as u32;
+    if let Some(n) = get_typed_integer::<u32>(table, "threshold")? {
+        cfg.threshold = n;
     }
-    if let Some(n) = get_integer(table, "window_seconds")? {
-        cfg.window_seconds = n as u32;
+    if let Some(n) = get_typed_integer::<u32>(table, "window_seconds")? {
+        cfg.window_seconds = n;
     }
     if let Some(s) = get_str(table, "action")? {
         cfg.action = match s {
@@ -807,11 +853,11 @@ fn parse_tunneling_detection(
     if let Some(b) = get_bool(table, "enabled")? {
         cfg.enabled = b;
     }
-    if let Some(n) = get_integer(table, "max_subdomains_per_minute")? {
-        cfg.max_subdomains_per_minute = n as u32;
+    if let Some(n) = get_typed_integer::<u32>(table, "max_subdomains_per_minute")? {
+        cfg.max_subdomains_per_minute = n;
     }
-    if let Some(n) = get_integer(table, "max_label_length")? {
-        cfg.max_label_length = n as u8;
+    if let Some(n) = get_typed_integer::<u8>(table, "max_label_length")? {
+        cfg.max_label_length = n;
     }
 
     Ok(cfg)
@@ -830,11 +876,11 @@ fn parse_sources(table: &toml_span::value::Table<'_>) -> Result<SourcesConfig, C
     if let Some(arr) = get_string_array(table, "whitelists")? {
         cfg.whitelists = arr;
     }
-    if let Some(n) = get_integer(table, "update_interval_hours")? {
-        cfg.update_interval_hours = n as u32;
+    if let Some(n) = get_typed_integer::<u32>(table, "update_interval_hours")? {
+        cfg.update_interval_hours = n;
     }
-    if let Some(n) = get_integer(table, "retry_delay_mins")? {
-        cfg.retry_delay_mins = n as u32;
+    if let Some(n) = get_typed_integer::<u32>(table, "retry_delay_mins")? {
+        cfg.retry_delay_mins = n;
     }
     if let Some(s) = get_str(table, "host_index_path")? {
         cfg.host_index_path = s.to_string();
@@ -853,8 +899,8 @@ fn parse_abp(table: &toml_span::value::Table<'_>) -> Result<AbpConfig, ConfigErr
     if let Some(b) = get_bool(table, "extract_domain_only")? {
         cfg.extract_domain_only = b;
     }
-    if let Some(n) = get_integer(table, "update_interval")? {
-        cfg.update_interval = n as u32;
+    if let Some(n) = get_typed_integer::<u32>(table, "update_interval")? {
+        cfg.update_interval = n;
     }
 
     Ok(cfg)
@@ -867,11 +913,11 @@ fn parse_cache(table: &toml_span::value::Table<'_>) -> Result<CacheConfig, Confi
     if let Some(b) = get_bool(table, "enabled")? {
         cfg.enabled = b;
     }
-    if let Some(n) = get_integer(table, "max_entries")? {
-        cfg.max_entries = n as usize;
+    if let Some(n) = get_typed_integer::<usize>(table, "max_entries")? {
+        cfg.max_entries = n;
     }
-    if let Some(n) = get_integer(table, "ttl_override")? {
-        cfg.ttl_override = n as u32;
+    if let Some(n) = get_typed_integer::<u32>(table, "ttl_override")? {
+        cfg.ttl_override = n;
     }
 
     Ok(cfg)
@@ -884,14 +930,14 @@ fn parse_memory(table: &toml_span::value::Table<'_>) -> Result<MemoryConfig, Con
     if let Some(b) = get_bool(table, "cache_enabled")? {
         cfg.cache_enabled = b;
     }
-    if let Some(n) = get_integer(table, "cache_size")? {
-        cfg.cache_size = n as usize;
+    if let Some(n) = get_typed_integer::<usize>(table, "cache_size")? {
+        cfg.cache_size = n;
     }
     if let Some(b) = get_bool(table, "use_bloom_filter")? {
         cfg.use_bloom_filter = b;
     }
-    if let Some(n) = get_integer(table, "expected_total_domains")? {
-        cfg.expected_total_domains = n as usize;
+    if let Some(n) = get_typed_integer::<usize>(table, "expected_total_domains")? {
+        cfg.expected_total_domains = n;
     }
 
     Ok(cfg)
@@ -1086,6 +1132,202 @@ mod tests {
         "#;
         let result = Config::parse(toml);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_negative_worker_threads_returns_error() {
+        let toml = r#"
+            [server.runtime]
+            worker_threads = -1
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_zero_worker_threads_returns_error() {
+        let toml = r#"
+            [server.runtime]
+            worker_threads = 0
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_negative_stack_size_returns_error() {
+        let toml = r#"
+            [server.runtime]
+            stack_size = -1
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Integer range validation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_negative_max_subdomain_depth_returns_error() {
+        let toml = r#"
+            [security.structure]
+            max_subdomain_depth = -1
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_overflow_max_subdomain_depth_returns_error() {
+        let toml = r#"
+            [security.structure]
+            max_subdomain_depth = 256
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_negative_max_domain_length_returns_error() {
+        let toml = r#"
+            [security.structure]
+            max_domain_length = -1
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_negative_max_answers_per_query_returns_error() {
+        let toml = r#"
+            [security.structure]
+            max_answers_per_query = -1
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_negative_min_word_length_returns_error() {
+        let toml = r#"
+            [security.intelligence]
+            min_word_length = -5
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_negative_max_label_length_returns_error() {
+        let toml = r#"
+            [security.behavior]
+            max_label_length = -1
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_negative_blocking_threshold_returns_error() {
+        let toml = r#"
+            [security.scoring]
+            blocking_threshold = -1
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_negative_timeout_ms_returns_error() {
+        let toml = r#"
+            [upstream]
+            timeout_ms = -500
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_negative_threshold_secs_returns_error() {
+        let toml = r#"
+            [security.low_ttl]
+            threshold_secs = -10
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_negative_blocked_type_returns_error() {
+        let toml = r#"
+            [security.qtype_warden]
+            blocked_types = [-1, 255]
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_overflow_blocked_type_returns_error() {
+        let toml = r#"
+            [security.qtype_warden]
+            blocked_types = [65536]
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_negative_update_interval_hours_returns_error() {
+        let toml = r#"
+            [sources]
+            update_interval_hours = -24
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_negative_cache_size_returns_error() {
+        let toml = r#"
+            [memory]
+            cache_size = -1
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
     }
 
     // -----------------------------------------------------------------------
