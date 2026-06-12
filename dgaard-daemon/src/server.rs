@@ -8,12 +8,20 @@ use tokio::task::JoinSet;
 
 use crate::handler::handle_connection;
 
-pub const HASH_SEED: u64 = 42;
+pub(crate) const HASH_SEED: u64 = 42;
 
 /// Paired engine + config replaced atomically on SIGHUP.
 pub struct EngineState {
     pub engine: FilterEngine,
     pub config: EngineConfig,
+}
+
+impl EngineState {
+    /// Build an `EngineState` from a config, using the crate-internal hash seed.
+    pub fn new(config: EngineConfig) -> Self {
+        let engine = FilterEngine::build_from_files(&config, HASH_SEED);
+        Self { engine, config }
+    }
 }
 
 /// Removes the Unix socket file when dropped so the filesystem is always
@@ -133,11 +141,7 @@ pub async fn sighup_reload_task(state: Arc<ArcSwap<EngineState>>, config_file: S
         let path = config_file.clone();
         let result = tokio::task::spawn_blocking(move || {
             let new_cfg = EngineConfig::load(Path::new(&path)).map_err(|e| e.to_string())?;
-            let new_engine = FilterEngine::build_from_files(&new_cfg, HASH_SEED);
-            Ok::<EngineState, String>(EngineState {
-                engine: new_engine,
-                config: new_cfg,
-            })
+            Ok::<EngineState, String>(EngineState::new(new_cfg))
         })
         .await;
 

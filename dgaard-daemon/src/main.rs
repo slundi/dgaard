@@ -4,9 +4,9 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use dgaard_daemon::config::DaemonConfig;
 use dgaard_daemon::server::{
-    EngineState, HASH_SEED, bind_listener, run_accept_loop, shutdown_signal, sighup_reload_task,
+    EngineState, bind_listener, run_accept_loop, shutdown_signal, sighup_reload_task,
 };
-use dgaard_engine::{Config as EngineConfig, FilterEngine};
+use dgaard_engine::Config as EngineConfig;
 
 /// dgaard-daemon — Unix socket domain scoring daemon.
 ///
@@ -79,10 +79,7 @@ async fn main() {
             EngineConfig::default()
         });
 
-    let state = Arc::new(ArcSwap::from_pointee(EngineState {
-        engine: FilterEngine::build_from_files(&engine_config, HASH_SEED),
-        config: engine_config,
-    }));
+    let state = Arc::new(ArcSwap::from_pointee(EngineState::new(engine_config)));
 
     let (listener, _socket_guard) = bind_listener(&daemon_cfg.socket_path).unwrap_or_else(|e| {
         log::error!("Failed to bind {}: {e}", daemon_cfg.socket_path);
