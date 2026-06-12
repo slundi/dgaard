@@ -86,7 +86,12 @@ pub fn format_reason(reason: &BlockReason) -> String {
 /// IO errors are logged with `log::warn!` and the connection is dropped.
 pub async fn handle_connection(stream: UnixStream, state: Arc<ArcSwap<EngineState>>) {
     let (reader, mut writer) = stream.into_split();
-    let mut buf_reader = BufReader::new(reader.take(MAX_DOMAIN_LEN as u64 + 2));
+    // 512 is generous enough to capture any oversized input so the explicit
+    // `> MAX_DOMAIN_LEN` check below is the sole length gate after trim().
+    // A tight limit here interacts badly with trailing whitespace: e.g. a
+    // 253-byte domain + '\r' (no '\n') would be trimmed back to 253 bytes
+    // and silently pass a take(255) adapter.
+    let mut buf_reader = BufReader::new(reader.take(512));
     let mut line = String::new();
 
     match buf_reader.read_line(&mut line).await {

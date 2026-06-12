@@ -154,6 +154,44 @@ async fn oversized_domain_returns_error_json() {
     );
 }
 
+/// An oversized domain sent without a newline (EOF-terminated) must still be
+/// rejected by the explicit `> MAX_DOMAIN_LEN` check, not by the take limit.
+/// With the old take(255), a 254-byte domain + '\r' (total 255 bytes at the
+/// take cap) would be trimmed to 254 bytes and correctly rejected; but the
+/// take limit was doing part of the work. With take(512) the explicit check
+/// is the sole gate regardless of the line terminator present.
+#[tokio::test]
+async fn oversized_domain_without_newline_is_rejected() {
+    let dir = TempDir::new().unwrap();
+    let socket_path = dir.path().join("no_newline_oversized.sock");
+
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let server = tokio::spawn(serve_one(listener, make_state()));
+
+    // 254 bytes — one byte over the limit, no newline terminator.
+    // Split the socket so we can close the write half (sending EOF) while
+    // keeping the read half open to receive the server's response.
+    let oversized = format!("{}.com", "a".repeat(250));
+    assert_eq!(oversized.len(), 254);
+    let client = UnixStream::connect(&socket_path).await.unwrap();
+    let (rd, mut wr) = client.into_split();
+    wr.write_all(oversized.as_bytes()).await.unwrap();
+    drop(wr); // EOF signals end of input to the server's read_line
+
+    let mut reader = BufReader::new(rd);
+    let mut response = String::new();
+    reader.read_line(&mut response).await.unwrap();
+    server.await.unwrap();
+
+    let json: serde_json::Value =
+        serde_json::from_str(response.trim()).expect("response is valid JSON");
+    assert!(json.get("error").is_some(), "expected error field");
+    assert!(
+        json["error"].as_str().unwrap().contains("253"),
+        "error should mention the 253-byte limit"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // D3.1 — Graceful shutdown
 // ---------------------------------------------------------------------------
