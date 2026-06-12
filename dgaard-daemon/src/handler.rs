@@ -5,7 +5,7 @@ use dgaard_engine::{
     Action, BlockReason, Config as EngineConfig, FilterEngine, ResolveResult, resolve_with_score,
 };
 use serde::Serialize;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 /// Maximum domain length per RFC 1035.
@@ -89,7 +89,7 @@ pub async fn handle_connection(
     config: Arc<ArcSwap<EngineConfig>>,
 ) {
     let (reader, mut writer) = stream.into_split();
-    let mut buf_reader = BufReader::new(reader);
+    let mut buf_reader = BufReader::new(reader.take(MAX_DOMAIN_LEN as u64 + 2));
     let mut line = String::new();
 
     match buf_reader.read_line(&mut line).await {
