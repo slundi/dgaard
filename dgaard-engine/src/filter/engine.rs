@@ -10,6 +10,21 @@ use crate::{
     model::{DomainEntry, DomainEntryFlags},
 };
 
+/// Filesystem metadata captured when the GeoIP database was last mmap'd.
+///
+/// Stored so that the next reload can compare the current file state and warn
+/// when an in-place write (truncate + overwrite) was detected.  Rename-based
+/// replacement is safe; in-place writes cause SIGBUS → UB.
+#[derive(Debug, Clone)]
+pub struct GeoipFileMeta {
+    /// inode number of the mapped file.
+    pub ino: u64,
+    /// File size in bytes at open time.
+    pub size: u64,
+    /// Modification time (seconds since Unix epoch).
+    pub mtime: i64,
+}
+
 pub struct FilterEngine {
     // Exact match (WL & BL without wildcards)
     pub fast_map: HashMap<u64, u8>,
@@ -35,6 +50,10 @@ pub struct FilterEngine {
     pub geoip_reader: Option<maxminddb::Reader<maxminddb::Mmap>>,
     pub suspicious_country_codes: HashSet<String>,
     pub suspicious_country_score: u8,
+
+    /// Inode snapshot of the GeoIP database file taken at last open.
+    /// Used to detect in-place modifications before the next reload.
+    pub geoip_file_meta: Option<GeoipFileMeta>,
 
     /// User-defined custom flag domain lookups.
     /// Each entry is `(bit_index, suspicious_score, domain_hash_set)`.
@@ -103,6 +122,7 @@ impl FilterEngine {
             blocked_asn_v4: Vec::with_capacity(0),
             blocked_asn_v6: Vec::with_capacity(0),
             geoip_reader: None,
+            geoip_file_meta: None,
             suspicious_country_codes: HashSet::with_capacity(0),
             suspicious_country_score: 3,
             custom_flag_maps: Vec::with_capacity(0),
@@ -193,6 +213,7 @@ impl FilterEngine {
             blocked_asn_v4: Vec::new(),
             blocked_asn_v6: Vec::new(),
             geoip_reader: None,
+            geoip_file_meta: None,
             suspicious_country_codes: HashSet::new(),
             suspicious_country_score: 3,
             custom_flag_maps: Vec::new(),
@@ -287,11 +308,55 @@ impl FilterEngine {
             return;
         }
 
-        // SAFETY: mmap maps a read-only file; the file must not be truncated
-        // while the reader is alive. Dgaard owns the database path configuration
-        // and never modifies the MMDB file at runtime.
-        match unsafe { maxminddb::Reader::open_mmap(&geo.database_path) } {
+        let path = &geo.database_path;
+
+        // Compare the current on-disk metadata against the snapshot taken at
+        // the last open.  If the inode is unchanged but size or mtime differ,
+        // the file was modified in-place while the old mmap was live — SIGBUS
+        // is possible on any in-flight read that touches a page past the new
+        // EOF.  Emit an early warning so the operator can switch to rename-based
+        // updates before the next reload.
+        #[cfg(unix)]
+        if let (Some(prev), Ok(cur)) = (&self.geoip_file_meta, std::fs::metadata(path)) {
+            use std::os::unix::fs::MetadataExt;
+            if prev.ino == cur.ino() && (prev.size != cur.len() || prev.mtime != cur.mtime()) {
+                eprintln!(
+                    "Warning: GeoIP database '{}' was modified in-place (inode \
+                     unchanged, size/mtime changed). The previous mmap may be \
+                     corrupted — SIGBUS is possible under concurrent reads. \
+                     Use atomic rename-based updates: write to a sibling temp \
+                     file and `mv` it into place.",
+                    path
+                );
+            }
+        }
+
+        // SAFETY: opens the database file read-only via mmap.
+        //
+        // Rename-based replacement IS safe on Linux: `mv tmp.mmdb geoip.mmdb`
+        // is an atomic rename(2).  The mmap holds an open reference to the old
+        // inode; the path atomically points to the new file.  In-flight reads
+        // continue to see consistent data; the old inode is freed when the last
+        // reference drops.
+        //
+        // In-place writes (truncate then overwrite) are NOT safe: any access to
+        // a mmap'd page past the new EOF causes SIGBUS, which is undefined
+        // behaviour in Rust.  External updaters (e.g. `geoipupdate`) MUST use
+        // rename-based replacement.
+        match unsafe { maxminddb::Reader::open_mmap(path) } {
             Ok(reader) => {
+                // Snapshot inode + size + mtime so the next reload can detect
+                // an in-place write that happened while this reader was live.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    self.geoip_file_meta = std::fs::metadata(path).ok().map(|m| GeoipFileMeta {
+                        ino: m.ino(),
+                        size: m.len(),
+                        mtime: m.mtime(),
+                    });
+                }
+
                 self.geoip_reader = Some(reader);
                 self.suspicious_country_codes = geo
                     .suspicious_countries

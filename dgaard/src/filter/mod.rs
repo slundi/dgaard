@@ -216,6 +216,7 @@ async fn reload_lists_inner() {
         blocked_asn_v4: Vec::new(),
         blocked_asn_v6: Vec::new(),
         geoip_reader: None,
+        geoip_file_meta: None,
         suspicious_country_codes: std::collections::HashSet::new(),
         suspicious_country_score: 3,
         custom_flag_maps: Vec::new(),
