@@ -1,7 +1,11 @@
 use crate::CONFIG;
 use crate::model::StatBlockReason;
 use crate::stats::StatsReceiver;
+use lru::LruCache;
+use std::num::NonZeroUsize;
 use tokio::sync::watch;
+
+const DOMAIN_MAP_CAP: usize = 100_000;
 
 /// Stats collector task that receives events and handles logging/streaming.
 ///
@@ -15,8 +19,9 @@ pub(crate) async fn stats_collector_task(
 ) {
     use tokio::net::UnixStream;
 
-    // Track domain mappings for logging
-    let mut domain_map: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+    // Track domain mappings for logging; capped to avoid unbounded growth.
+    let mut domain_map: LruCache<u64, String> =
+        LruCache::new(NonZeroUsize::new(DOMAIN_MAP_CAP).unwrap());
 
     // Connected socket clients
     let mut clients: Vec<UnixStream> = Vec::new();
@@ -113,14 +118,14 @@ pub(crate) fn setup_unix_socket(path: &str) -> std::io::Result<tokio::net::UnixL
 /// Send all current domain mappings to a newly connected client.
 pub(crate) async fn send_domain_mappings_to_client(
     clients: &mut Vec<tokio::net::UnixStream>,
-    domain_map: &std::collections::HashMap<u64, String>,
+    domain_map: &LruCache<u64, String>,
     mut new_client: tokio::net::UnixStream,
 ) {
     use crate::model::StatMessage;
     use tokio::io::AsyncWriteExt;
 
     // Send all known domain mappings to the new client
-    for (&hash, domain) in domain_map {
+    for (&hash, domain) in domain_map.iter() {
         let msg = StatMessage::DomainMapping {
             hash,
             domain: domain.clone(),
@@ -138,7 +143,7 @@ pub(crate) async fn send_domain_mappings_to_client(
 /// Process a single stat message: log to stdout and stream to connected clients.
 pub(crate) async fn process_stat_message(
     msg: &crate::model::StatMessage,
-    domain_map: &mut std::collections::HashMap<u64, String>,
+    domain_map: &mut LruCache<u64, String>,
     clients: &mut Vec<tokio::net::UnixStream>,
 ) {
     use crate::model::{StatAction, StatMessage};
@@ -146,7 +151,7 @@ pub(crate) async fn process_stat_message(
 
     match msg {
         StatMessage::DomainMapping { hash, domain } => {
-            domain_map.insert(*hash, domain.clone());
+            domain_map.put(*hash, domain.clone());
         }
         StatMessage::Event(event) => {
             // Get domain name from mapping (or use hash as fallback)
@@ -379,9 +384,13 @@ mod tests {
 
     // ── process_stat_message ─────────────────────────────────────────────────
 
+    fn test_map() -> LruCache<u64, String> {
+        LruCache::new(NonZeroUsize::new(1_000).unwrap())
+    }
+
     #[tokio::test]
     async fn process_domain_mapping_populates_map() {
-        let mut domain_map = std::collections::HashMap::new();
+        let mut domain_map = test_map();
         let mut clients = Vec::new();
 
         let msg = StatMessage::DomainMapping {
@@ -396,8 +405,8 @@ mod tests {
 
     #[tokio::test]
     async fn process_event_uses_domain_map_for_lookup() {
-        let mut domain_map = std::collections::HashMap::new();
-        domain_map.insert(99u64, "blocked.example".to_string());
+        let mut domain_map = test_map();
+        domain_map.put(99u64, "blocked.example".to_string());
         let mut clients = Vec::new();
 
         let event = StatEvent {
@@ -415,7 +424,7 @@ mod tests {
 
     #[tokio::test]
     async fn process_event_unknown_domain_does_not_panic() {
-        let mut domain_map = std::collections::HashMap::new();
+        let mut domain_map = test_map();
         let mut clients = Vec::new();
 
         let event = StatEvent {
@@ -425,6 +434,30 @@ mod tests {
             action: StatAction::Allowed,
         };
         process_stat_message(&StatMessage::Event(event), &mut domain_map, &mut clients).await;
+    }
+
+    #[tokio::test]
+    async fn domain_map_evicts_oldest_when_full() {
+        let cap = 4usize;
+        let mut domain_map: LruCache<u64, String> = LruCache::new(NonZeroUsize::new(cap).unwrap());
+        let mut clients = Vec::new();
+
+        for i in 0..=(cap as u64) {
+            let msg = StatMessage::DomainMapping {
+                hash: i,
+                domain: format!("d{i}.example"),
+            };
+            process_stat_message(&msg, &mut domain_map, &mut clients).await;
+        }
+
+        assert_eq!(domain_map.len(), cap, "map must not exceed capacity");
+        // hash 0 was inserted first and never accessed — must have been evicted
+        assert!(
+            domain_map.peek(&0).is_none(),
+            "oldest entry should be evicted"
+        );
+        // most-recently inserted entry must still be present
+        assert!(domain_map.peek(&(cap as u64)).is_some());
     }
 
     // ── setup_unix_socket ─────────────────────────────────────────────────────
