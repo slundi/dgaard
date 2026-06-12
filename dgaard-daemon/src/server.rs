@@ -10,6 +10,12 @@ use crate::handler::handle_connection;
 
 pub const HASH_SEED: u64 = 42;
 
+/// Paired engine + config replaced atomically on SIGHUP.
+pub struct EngineState {
+    pub engine: FilterEngine,
+    pub config: EngineConfig,
+}
+
 /// Bind the Unix socket, removing any stale file first, then restrict
 /// permissions to owner-only (`0o600`).
 pub fn bind_listener(socket_path: &str) -> std::io::Result<UnixListener> {
@@ -43,12 +49,11 @@ pub async fn shutdown_signal() {
 /// Accept loop.  Runs until `shutdown` resolves, then drains in-flight tasks.
 ///
 /// Each accepted connection is handled in its own `tokio::spawn` task.
-/// `engine` and `config` are `ArcSwap`-wrapped so SIGHUP reloads are
-/// visible to connections accepted after the swap.
+/// `state` is `ArcSwap`-wrapped so SIGHUP reloads are visible to connections
+/// accepted after the swap, and engine + config are always loaded as a pair.
 pub async fn run_accept_loop<F>(
     listener: UnixListener,
-    engine: Arc<ArcSwap<FilterEngine>>,
-    config: Arc<ArcSwap<EngineConfig>>,
+    state: Arc<ArcSwap<EngineState>>,
     shutdown: F,
 ) where
     F: std::future::Future<Output = ()>,
@@ -69,10 +74,9 @@ pub async fn run_accept_loop<F>(
             result = listener.accept() => {
                 match result {
                     Ok((stream, _addr)) => {
-                        let engine = Arc::clone(&engine);
-                        let config = Arc::clone(&config);
+                        let state = Arc::clone(&state);
                         tasks.spawn(async move {
-                            handle_connection(stream, engine, config).await;
+                            handle_connection(stream, state).await;
                         });
                     }
                     Err(e) => {
@@ -94,11 +98,10 @@ pub async fn run_accept_loop<F>(
 ///
 /// If the config file cannot be read or parsed, the current engine is kept
 /// and a warning is logged — the daemon never crashes on a bad reload.
-pub async fn sighup_reload_task(
-    engine: Arc<ArcSwap<FilterEngine>>,
-    config: Arc<ArcSwap<EngineConfig>>,
-    config_file: String,
-) {
+///
+/// Engine and config are replaced together in a single `ArcSwap::store` so
+/// connection handlers always see a matched pair; there is no torn-read window.
+pub async fn sighup_reload_task(state: Arc<ArcSwap<EngineState>>, config_file: String) {
     use tokio::signal::unix::{SignalKind, signal};
 
     let mut sighup = match signal(SignalKind::hangup()) {
@@ -114,8 +117,10 @@ pub async fn sighup_reload_task(
         match EngineConfig::load(Path::new(&config_file)) {
             Ok(new_cfg) => {
                 let new_engine = FilterEngine::build_from_files(&new_cfg, HASH_SEED);
-                config.store(Arc::new(new_cfg));
-                engine.store(Arc::new(new_engine));
+                state.store(Arc::new(EngineState {
+                    engine: new_engine,
+                    config: new_cfg,
+                }));
                 log::info!("SIGHUP: engine reloaded");
             }
             Err(e) => {

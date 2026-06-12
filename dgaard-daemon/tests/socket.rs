@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use dgaard_daemon::handler::handle_connection;
-use dgaard_daemon::server::run_accept_loop;
+use dgaard_daemon::server::{EngineState, run_accept_loop};
 use dgaard_engine::{Config, FilterEngine};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -19,17 +19,20 @@ const FLAG_BLOCKLIST: u8 = 0b0000_0000;
 /// `DomainEntryFlags::WHITELIST.bits()`.
 const FLAG_WHITELIST: u8 = 0b0000_0001;
 
-/// Build a `FilterEngine` (seed 0) with `domain` inserted in the fast_map
-/// under the given `flags`.  All other engine fields are empty.
-fn engine_with_domain(domain: &str, flags: u8) -> Arc<ArcSwap<FilterEngine>> {
-    let seed = 0u64; // FilterEngine::empty() uses seed 0
+/// Build a state (seed 0) with `domain` inserted in the fast_map under the
+/// given `flags`.  All other engine fields are empty.
+fn state_with_domain(domain: &str, flags: u8) -> Arc<ArcSwap<EngineState>> {
+    let seed = 0u64;
     let hash = twox_hash::XxHash64::oneshot(seed, domain.as_bytes());
     let mut fast_map = HashMap::new();
     fast_map.insert(hash, flags);
-    Arc::new(ArcSwap::from_pointee(FilterEngine {
-        fast_map,
-        seed,
-        ..FilterEngine::empty()
+    Arc::new(ArcSwap::from_pointee(EngineState {
+        engine: FilterEngine {
+            fast_map,
+            seed,
+            ..FilterEngine::empty()
+        },
+        config: Config::default(),
     }))
 }
 
@@ -37,22 +40,17 @@ fn engine_with_domain(domain: &str, flags: u8) -> Arc<ArcSwap<FilterEngine>> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn make_engine() -> Arc<ArcSwap<FilterEngine>> {
-    Arc::new(ArcSwap::from_pointee(FilterEngine::empty()))
-}
-
-fn make_config() -> Arc<ArcSwap<Config>> {
-    Arc::new(ArcSwap::from_pointee(Config::default()))
+fn make_state() -> Arc<ArcSwap<EngineState>> {
+    Arc::new(ArcSwap::from_pointee(EngineState {
+        engine: FilterEngine::empty(),
+        config: Config::default(),
+    }))
 }
 
 /// Serve exactly one connection on `listener` then return.
-async fn serve_one(
-    listener: UnixListener,
-    engine: Arc<ArcSwap<FilterEngine>>,
-    config: Arc<ArcSwap<Config>>,
-) {
+async fn serve_one(listener: UnixListener, state: Arc<ArcSwap<EngineState>>) {
     let (stream, _) = listener.accept().await.unwrap();
-    handle_connection(stream, engine, config).await;
+    handle_connection(stream, state).await;
 }
 
 /// Connect to the socket, send `domain\n`, read and parse the JSON response.
@@ -80,7 +78,7 @@ async fn clean_domain_is_proxied() {
     let socket_path = dir.path().join("clean.sock");
 
     let listener = UnixListener::bind(&socket_path).unwrap();
-    let server = tokio::spawn(serve_one(listener, make_engine(), make_config()));
+    let server = tokio::spawn(serve_one(listener, make_state()));
 
     let json = query(&socket_path, "google.com").await;
     server.await.unwrap();
@@ -97,7 +95,7 @@ async fn structurally_invalid_domain_is_blocked() {
     let socket_path = dir.path().join("blocked.sock");
 
     let listener = UnixListener::bind(&socket_path).unwrap();
-    let server = tokio::spawn(serve_one(listener, make_engine(), make_config()));
+    let server = tokio::spawn(serve_one(listener, make_state()));
 
     // 7 dots — exceeds the default max_subdomain_depth of 5
     let json = query(&socket_path, "a.b.c.d.e.f.g.example.com").await;
@@ -120,7 +118,7 @@ async fn empty_input_returns_error_json() {
     let socket_path = dir.path().join("empty.sock");
 
     let listener = UnixListener::bind(&socket_path).unwrap();
-    let server = tokio::spawn(serve_one(listener, make_engine(), make_config()));
+    let server = tokio::spawn(serve_one(listener, make_state()));
 
     let mut client = UnixStream::connect(&socket_path).await.unwrap();
     client.write_all(b"\n").await.unwrap();
@@ -142,7 +140,7 @@ async fn oversized_domain_returns_error_json() {
     let socket_path = dir.path().join("oversized.sock");
 
     let listener = UnixListener::bind(&socket_path).unwrap();
-    let server = tokio::spawn(serve_one(listener, make_engine(), make_config()));
+    let server = tokio::spawn(serve_one(listener, make_state()));
 
     // 254 bytes — one byte over the RFC 1035 limit of 253
     let oversized = format!("{}.com", "a".repeat(250));
@@ -165,21 +163,15 @@ async fn accept_loop_drains_in_flight_connections_on_shutdown() {
     let dir = TempDir::new().unwrap();
     let socket_path = dir.path().join("shutdown.sock");
 
-    let engine = make_engine();
-    let config = make_config();
+    let state = make_state();
     let listener = UnixListener::bind(&socket_path).unwrap();
 
     // Use a oneshot channel as the programmatic "shutdown signal"
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
-    let server = tokio::spawn(run_accept_loop(
-        listener,
-        Arc::clone(&engine),
-        Arc::clone(&config),
-        async move {
-            shutdown_rx.await.ok();
-        },
-    ));
+    let server = tokio::spawn(run_accept_loop(listener, Arc::clone(&state), async move {
+        shutdown_rx.await.ok();
+    }));
 
     // Send a query to create an in-flight connection, then signal shutdown
     let json = query(&socket_path, "example.com").await;
@@ -202,14 +194,9 @@ async fn accept_loop_stops_immediately_when_no_connections_pending() {
     let listener = UnixListener::bind(&socket_path).unwrap();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
-    let server = tokio::spawn(run_accept_loop(
-        listener,
-        make_engine(),
-        make_config(),
-        async move {
-            shutdown_rx.await.ok();
-        },
-    ));
+    let server = tokio::spawn(run_accept_loop(listener, make_state(), async move {
+        shutdown_rx.await.ok();
+    }));
 
     shutdown_tx.send(()).unwrap();
 
@@ -227,17 +214,12 @@ async fn accept_loop_stops_immediately_when_no_connections_pending() {
 async fn handle_connection_reflects_swapped_config() {
     let dir = TempDir::new().unwrap();
 
-    let engine = make_engine();
-    let config = make_config(); // default: max_subdomain_depth = 5
+    let state = make_state(); // default: max_subdomain_depth = 5
 
     // The deep domain (7 dots) should be blocked under default config
     let socket1 = dir.path().join("swap_before.sock");
     let listener1 = UnixListener::bind(&socket1).unwrap();
-    let server1 = tokio::spawn(serve_one(
-        listener1,
-        Arc::clone(&engine),
-        Arc::clone(&config),
-    ));
+    let server1 = tokio::spawn(serve_one(listener1, Arc::clone(&state)));
 
     let json_before = query(&socket1, "a.b.c.d.e.f.g.example.com").await;
     server1.await.unwrap();
@@ -246,19 +228,18 @@ async fn handle_connection_reflects_swapped_config() {
         "should be blocked with default depth limit"
     );
 
-    // Atomically swap to a permissive config
+    // Atomically swap to a permissive config (engine stays the same)
     let mut permissive = Config::default();
     permissive.security.structure.max_subdomain_depth = 100;
-    config.store(Arc::new(permissive));
+    state.store(Arc::new(EngineState {
+        engine: FilterEngine::empty(),
+        config: permissive,
+    }));
 
     // The same domain should now be proxied
     let socket2 = dir.path().join("swap_after.sock");
     let listener2 = UnixListener::bind(&socket2).unwrap();
-    let server2 = tokio::spawn(serve_one(
-        listener2,
-        Arc::clone(&engine),
-        Arc::clone(&config),
-    ));
+    let server2 = tokio::spawn(serve_one(listener2, Arc::clone(&state)));
 
     let json_after = query(&socket2, "a.b.c.d.e.f.g.example.com").await;
     server2.await.unwrap();
@@ -280,10 +261,10 @@ async fn domain_on_static_blocklist_is_blocked_with_correct_reason() {
     let socket_path = dir.path().join("static_block.sock");
 
     const BLOCKED_DOMAIN: &str = "ads.tracker.com";
-    let engine = engine_with_domain(BLOCKED_DOMAIN, FLAG_BLOCKLIST);
+    let state = state_with_domain(BLOCKED_DOMAIN, FLAG_BLOCKLIST);
 
     let listener = UnixListener::bind(&socket_path).unwrap();
-    let server = tokio::spawn(serve_one(listener, engine, make_config()));
+    let server = tokio::spawn(serve_one(listener, state));
 
     let json = query(&socket_path, BLOCKED_DOMAIN).await;
     server.await.unwrap();
@@ -306,10 +287,10 @@ async fn domain_on_whitelist_is_allowed() {
     let socket_path = dir.path().join("whitelist.sock");
 
     const SAFE_DOMAIN: &str = "safe.example.com";
-    let engine = engine_with_domain(SAFE_DOMAIN, FLAG_WHITELIST);
+    let state = state_with_domain(SAFE_DOMAIN, FLAG_WHITELIST);
 
     let listener = UnixListener::bind(&socket_path).unwrap();
-    let server = tokio::spawn(serve_one(listener, engine, make_config()));
+    let server = tokio::spawn(serve_one(listener, state));
 
     let json = query(&socket_path, SAFE_DOMAIN).await;
     server.await.unwrap();
@@ -336,7 +317,7 @@ async fn response_json_always_contains_all_required_fields() {
     for (domain, label) in cases {
         let socket_path = dir.path().join(format!("fields_{label}.sock"));
         let listener = UnixListener::bind(&socket_path).unwrap();
-        let server = tokio::spawn(serve_one(listener, make_engine(), make_config()));
+        let server = tokio::spawn(serve_one(listener, make_state()));
 
         let json = query(&socket_path, domain).await;
         server.await.unwrap();

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use dgaard_daemon::config::DaemonConfig;
 use dgaard_daemon::server::{
-    HASH_SEED, bind_listener, run_accept_loop, shutdown_signal, sighup_reload_task,
+    EngineState, HASH_SEED, bind_listener, run_accept_loop, shutdown_signal, sighup_reload_task,
 };
 use dgaard_engine::{Config as EngineConfig, FilterEngine};
 
@@ -79,11 +79,10 @@ async fn main() {
             EngineConfig::default()
         });
 
-    let engine = Arc::new(ArcSwap::from_pointee(FilterEngine::build_from_files(
-        &engine_config,
-        HASH_SEED,
-    )));
-    let config = Arc::new(ArcSwap::from_pointee(engine_config));
+    let state = Arc::new(ArcSwap::from_pointee(EngineState {
+        engine: FilterEngine::build_from_files(&engine_config, HASH_SEED),
+        config: engine_config,
+    }));
 
     let listener = bind_listener(&daemon_cfg.socket_path).unwrap_or_else(|e| {
         log::error!("Failed to bind {}: {e}", daemon_cfg.socket_path);
@@ -96,12 +95,11 @@ async fn main() {
         daemon_cfg.socket_path
     );
 
-    // Reload engine atomically on SIGHUP
+    // Reload engine and config atomically on SIGHUP
     tokio::spawn(sighup_reload_task(
-        Arc::clone(&engine),
-        Arc::clone(&config),
+        Arc::clone(&state),
         daemon_cfg.config_file.clone(),
     ));
 
-    run_accept_loop(listener, engine, config, shutdown_signal()).await;
+    run_accept_loop(listener, state, shutdown_signal()).await;
 }

@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use dgaard_engine::{
-    Action, BlockReason, Config as EngineConfig, FilterEngine, ResolveResult, resolve_with_score,
-};
+use dgaard_engine::{Action, BlockReason, ResolveResult, resolve_with_score};
 use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+
+use crate::server::EngineState;
 
 /// Maximum domain length per RFC 1035.
 const MAX_DOMAIN_LEN: usize = 253;
@@ -78,16 +78,13 @@ pub fn format_reason(reason: &BlockReason) -> String {
 /// Input:  newline-terminated UTF-8 domain string (`"example.com\n"`)
 /// Output: newline-terminated JSON (`{"score":0,"blocked":false,"action":"ProxyToUpstream","reasons":[]}\n`)
 ///
-/// The engine and config are loaded from the `ArcSwap` at the start of the
-/// connection, so SIGHUP reloads are visible to new connections immediately.
+/// The engine and config are loaded atomically from the `ArcSwap` at the start
+/// of the connection, so SIGHUP reloads are visible to new connections
+/// immediately and engine + config are always a matched pair.
 ///
 /// Malformed input (empty or > 253 bytes) returns `{"error":"..."}`.
 /// IO errors are logged with `log::warn!` and the connection is dropped.
-pub async fn handle_connection(
-    stream: UnixStream,
-    engine: Arc<ArcSwap<FilterEngine>>,
-    config: Arc<ArcSwap<EngineConfig>>,
-) {
+pub async fn handle_connection(stream: UnixStream, state: Arc<ArcSwap<EngineState>>) {
     let (reader, mut writer) = stream.into_split();
     let mut buf_reader = BufReader::new(reader.take(MAX_DOMAIN_LEN as u64 + 2));
     let mut line = String::new();
@@ -108,11 +105,9 @@ pub async fn handle_connection(
     } else if domain.len() > MAX_DOMAIN_LEN {
         String::from(r#"{"error":"domain exceeds 253 bytes"}"#)
     } else {
-        // Load current engine and config snapshots for this connection.
-        // arc-swap ensures we see a consistent pair even during a reload.
-        let engine_guard = engine.load();
-        let config_guard = config.load();
-        let result = resolve_with_score(domain, &engine_guard, &config_guard);
+        // Single load gives a consistent engine+config pair across any concurrent reload.
+        let state_guard = state.load();
+        let result = resolve_with_score(domain, &state_guard.engine, &state_guard.config);
         match serde_json::to_string(&DomainResponse::from(result)) {
             Ok(json) => json,
             Err(e) => {
