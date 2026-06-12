@@ -33,8 +33,10 @@ impl Drop for SocketGuard {
 /// Returns the listener paired with a `SocketGuard` that removes the socket
 /// file when dropped.
 pub fn bind_listener(socket_path: &str) -> std::io::Result<(UnixListener, SocketGuard)> {
-    if Path::new(socket_path).exists() {
-        std::fs::remove_file(socket_path)?;
+    if let Err(e) = std::fs::remove_file(socket_path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(e);
     }
     let listener = UnixListener::bind(socket_path)?;
     std::fs::set_permissions(
