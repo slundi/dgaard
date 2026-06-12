@@ -164,15 +164,19 @@ pub async fn sighup_reload_task(state: Arc<ArcSwap<EngineState>>, config_file: S
 mod tests {
     use super::*;
 
-    fn temp_socket_path(tag: &str) -> String {
-        format!("/tmp/dgaard_daemon_test_{tag}_{}", std::process::id())
+    /// Returns a `(TempDir, socket_path)` pair.  The `TempDir` must be bound
+    /// for the duration of the test; dropping it removes the directory.
+    fn temp_socket(tag: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(format!("{tag}.sock"));
+        (dir, path.to_string_lossy().into_owned())
     }
 
     // ── SocketGuard ───────────────────────────────────────────────────────────
 
     #[test]
     fn socket_guard_removes_file_on_drop() {
-        let path = temp_socket_path("guard_drop");
+        let (_dir, path) = temp_socket("guard_drop");
         std::fs::write(&path, b"").unwrap();
         assert!(Path::new(&path).exists(), "file should exist before drop");
         drop(SocketGuard(path.clone()));
@@ -184,7 +188,7 @@ mod tests {
 
     #[test]
     fn socket_guard_is_silent_when_file_already_gone() {
-        let path = temp_socket_path("guard_missing");
+        let (_dir, path) = temp_socket("guard_missing");
         // No file created — drop must not panic
         drop(SocketGuard(path));
     }
@@ -193,66 +197,48 @@ mod tests {
 
     #[tokio::test]
     async fn bind_listener_creates_socket_file() {
-        let path = temp_socket_path("create");
-        let _ = std::fs::remove_file(&path);
-
+        let (_dir, path) = temp_socket("create");
         let result = bind_listener(&path);
         assert!(result.is_ok(), "bind_listener should succeed: {result:?}");
-        assert!(
-            std::path::Path::new(&path).exists(),
-            "Socket file should exist"
-        );
-        let _ = std::fs::remove_file(&path);
+        assert!(Path::new(&path).exists(), "Socket file should exist");
     }
 
     #[tokio::test]
     async fn bind_listener_removes_stale_socket_file() {
-        let path = temp_socket_path("stale");
-        // Write a stale file at that path
+        let (_dir, path) = temp_socket("stale");
         std::fs::write(&path, b"stale socket").unwrap();
-
         let result = bind_listener(&path);
         assert!(
             result.is_ok(),
             "Should succeed after removing stale file: {result:?}"
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]
     async fn bind_listener_sets_owner_only_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
-        let path = temp_socket_path("perms");
-        let _ = std::fs::remove_file(&path);
-
+        let (_dir, path) = temp_socket("perms");
         let result = bind_listener(&path);
         assert!(result.is_ok());
 
         let meta = std::fs::metadata(&path).expect("socket file should exist");
         let mode = meta.permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "Expected 0o600 permissions, got {mode:o}");
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]
     async fn bind_listener_twice_same_path_after_cleanup() {
-        let path = temp_socket_path("twice");
-        let _ = std::fs::remove_file(&path);
+        let (_dir, path) = temp_socket("twice");
 
-        // First bind
         let first = bind_listener(&path);
         assert!(first.is_ok());
-        drop(first);
-        let _ = std::fs::remove_file(&path);
+        drop(first); // SocketGuard removes the socket file
 
-        // Second bind should also succeed
         let second = bind_listener(&path);
         assert!(
             second.is_ok(),
             "Second bind after cleanup should succeed: {second:?}"
         );
-        let _ = std::fs::remove_file(&path);
     }
 }
