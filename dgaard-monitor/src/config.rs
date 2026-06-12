@@ -295,10 +295,7 @@ fn get_bool(table: &toml_span::value::Table<'_>, key: &str) -> Result<Option<boo
     }
 }
 
-fn get_integer(
-    table: &toml_span::value::Table<'_>,
-    key: &str,
-) -> Result<Option<i64>, ConfigError> {
+fn get_integer(table: &toml_span::value::Table<'_>, key: &str) -> Result<Option<i64>, ConfigError> {
     match table.get(key) {
         Some(v) => match v.as_ref() {
             ValueInner::Integer(i) => Ok(Some(*i)),

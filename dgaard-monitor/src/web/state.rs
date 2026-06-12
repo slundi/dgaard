@@ -100,8 +100,7 @@ impl WebState {
             let bucket_ts = (record.timestamp / BUCKET_SECS) * BUCKET_SECS;
             let idx = (record.timestamp / BUCKET_SECS) as usize % BUCKET_COUNT;
             let is_blocked = record.action == "Blocked";
-            let is_suspicious =
-                matches!(record.action.as_str(), "Suspicious" | "HighlySuspicious");
+            let is_suspicious = matches!(record.action.as_str(), "Suspicious" | "HighlySuspicious");
             let mut tl = self.timeline.lock().await;
             if tl[idx].ts != bucket_ts {
                 tl[idx] = TimelineBucket {
@@ -235,8 +234,12 @@ mod tests {
     #[tokio::test]
     async fn push_event_counts_suspicious_actions() {
         let state = WebState::new(make_app(), 100);
-        state.push_event(make_record_action(300, "Suspicious")).await;
-        state.push_event(make_record_action(300, "HighlySuspicious")).await;
+        state
+            .push_event(make_record_action(300, "Suspicious"))
+            .await;
+        state
+            .push_event(make_record_action(300, "HighlySuspicious"))
+            .await;
         let tl = state.timeline.lock().await;
         let idx = (300u64 / BUCKET_SECS) as usize % BUCKET_COUNT;
         assert_eq!(tl[idx].total, 2);
@@ -251,7 +254,9 @@ mod tests {
         state.push_event(make_record(300)).await;
         // 288 buckets later lands on the same slot but different ts
         let new_ts = 300 + (BUCKET_COUNT as u64 * BUCKET_SECS);
-        state.push_event(make_record_action(new_ts, "Blocked")).await;
+        state
+            .push_event(make_record_action(new_ts, "Blocked"))
+            .await;
         let tl = state.timeline.lock().await;
         let new_bucket_ts = (new_ts / BUCKET_SECS) * BUCKET_SECS;
         let idx = (new_ts / BUCKET_SECS) as usize % BUCKET_COUNT;
@@ -267,7 +272,9 @@ mod tests {
         // All three timestamps fall in the same 5-min bucket (0–299)
         state.push_event(make_record(0)).await;
         state.push_event(make_record_action(1, "Blocked")).await;
-        state.push_event(make_record_action(299, "Suspicious")).await;
+        state
+            .push_event(make_record_action(299, "Suspicious"))
+            .await;
         let tl = state.timeline.lock().await;
         let idx = 0; // ts=0 → bucket_ts=0, idx=0
         assert_eq!(tl[idx].ts, 0);

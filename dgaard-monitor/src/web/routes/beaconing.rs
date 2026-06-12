@@ -45,10 +45,9 @@ pub async fn beaconing_handler(
 
     let groups = if let Some(db) = web.db.as_ref() {
         let db2 = std::sync::Arc::clone(db);
-        let rows_result = tokio::task::spawn_blocking(move || {
-            db2.query_beaconing_timestamps(min_obs as i64)
-        })
-        .await;
+        let rows_result =
+            tokio::task::spawn_blocking(move || db2.query_beaconing_timestamps(min_obs as i64))
+                .await;
 
         match rows_result {
             Ok(Ok(rows)) => groups_from_db_rows(rows),
@@ -138,14 +137,12 @@ fn detect(
             continue;
         }
 
-        let variance = intervals.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
-            / intervals.len() as f64;
+        let variance =
+            intervals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / intervals.len() as f64;
         let cov = variance.sqrt() / mean;
 
         if cov < cov_threshold {
-            let domain = data
-                .domain
-                .unwrap_or_else(|| format!("#{}", domain_hash));
+            let domain = data.domain.unwrap_or_else(|| format!("#{}", domain_hash));
 
             results.push(BeaconEntry {
                 client: client_ip,
@@ -228,10 +225,13 @@ mod tests {
         let mut groups = HashMap::new();
         // 10 events at exactly 300-second intervals.
         let ts: Vec<u64> = (0..10).map(|i| 1_700_000_000 + i * 300).collect();
-        groups.insert(("10.0.0.1".to_string(), "aabbccdd".to_string()), PairData {
-            timestamps: ts,
-            domain: Some("evil.com".to_string()),
-        });
+        groups.insert(
+            ("10.0.0.1".to_string(), "aabbccdd".to_string()),
+            PairData {
+                timestamps: ts,
+                domain: Some("evil.com".to_string()),
+            },
+        );
         let results = detect(groups, 5, 0.15);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].client, "10.0.0.1");
@@ -243,10 +243,13 @@ mod tests {
     fn noisy_pair_is_not_detected() {
         let mut groups = HashMap::new();
         let ts: Vec<u64> = vec![100, 600, 602, 1500, 1501, 3000, 3001, 8000, 8001, 9000];
-        groups.insert(("10.0.0.2".to_string(), "deadbeef".to_string()), PairData {
-            timestamps: ts,
-            domain: Some("noisy.com".to_string()),
-        });
+        groups.insert(
+            ("10.0.0.2".to_string(), "deadbeef".to_string()),
+            PairData {
+                timestamps: ts,
+                domain: Some("noisy.com".to_string()),
+            },
+        );
         let results = detect(groups, 5, 0.15);
         assert!(results.is_empty());
     }
@@ -255,10 +258,13 @@ mod tests {
     fn below_min_obs_is_skipped() {
         let mut groups = HashMap::new();
         let ts: Vec<u64> = (0..4).map(|i| 1_000 + i * 300).collect(); // 4 < min_obs=5
-        groups.insert(("10.0.0.3".to_string(), "12345678".to_string()), PairData {
-            timestamps: ts,
-            domain: None,
-        });
+        groups.insert(
+            ("10.0.0.3".to_string(), "12345678".to_string()),
+            PairData {
+                timestamps: ts,
+                domain: None,
+            },
+        );
         let results = detect(groups, 5, 0.15);
         assert!(results.is_empty());
     }
@@ -268,10 +274,13 @@ mod tests {
         let mut groups = HashMap::new();
         // All events at the same timestamp → mean interval = 0 < MIN_MEAN_INTERVAL_SECS.
         let ts: Vec<u64> = vec![1_000_000u64; 10];
-        groups.insert(("10.0.0.4".to_string(), "00000000".to_string()), PairData {
-            timestamps: ts,
-            domain: None,
-        });
+        groups.insert(
+            ("10.0.0.4".to_string(), "00000000".to_string()),
+            PairData {
+                timestamps: ts,
+                domain: None,
+            },
+        );
         let results = detect(groups, 5, 0.30);
         assert!(results.is_empty());
     }
@@ -281,18 +290,22 @@ mod tests {
         let mut groups = HashMap::new();
         // Pair A: CoV = 0.0 (perfect)
         let ts_a: Vec<u64> = (0..10).map(|i| 1_000_000 + i * 60).collect();
-        groups.insert(("a".to_string(), "aaaa".to_string()), PairData {
-            timestamps: ts_a,
-            domain: Some("a.com".to_string()),
-        });
+        groups.insert(
+            ("a".to_string(), "aaaa".to_string()),
+            PairData {
+                timestamps: ts_a,
+                domain: Some("a.com".to_string()),
+            },
+        );
         // Pair B: slight jitter CoV ~0.05
-        let ts_b = vec![
-            0u64, 59, 121, 180, 239, 301, 360, 420, 479, 541,
-        ];
-        groups.insert(("b".to_string(), "bbbb".to_string()), PairData {
-            timestamps: ts_b,
-            domain: Some("b.com".to_string()),
-        });
+        let ts_b = vec![0u64, 59, 121, 180, 239, 301, 360, 420, 479, 541];
+        groups.insert(
+            ("b".to_string(), "bbbb".to_string()),
+            PairData {
+                timestamps: ts_b,
+                domain: Some("b.com".to_string()),
+            },
+        );
         let results = detect(groups, 5, 0.15);
         assert_eq!(results.len(), 2);
         assert!(results[0].cov <= results[1].cov);
@@ -302,10 +315,13 @@ mod tests {
     fn unknown_domain_falls_back_to_hash() {
         let mut groups = HashMap::new();
         let ts: Vec<u64> = (0..10).map(|i| i * 300).collect();
-        groups.insert(("10.0.0.5".to_string(), "deadbeef12345678".to_string()), PairData {
-            timestamps: ts,
-            domain: None,
-        });
+        groups.insert(
+            ("10.0.0.5".to_string(), "deadbeef12345678".to_string()),
+            PairData {
+                timestamps: ts,
+                domain: None,
+            },
+        );
         let results = detect(groups, 5, 0.15);
         assert_eq!(results.len(), 1);
         assert!(results[0].domain.starts_with('#'));
@@ -320,7 +336,10 @@ mod tests {
 
         let Json(beacons) = beaconing_handler(
             State(Arc::clone(&web)),
-            Query(BeaconingParams { min_obs: None, cov: None }),
+            Query(BeaconingParams {
+                min_obs: None,
+                cov: None,
+            }),
         )
         .await;
 
@@ -337,7 +356,10 @@ mod tests {
 
         let Json(beacons) = beaconing_handler(
             State(web),
-            Query(BeaconingParams { min_obs: None, cov: None }),
+            Query(BeaconingParams {
+                min_obs: None,
+                cov: None,
+            }),
         )
         .await;
         assert!(beacons.is_empty());
@@ -352,7 +374,10 @@ mod tests {
         // With default min_obs=5: not detected.
         let Json(default_result) = beaconing_handler(
             State(Arc::clone(&web)),
-            Query(BeaconingParams { min_obs: None, cov: None }),
+            Query(BeaconingParams {
+                min_obs: None,
+                cov: None,
+            }),
         )
         .await;
         assert!(default_result.is_empty());
@@ -360,7 +385,10 @@ mod tests {
         // With min_obs=2 override: detected (3 >= 2).
         let Json(override_result) = beaconing_handler(
             State(web),
-            Query(BeaconingParams { min_obs: Some(2), cov: None }),
+            Query(BeaconingParams {
+                min_obs: Some(2),
+                cov: None,
+            }),
         )
         .await;
         assert_eq!(override_result.len(), 1);
@@ -371,7 +399,10 @@ mod tests {
         let web = make_web_state();
         let Json(beacons) = beaconing_handler(
             State(web),
-            Query(BeaconingParams { min_obs: None, cov: None }),
+            Query(BeaconingParams {
+                min_obs: None,
+                cov: None,
+            }),
         )
         .await;
         assert!(beacons.is_empty());

@@ -1,4 +1,8 @@
+use std::net::IpAddr;
+
 use hickory_resolver::proto::op::{Message, MessageType, ResponseCode};
+use hickory_resolver::proto::rr::rdata::{A, AAAA};
+use hickory_resolver::proto::rr::{RData, Record};
 
 pub struct DnsPacket {
     pub message: Message,
@@ -67,6 +71,30 @@ impl DnsPacket {
         response.metadata.message_type = MessageType::Response;
         response.metadata.response_code = ResponseCode::ServFail;
         response.metadata.recursion_available = true;
+
+        response.to_vec().unwrap_or_default()
+    }
+
+    /// Builds a synthesized DNS response containing the given IP address.
+    ///
+    /// Used for local-resolve / redirect actions so the engine never silently
+    /// falls through to upstream when it already has an answer.
+    pub fn build_ip_response(query_msg: &Message, ip: IpAddr) -> Vec<u8> {
+        let mut response = query_msg.clone();
+        response.metadata.message_type = MessageType::Response;
+        response.metadata.response_code = ResponseCode::NoError;
+        response.metadata.recursion_available = true;
+        response.metadata.authoritative = true;
+
+        if let Some(query) = query_msg.queries.first() {
+            let name = query.name().clone();
+            let rdata = match ip {
+                IpAddr::V4(v4) => RData::A(A(v4)),
+                IpAddr::V6(v6) => RData::AAAA(AAAA(v6)),
+            };
+            let record = Record::from_rdata(name, 300, rdata);
+            response.add_answer(record);
+        }
 
         response.to_vec().unwrap_or_default()
     }
@@ -168,5 +196,45 @@ mod tests {
         let response_msg = Message::from_vec(&response).unwrap();
         assert_eq!(response_msg.metadata.message_type, MessageType::Response);
         assert_eq!(response_msg.metadata.response_code, ResponseCode::ServFail);
+    }
+
+    #[test]
+    fn test_build_ip_response_ipv4() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let packet = [
+            0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
+            b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00,
+            0x01,
+        ];
+
+        let dns_packet = DnsPacket::from_bytes(&packet).unwrap();
+        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+        let response = DnsPacket::build_ip_response(&dns_packet.message, ip);
+
+        let response_msg = Message::from_vec(&response).unwrap();
+        assert_eq!(response_msg.metadata.message_type, MessageType::Response);
+        assert_eq!(response_msg.metadata.response_code, ResponseCode::NoError);
+        assert_eq!(response_msg.answers.len(), 1);
+    }
+
+    #[test]
+    fn test_build_ip_response_ipv6() {
+        use std::net::{IpAddr, Ipv6Addr};
+
+        let packet = [
+            0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
+            b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x1c, 0x00,
+            0x01,
+        ];
+
+        let dns_packet = DnsPacket::from_bytes(&packet).unwrap();
+        let ip = IpAddr::V6(Ipv6Addr::new(0x20, 0x01, 0, 0, 0, 0, 0, 1));
+        let response = DnsPacket::build_ip_response(&dns_packet.message, ip);
+
+        let response_msg = Message::from_vec(&response).unwrap();
+        assert_eq!(response_msg.metadata.message_type, MessageType::Response);
+        assert_eq!(response_msg.metadata.response_code, ResponseCode::NoError);
+        assert_eq!(response_msg.answers.len(), 1);
     }
 }

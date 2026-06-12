@@ -99,27 +99,21 @@ impl StatMessage {
                         if payload.len() < 37 {
                             return None;
                         }
-                        let reason = u32::from_le_bytes(
-                            payload[33..37].try_into().ok()?,
-                        );
+                        let reason = u32::from_le_bytes(payload[33..37].try_into().ok()?);
                         StatAction::Blocked(StatBlockReason::from_bits_retain(reason))
                     }
                     3 => {
                         if payload.len() < 37 {
                             return None;
                         }
-                        let reason = u32::from_le_bytes(
-                            payload[33..37].try_into().ok()?,
-                        );
+                        let reason = u32::from_le_bytes(payload[33..37].try_into().ok()?);
                         StatAction::Suspicious(StatBlockReason::from_bits_retain(reason))
                     }
                     4 => {
                         if payload.len() < 37 {
                             return None;
                         }
-                        let reason = u32::from_le_bytes(
-                            payload[33..37].try_into().ok()?,
-                        );
+                        let reason = u32::from_le_bytes(payload[33..37].try_into().ok()?);
                         StatAction::HighlySuspicious(StatBlockReason::from_bits_retain(reason))
                     }
                     _ => return None,

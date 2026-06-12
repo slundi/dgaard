@@ -201,22 +201,18 @@ pub(crate) async fn handle_query(
                 None, // Don't log drops
             )
         }
-        Action::LocalResolve(_ip) | Action::Respond(_ip) | Action::Redirect(_ip) => {
-            STATS_COUNTERS.increment_proxied();
-            // TODO: Build response with the provided IP address
-            // For now, proxy to upstream as fallback
-            let resp = match forward_to_upstream(&packet).await {
-                Ok(upstream_response) => upstream_response,
-                Err(_) => DnsPacket::build_servfail_response(&dns_packet.message),
-            };
-            (resp, Some(StatAction::Proxied))
-        }
-        Action::InternalRedirect(_) => {
-            STATS_COUNTERS.increment_blocked();
-            // TODO: Implement internal redirect logic
+        Action::LocalResolve(ip) | Action::Respond(ip) => {
+            STATS_COUNTERS.increment_allowed();
             (
-                DnsPacket::build_nxdomain_response(&dns_packet.message),
-                None,
+                DnsPacket::build_ip_response(&dns_packet.message, *ip),
+                Some(StatAction::Allowed),
+            )
+        }
+        Action::Redirect(ip) | Action::InternalRedirect(ip) => {
+            STATS_COUNTERS.increment_proxied();
+            (
+                DnsPacket::build_ip_response(&dns_packet.message, *ip),
+                Some(StatAction::Proxied),
             )
         }
     };

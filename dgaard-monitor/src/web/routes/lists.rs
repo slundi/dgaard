@@ -138,9 +138,14 @@ mod tests {
     #[tokio::test]
     async fn returns_all_entries() {
         let web = make_web_state().await;
-        let Json(entries) =
-            lists_handler(State(web), Query(ListsParams { search: None, list_type: None }))
-                .await;
+        let Json(entries) = lists_handler(
+            State(web),
+            Query(ListsParams {
+                search: None,
+                list_type: None,
+            }),
+        )
+        .await;
         assert_eq!(entries.len(), 4);
     }
 
@@ -207,9 +212,14 @@ mod tests {
     #[tokio::test]
     async fn default_sort_is_type_then_domain() {
         let web = make_web_state().await;
-        let Json(entries) =
-            lists_handler(State(web), Query(ListsParams { search: None, list_type: None }))
-                .await;
+        let Json(entries) = lists_handler(
+            State(web),
+            Query(ListsParams {
+                search: None,
+                list_type: None,
+            }),
+        )
+        .await;
         // Alphabetical type order: blocked < tld < whitelist < wildcard
         let types: Vec<&str> = entries.iter().map(|e| e.entry_type).collect();
         let mut sorted = types.clone();
@@ -221,9 +231,14 @@ mod tests {
     async fn empty_domain_map_returns_empty() {
         let app = Arc::new(AppState::new(Duration::from_secs(3600)));
         let web = Arc::new(WebState::new(app, 100));
-        let Json(entries) =
-            lists_handler(State(web), Query(ListsParams { search: None, list_type: None }))
-                .await;
+        let Json(entries) = lists_handler(
+            State(web),
+            Query(ListsParams {
+                search: None,
+                list_type: None,
+            }),
+        )
+        .await;
         assert!(entries.is_empty());
     }
 

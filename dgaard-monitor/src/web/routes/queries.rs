@@ -65,7 +65,7 @@ pub async fn queries_handler(
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(json!({"error": "persistence not configured"})),
                 )
-                    .into_response()
+                    .into_response();
             }
         };
 

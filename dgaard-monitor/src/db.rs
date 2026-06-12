@@ -409,7 +409,10 @@ mod tests {
         }
         let rows = db.query_range(100, 300, None, None, 100, 0).unwrap();
         assert_eq!(rows.len(), 3);
-        assert!(rows.iter().all(|r| r.timestamp >= 100 && r.timestamp <= 300));
+        assert!(
+            rows.iter()
+                .all(|r| r.timestamp >= 100 && r.timestamp <= 300)
+        );
     }
 
     #[test]
@@ -421,7 +424,14 @@ mod tests {
         ])
         .unwrap();
         let rows = db
-            .query_range(0, i64::MAX as u64, Some("10.0.0.1".to_string()), None, 100, 0)
+            .query_range(
+                0,
+                i64::MAX as u64,
+                Some("10.0.0.1".to_string()),
+                None,
+                100,
+                0,
+            )
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].client_ip, "10.0.0.1");
@@ -436,7 +446,14 @@ mod tests {
         ])
         .unwrap();
         let rows = db
-            .query_range(0, i64::MAX as u64, None, Some("blocked".to_string()), 100, 0)
+            .query_range(
+                0,
+                i64::MAX as u64,
+                None,
+                Some("blocked".to_string()),
+                100,
+                0,
+            )
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].action, "Blocked");
@@ -450,7 +467,9 @@ mod tests {
                 .unwrap();
         }
         // DESC order: 500, 400, 300, 200, 100; skip 1, take 2 → 400, 300
-        let rows = db.query_range(0, i64::MAX as u64, None, None, 2, 1).unwrap();
+        let rows = db
+            .query_range(0, i64::MAX as u64, None, None, 2, 1)
+            .unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].timestamp, 400);
         assert_eq!(rows[1].timestamp, 300);
@@ -460,12 +479,28 @@ mod tests {
     fn upsert_hourly_accumulates() {
         let db = Database::open_in_memory().unwrap();
         let mut acc = HashMap::new();
-        acc.insert((3600u64, "abc".to_string(), "10.0.0.1".to_string(), "Allowed".to_string()), 5u64);
+        acc.insert(
+            (
+                3600u64,
+                "abc".to_string(),
+                "10.0.0.1".to_string(),
+                "Allowed".to_string(),
+            ),
+            5u64,
+        );
         db.upsert_hourly(&acc).unwrap();
 
         // Upsert again — count should add up
         let mut acc2 = HashMap::new();
-        acc2.insert((3600u64, "abc".to_string(), "10.0.0.1".to_string(), "Allowed".to_string()), 3u64);
+        acc2.insert(
+            (
+                3600u64,
+                "abc".to_string(),
+                "10.0.0.1".to_string(),
+                "Allowed".to_string(),
+            ),
+            3u64,
+        );
         db.upsert_hourly(&acc2).unwrap();
 
         let conn = db.conn.lock().unwrap();
@@ -487,13 +522,18 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        db.insert_events(&[rec(1, "Allowed", "10.0.0.1"), rec(now, "Allowed", "10.0.0.1")])
-            .unwrap();
+        db.insert_events(&[
+            rec(1, "Allowed", "10.0.0.1"),
+            rec(now, "Allowed", "10.0.0.1"),
+        ])
+        .unwrap();
 
         // Retention is 72 h; ts=1 is ancient, ts=now is fresh
         db.prune_old().unwrap();
 
-        let rows = db.query_range(0, i64::MAX as u64, None, None, 100, 0).unwrap();
+        let rows = db
+            .query_range(0, i64::MAX as u64, None, None, 100, 0)
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].timestamp, now);
     }
