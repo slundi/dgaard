@@ -240,8 +240,14 @@ pub(crate) fn is_private_ipv4(ip: std::net::Ipv4Addr) -> bool {
 
 /// Check if an IPv6 address falls in a private or reserved range.
 pub(crate) fn is_private_ipv6(ip: std::net::Ipv6Addr) -> bool {
-    let [a, b, ..] = ip.octets();
-    ip.is_loopback() || (a & 0xFE == 0xFC) || (a == 0xFE && (b & 0xC0) == 0x80)
+    let s = ip.segments();
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_unique_local()
+        || ip.is_unicast_link_local()
+        || (s[0] == 0 && s[1] == 0 && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0xffff) // ::ffff:0:0/96 IPv4-mapped
+        || (s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0) // 64:ff9b::/96 NAT64
+        || s[0] == 0x2002 // 2002::/16 6to4
 }
 
 /// Extract the second-level domain (SLD) from a domain name.
@@ -354,6 +360,32 @@ mod tests {
     fn test_is_private_ipv6_unique_local() {
         assert!(is_private_ipv6("fc00::1".parse().unwrap()));
         assert!(is_private_ipv6("fd00::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ipv6_link_local() {
+        assert!(is_private_ipv6("fe80::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ipv6_unspecified() {
+        assert!(is_private_ipv6("::".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ipv6_ipv4_mapped() {
+        assert!(is_private_ipv6("::ffff:192.168.1.1".parse().unwrap()));
+        assert!(is_private_ipv6("::ffff:8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ipv6_nat64() {
+        assert!(is_private_ipv6("64:ff9b::8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ipv6_6to4() {
+        assert!(is_private_ipv6("2002:c000:204::1".parse().unwrap()));
     }
 
     #[test]
