@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "dgaard",
+  "version": "0.1.0",
+  "description": "Real-time domain threat scoring powered by your dgaard DNS security daemon",
+  "permissions": ["activeTab", "tabs", "storage"],
+  "host_permissions": [
+    "http://127.0.0.1:*/*",
+    "http://localhost:*/*",
+    "https://127.0.0.1:*/*",
+    "https://localhost:*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "dgaard threat score",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "dgaard@stamus-networks.com",
+      "strict_min_version": "109.0"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Shield body -->
+  <path d="M64 8 L112 28 L112 68 Q112 100 64 120 Q16 100 16 68 L16 28 Z"
+        fill="#1e3a5f"/>
+  <!-- Inner shield highlight -->
+  <path d="M64 16 L104 33 L104 68 Q104 94 64 112 Q24 94 24 68 L24 33 Z"
+        fill="#2a5298" opacity="0.5"/>
+  <!-- Dagaz rune (ᛞ) – two diagonal triangles meeting at centre -->
+  <line x1="40" y1="40" x2="88" y2="88" stroke="#e8f0fe" stroke-width="6" stroke-linecap="round"/>
+  <line x1="88" y1="40" x2="40" y2="88" stroke="#e8f0fe" stroke-width="6" stroke-linecap="round"/>
+  <line x1="40" y1="40" x2="40" y2="88" stroke="#e8f0fe" stroke-width="6" stroke-linecap="round"/>
+  <line x1="88" y1="40" x2="88" y2="88" stroke="#e8f0fe" stroke-width="6" stroke-linecap="round"/>
+</svg>

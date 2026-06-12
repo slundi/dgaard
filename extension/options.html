@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width">
+  <title>dgaard – Settings</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #f7f8fc;
+      --header-bg: #1e3a5f;
+      --text:      #2d3748;
+      --muted:     #718096;
+      --border:    #e2e8f0;
+      --input-bg:  #fff;
+      --safe:      #276749;
+      --safe-bg:   #c6f6d5;
+      --crit:      #c53030;
+      --crit-bg:   #fed7d7;
+      --accent:    #1e3a5f;
+      --radius:    6px;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 14px;
+      background: var(--bg);
+      color: var(--text);
+      min-width: 400px;
+      max-width: 560px;
+      margin: 0 auto;
+      padding: 0 0 40px;
+    }
+
+    header {
+      background: var(--header-bg);
+      color: #fff;
+      padding: 14px 20px;
+      margin-bottom: 24px;
+    }
+
+    header h1 {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+    }
+
+    header p {
+      font-size: 12px;
+      opacity: 0.65;
+      margin-top: 2px;
+    }
+
+    form { padding: 0 20px; }
+
+    .field {
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      font-weight: 600;
+      font-size: 13px;
+      margin-bottom: 5px;
+    }
+
+    .hint {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 4px;
+      line-height: 1.5;
+    }
+
+    input[type="text"],
+    input[type="url"],
+    input[type="password"] {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 13px;
+      background: var(--input-bg);
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input:focus { border-color: var(--accent); }
+
+    .row-buttons {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-top: 24px;
+    }
+
+    button {
+      padding: 8px 16px;
+      border-radius: var(--radius);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.85; }
+
+    #btn-save {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    #btn-test {
+      background: var(--border);
+      color: var(--text);
+    }
+
+    .status-msg {
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: var(--radius);
+    }
+    .status-msg.ok  { background: var(--safe-bg); color: var(--safe); }
+    .status-msg.err { background: var(--crit-bg); color: var(--crit); }
+
+    .warning-box {
+      background: #fffbeb;
+      border: 1px solid #f6e05e;
+      border-radius: var(--radius);
+      padding: 8px 12px;
+      font-size: 11px;
+      color: #744210;
+      margin-top: 6px;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>dgaard Settings</h1>
+    <p>Configure the connection to your dgaard-rest API</p>
+  </header>
+
+  <form id="settings-form" autocomplete="off">
+    <div class="field">
+      <label for="rest-url">dgaard-rest URL</label>
+      <input type="url" id="rest-url" placeholder="http://127.0.0.1:8080" spellcheck="false">
+      <p class="hint">
+        The base URL of your running <code>dgaard-rest</code> instance.
+        Defaults to <code>http://127.0.0.1:8080</code>.
+      </p>
+      <div class="warning-box" id="remote-warning" hidden>
+        Non-localhost URLs require an additional host permission. Add the origin to
+        <code>host_permissions</code> in <code>manifest.json</code> and reload the extension.
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="bearer-token">Bearer Token <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+      <input type="password" id="bearer-token" placeholder="Leave empty if no auth is configured" autocomplete="new-password">
+      <p class="hint">
+        Required when <code>dgaard-rest</code> is started with <code>--auth-token</code>.
+      </p>
+    </div>
+
+    <div class="field">
+      <label for="monitor-url">Monitor Dashboard URL <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+      <input type="url" id="monitor-url" placeholder="http://127.0.0.1:3000" spellcheck="false">
+      <p class="hint">
+        When set, the popup shows an "Open Monitor →" link to your dgaard-monitor instance.
+      </p>
+    </div>
+
+    <div class="row-buttons">
+      <button type="submit" id="btn-save">Save</button>
+      <button type="button" id="btn-test">Test connection</button>
+      <span class="status-msg" id="status-msg" hidden></span>
+    </div>
+  </form>
+
+  <script src="options.js"></script>
+</body>
+</html>
