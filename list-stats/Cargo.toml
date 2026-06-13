@@ -1,0 +1,29 @@
+[package]
+name = "list-stats"
+version = "0.1.0"
+edition = "2024"
+description = "Blocklist statistics: top TLDs, word frequencies, overlap matrix. Outputs JSON + CSV."
+
+[[bin]]
+name = "list-stats"
+path = "src/main.rs"
+
+[dependencies]
+argh.workspace = true
+dgaard-engine.workspace = true
+env_logger.workspace = true
+# HTTP download
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-rustls.workspace = true
+hyper-util.workspace = true
+log.workspace = true
+regex = { workspace = true }
+rustls.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+url.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

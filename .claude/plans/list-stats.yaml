@@ -1,0 +1,610 @@
+goal: "list-stats: Rust binary to compute blocklist statistics and export JSON + CSV + static HTML"
+checks:
+  - name: compile
+    command: "cargo build -p list-stats 2>&1"
+  - name: clippy
+    command: "cargo clippy -p list-stats -- -D warnings 2>&1"
+  - name: test
+    command: "cargo nextest run -p list-stats 2>&1"
+  - name: fmt
+    command: "cargo fmt --all -- --check 2>&1"
+steps:
+  - name: "Setup: workspace + README"
+    tasks:
+      - id: "1.1"
+        summary: "Translate list-stats/README.md to English and update with final design"
+        prompt: |
+          Translate /home/seb/workspace/dgaard/list-stats/README.md from French to English.
+          Replace the current content with an English version that describes the final design:
+
+          # list-stats
+
+          A standalone Rust binary that analyses DNS blocklists and produces:
+          - A JSON file with per-list, per-category and global statistics
+          - A CSV file (one row per domain entry) for ad-hoc analysis
+          - A static HTML page (ECharts) that reads the JSON file
+
+          ## Statistics computed
+
+          **Per list**
+          - Entry count (total, plain domains, wildcards, regexes)
+          - Top TLDs (last DNS label, e.g. `.com`)
+          - Tokenized word frequencies (split on `.` `-` `_`, skip single chars and TLD tokens)
+
+          **Global**
+          - Total entries, unique entries across all lists
+          - Top TLDs and top words aggregated
+          - Entry type breakdown (plain / wildcard / regex)
+
+          **Per category** (ads, privacy, malware, gambling, porn, fake-news, annoyances)
+          - Same as per-list, rolled up by category
+
+          **Overlap matrix**
+          - For every pair of lists: shared entry count and percentage relative to each list
+          - Useful for choosing a minimal non-redundant list set
+
+          ## Built-in sources
+
+          | Name | URL | Category |
+          |---|---|---|
+          | uBlock-ads | uBlockOrigin/uAssets filters/filters.txt | ads |
+          | uBlock-privacy | uBlockOrigin/uAssets filters/privacy.txt | privacy |
+          | uBlock-malware | uBlockOrigin/uAssets filters/badware.txt | malware |
+          | uBlock-cookies | uBlockOrigin/uAssets filters/annoyances-cookies.txt | annoyances |
+          | StevenBlack | StevenBlack/hosts hosts | ads |
+          | StevenBlack-fakenews | StevenBlack/hosts alternates/fakenews/hosts | fake-news |
+          | StevenBlack-gambling | StevenBlack/hosts alternates/gambling/hosts | gambling |
+          | StevenBlack-porn | StevenBlack/hosts alternates/porn/hosts | porn |
+          | oisd-big | big.oisd.nl/domainswild | ads |
+
+          ## Output JSON structure
+
+          ```json
+          {
+            "generated_at": "ISO-8601 timestamp",
+            "global": {
+              "total_entries": 0,
+              "unique_entries": 0,
+              "top_tlds": [{"tld": ".com", "count": 0}],
+              "top_words": [{"word": "ads", "count": 0}],
+              "entry_types": {"plain": 0, "wildcard": 0, "regex": 0}
+            },
+            "lists": [{
+              "name": "uBlock-ads",
+              "url": "...",
+              "category": "ads",
+              "count": 0,
+              "entry_types": {"plain": 0, "wildcard": 0, "regex": 0},
+              "top_tlds": [],
+              "top_words": []
+            }],
+            "categories": [{"name": "ads", "total": 0, "lists": []}],
+            "overlap_matrix": [{
+              "list_a": "uBlock-ads",
+              "list_b": "oisd-big",
+              "shared": 0,
+              "pct_a": 0.0,
+              "pct_b": 0.0
+            }]
+          }
+          ```
+
+          ## Usage
+
+          ```
+          list-stats [--output-dir <dir>] [--top <n>]
+          ```
+
+          Options:
+          - `--output-dir` Path for output files (default: `./output`)
+          - `--top` Number of top TLDs/words to keep per list (default: 20)
+        files:
+          - list-stats/README.md
+      - id: "1.2"
+        summary: "Create list-stats Cargo.toml and add crate to workspace"
+        prompt: |
+          Create the Cargo.toml for the new `list-stats` binary crate and register it in the workspace.
+
+          **1. Create /home/seb/workspace/dgaard/list-stats/Cargo.toml:**
+
+          ```toml
+          [package]
+          name = "list-stats"
+          version = "0.1.0"
+          edition = "2024"
+          description = "Blocklist statistics: top TLDs, word frequencies, overlap matrix. Outputs JSON + CSV."
+
+          [[bin]]
+          name = "list-stats"
+          path = "src/main.rs"
+
+          [dependencies]
+          dgaard-engine.workspace = true
+          argh.workspace = true
+          log.workspace = true
+          env_logger.workspace = true
+          serde = { workspace = true }
+          serde_json = { workspace = true }
+          # HTTP download
+          http-body-util.workspace = true
+          hyper.workspace = true
+          hyper-rustls.workspace = true
+          hyper-util.workspace = true
+          rustls.workspace = true
+          tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+          url.workspace = true
+
+          [dev-dependencies]
+          tempfile.workspace = true
+          ```
+
+          **2. Edit /home/seb/workspace/dgaard/Cargo.toml:**
+
+          Find the `members` array in `[workspace]` and add `"list-stats"` to it.
+          The current members are: `["adblockptimize", "dgaard", "dgaard-daemon", "dgaard-engine", "dgaard-monitor", "dgaard-rest"]`
+          Add `"list-stats"` to become: `["adblockptimize", "dgaard", "dgaard-daemon", "dgaard-engine", "dgaard-monitor", "dgaard-rest", "list-stats"]`
+
+          **3. Create a minimal /home/seb/workspace/dgaard/list-stats/src/main.rs** that just compiles:
+
+          ```rust
+          fn main() {}
+          ```
+
+          After making changes, run `cargo build -p list-stats` to confirm it compiles.
+        files:
+          - Cargo.toml
+  - name: "Core: models + source config"
+    tasks:
+      - id: "2.1"
+        summary: "Create source config and output data models"
+        prompt: |
+          Create two files in /home/seb/workspace/dgaard/list-stats/src/:
+
+          ---
+
+          **File: list-stats/src/config.rs**
+
+          Defines the built-in blocklist sources and the CLI options.
+
+          ```rust
+          /// A single blocklist source.
+          #[derive(Debug, Clone)]
+          pub struct Source {
+              pub name: &'static str,
+              pub url: &'static str,
+              pub category: &'static str,
+          }
+
+          /// All built-in sources, in order.
+          pub const SOURCES: &[Source] = &[
+              Source { name: "uBlock-ads",     url: "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt",            category: "ads" },
+              Source { name: "uBlock-privacy", url: "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/privacy.txt",            category: "privacy" },
+              Source { name: "uBlock-malware", url: "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/badware.txt",            category: "malware" },
+              Source { name: "uBlock-cookies", url: "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/annoyances-cookies.txt", category: "annoyances" },
+              Source { name: "StevenBlack",           url: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",                              category: "ads" },
+              Source { name: "StevenBlack-fakenews",  url: "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews/hosts",         category: "fake-news" },
+              Source { name: "StevenBlack-gambling",  url: "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling/hosts",         category: "gambling" },
+              Source { name: "StevenBlack-porn",      url: "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn/hosts",             category: "porn" },
+              Source { name: "oisd-big", url: "https://big.oisd.nl/domainswild", category: "ads" },
+          ];
+          ```
+
+          ---
+
+          **File: list-stats/src/model.rs**
+
+          Output data structures. All fields must be serializable with serde.
+          Use `#[derive(Debug, Clone, serde::Serialize)]` on every struct.
+
+          ```rust
+          use std::collections::HashMap;
+
+          #[derive(Debug, Clone, serde::Serialize)]
+          pub struct FreqEntry {
+              pub value: String,
+              pub count: usize,
+          }
+
+          #[derive(Debug, Clone, serde::Serialize)]
+          pub struct EntryTypes {
+              pub plain: usize,
+              pub wildcard: usize,
+              pub regex: usize,
+          }
+
+          #[derive(Debug, Clone, serde::Serialize)]
+          pub struct ListStats {
+              pub name: String,
+              pub url: String,
+              pub category: String,
+              pub count: usize,
+              pub entry_types: EntryTypes,
+              pub top_tlds: Vec<FreqEntry>,
+              pub top_words: Vec<FreqEntry>,
+          }
+
+          #[derive(Debug, Clone, serde::Serialize)]
+          pub struct CategoryStats {
+              pub name: String,
+              pub total: usize,
+              pub unique: usize,
+              pub lists: Vec<String>,
+          }
+
+          #[derive(Debug, Clone, serde::Serialize)]
+          pub struct OverlapEntry {
+              pub list_a: String,
+              pub list_b: String,
+              pub shared: usize,
+              pub pct_a: f32,
+              pub pct_b: f32,
+          }
+
+          #[derive(Debug, Clone, serde::Serialize)]
+          pub struct GlobalStats {
+              pub total_entries: usize,
+              pub unique_entries: usize,
+              pub top_tlds: Vec<FreqEntry>,
+              pub top_words: Vec<FreqEntry>,
+              pub entry_types: EntryTypes,
+          }
+
+          #[derive(Debug, Clone, serde::Serialize)]
+          pub struct Report {
+              pub generated_at: String,
+              pub global: GlobalStats,
+              pub lists: Vec<ListStats>,
+              pub categories: Vec<CategoryStats>,
+              pub overlap_matrix: Vec<OverlapEntry>,
+          }
+
+          /// Raw per-list data used internally before building the Report.
+          pub struct ListData {
+              pub name: String,
+              pub url: String,
+              pub category: String,
+              /// Hashes of plain domain entries (for overlap computation).
+              pub domain_hashes: std::collections::HashSet<u64>,
+              /// Plain domain strings.
+              pub domains: Vec<String>,
+              /// Number of wildcard entries.
+              pub wildcard_count: usize,
+              /// Number of regex entries.
+              pub regex_count: usize,
+          }
+          ```
+
+          These two files have no `main` — they are modules.
+          Do NOT add any serde_json imports here.
+        files:
+          - list-stats/src/main.rs
+  - name: "Core: fetch + stats computation"
+    tasks:
+      - id: "3.1"
+        summary: "HTTP fetch module: download a list from URL"
+        prompt: |
+          Create /home/seb/workspace/dgaard/list-stats/src/fetch.rs.
+
+          This module provides an async function to download list content from a URL.
+          It reuses the exact same HTTP client approach as adblockptimize/src/http.rs
+          (hyper + hyper-rustls + rustls).
+
+          ```rust
+          use http_body_util::{BodyExt, Empty};
+          use hyper::body::Bytes;
+          use hyper_util::{client::legacy::Client, rt::TokioExecutor};
+          use url::Url;
+
+          type HttpsClient = Client<
+              hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+              Empty<Bytes>,
+          >;
+
+          pub fn build_client() -> HttpsClient {
+              let _ = rustls::crypto::ring::default_provider().install_default();
+              let https = hyper_rustls::HttpsConnectorBuilder::new()
+                  .with_webpki_roots()
+                  .https_or_http()
+                  .enable_http1()
+                  .build();
+              Client::builder(TokioExecutor::new()).build(https)
+          }
+
+          pub async fn fetch(client: &HttpsClient, url: &str) -> anyhow::Result<String> {
+              // ... download and return body as String
+          }
+          ```
+
+          Use `Box<dyn std::error::Error + Send + Sync>` as the error type (no anyhow — that's not in the workspace).
+
+          The actual error type should be `Box<dyn std::error::Error + Send + Sync>`.
+
+          Write the full implementation:
+          - Parse the URL via `hyper::Uri`
+          - Build a GET request with User-Agent `list-stats/0.1`
+          - Check the HTTP status is 2xx (return an error string otherwise)
+          - Collect the body bytes and convert to UTF-8 (lossily)
+
+          Add a unit test `fetch_returns_error_on_bad_url` that checks that an obviously
+          invalid URI (e.g. `"not-a-url"`) produces an error.
+        files:
+          - list-stats/src/main.rs
+          - adblockptimize/src/http.rs
+      - id: "3.2"
+        summary: "Stats computation: per-list stats, global aggregation, overlap matrix"
+        prompt: |
+          Create /home/seb/workspace/dgaard/list-stats/src/stats.rs.
+
+          This module contains all the statistical analysis logic.
+          It uses `dgaard_engine::filter::load_list_content` (the public function that
+          parses a list string into fast_map / hierarchical_list / wildcard_patterns /
+          regex_pool / host_index / browser_rules).
+
+          ## parse_list_data
+
+          ```rust
+          pub fn parse_list_data(
+              name: &str,
+              url: &str,
+              category: &str,
+              content: &str,
+          ) -> crate::model::ListData
+          ```
+
+          Steps:
+          1. Call `dgaard_engine::filter::load_list_content(content, DomainEntryFlags::NONE, 42, &mut fast_map, &mut hierarchical_list, &mut wildcard_patterns, &mut regex_pool, &mut host_index, &mut browser_rules)`
+             - Use seed `42u64` (statistics don't need a secure seed)
+             - Create fresh, empty collections for each call
+          2. The plain domain strings are in `host_index` (HashMap<u64, String>)
+          3. Wildcard count = wildcard_patterns.len()
+          4. Regex count = regex_pool.len()
+          5. domain_hashes = host_index.keys().copied().collect()
+          6. domains = host_index.into_values().collect()
+
+          Return a `ListData` struct (defined in model.rs).
+
+          ## compute_list_stats
+
+          ```rust
+          pub fn compute_list_stats(data: &crate::model::ListData, top_n: usize) -> crate::model::ListStats
+          ```
+
+          Computes:
+          - `count` = data.domains.len() + data.wildcard_count + data.regex_count
+          - `entry_types` with the counts
+          - `top_tlds`: for each domain in data.domains, extract the TLD (last dot-separated label,
+            lowercased, prefixed with `.`). Count frequencies. Return the top `top_n` sorted by count desc.
+          - `top_words`: for each domain in data.domains, split on `.`, `-`, `_`.
+            Skip tokens that are 1 char or less and skip pure-TLD tokens (single label at the end).
+            Lowercase everything. Count frequencies. Return the top `top_n` sorted by count desc.
+            To avoid TLD tokens: when splitting a domain `sub.ads.example.co.uk`, include all tokens
+            except the last one.
+
+          ## compute_global_stats
+
+          ```rust
+          pub fn compute_global_stats(
+              all_data: &[crate::model::ListData],
+              top_n: usize,
+          ) -> crate::model::GlobalStats
+          ```
+
+          - total_entries = sum of (domains.len() + wildcard_count + regex_count) across all lists
+          - unique_entries = global HashSet<u64> of all domain_hashes, then .len()
+          - top_tlds / top_words: same logic as per-list but across all domains from all lists
+          - entry_types: summed
+
+          ## compute_categories
+
+          ```rust
+          pub fn compute_categories(
+              all_data: &[crate::model::ListData],
+          ) -> Vec<crate::model::CategoryStats>
+          ```
+
+          Group ListData by category, compute unique count per group using a HashSet of hashes.
+
+          ## compute_overlap_matrix
+
+          ```rust
+          pub fn compute_overlap_matrix(
+              all_data: &[crate::model::ListData],
+          ) -> Vec<crate::model::OverlapEntry>
+          ```
+
+          For every pair (i, j) where i < j:
+          - shared = |set_i ∩ set_j| (intersection of domain_hashes)
+          - pct_a = shared / set_i.len() * 100.0 (as f32, 0.0 if set_i is empty)
+          - pct_b = shared / set_j.len() * 100.0
+
+          Only emit pairs where shared > 0 to keep the output compact.
+
+          ## Tests
+
+          Write unit tests in the same file:
+          - `test_parse_list_data_plain` — parse 3 plain domains, check domains.len() == 3, wildcard == 0, regex == 0
+          - `test_parse_list_data_abp_wildcard` — parse `||*.ads.example.com^`, check wildcard_count == 1
+          - `test_top_tlds` — parse domains with .com and .net, verify .com appears first
+          - `test_top_words` — parse `ads.example.com\ntracking.example.net`, verify "ads", "example", "tracking" appear
+          - `test_overlap_matrix_same_list` — two lists with identical content, expect pct_a = pct_b = 100.0
+          - `test_overlap_matrix_disjoint` — two lists with no overlap, expect no OverlapEntry
+          - `test_global_unique` — same domain in 2 lists, unique_entries should be 1
+
+          Use the imports:
+          ```rust
+          use dgaard_engine::{
+              filter::{load_list_content, ListError},
+              model::{DomainEntry, DomainEntryFlags, RawDomainEntry},
+          };
+          use regex::Regex;
+          use std::collections::{HashMap, HashSet};
+          ```
+
+          Note: regex::Regex is needed because load_list_content expects &mut Vec<Regex>.
+          Add `regex` to the list-stats Cargo.toml dependencies (it's in workspace.dependencies).
+        files:
+          - list-stats/src/model.rs
+          - dgaard-engine/src/filter/mod.rs
+          - dgaard-engine/src/model/mod.rs
+  - name: "Output: JSON + CSV"
+    tasks:
+      - id: "4.1"
+        summary: "JSON and CSV output writers"
+        prompt: |
+          Create /home/seb/workspace/dgaard/list-stats/src/output.rs.
+
+          This module handles writing the final report to disk. It is the ONLY place in
+          the entire workspace where `serde_json` is used.
+
+          ## write_json
+
+          ```rust
+          pub fn write_json(report: &crate::model::Report, path: &std::path::Path) -> std::io::Result<()>
+          ```
+
+          - Serialize `report` using `serde_json::to_string_pretty`
+          - Write to the given path using `std::fs::write`
+
+          ## write_csv
+
+          ```rust
+          pub fn write_csv(
+              all_data: &[crate::model::ListData],
+              path: &std::path::Path,
+          ) -> std::io::Result<()>
+          ```
+
+          CSV format: one header row, then one row per plain domain entry.
+          Columns: `domain,tld,depth,category,list_name`
+
+          - `domain`: the domain string
+          - `tld`: last dot-separated label, lowercased, prefixed with `.`
+          - `depth`: number of dots in the domain (use `dgaard_engine::count_dots`)
+          - `category`: from ListData.category
+          - `list_name`: from ListData.name
+
+          Write using `std::io::BufWriter` for performance.
+          Each field that may contain commas must be quoted (wrap in `"`).
+
+          ## Tests
+
+          - `test_write_json_round_trip` — build a minimal Report, write to a tempfile, read back, check it contains `"generated_at"`
+          - `test_write_csv_header` — write CSV for one ListData with 2 domains, read back, check first line is the header
+          - `test_write_csv_rows` — same, check second line contains the domain
+        files:
+          - list-stats/src/model.rs
+  - name: "CLI + main wiring"
+    tasks:
+      - id: "5.1"
+        summary: "CLI arguments and main.rs: wire fetch + stats + output"
+        prompt: |
+          Rewrite /home/seb/workspace/dgaard/list-stats/src/main.rs.
+
+          Declare all modules:
+          ```rust
+          mod config;
+          mod fetch;
+          mod model;
+          mod output;
+          mod stats;
+          ```
+
+          **CLI (argh):**
+          ```rust
+          #[derive(argh::FromArgs)]
+          /// Compute blocklist statistics and write JSON + CSV output.
+          struct Args {
+              /// output directory (default: ./output)
+              #[argh(option, short = 'o', default = "String::from(\"output\")")]
+              output_dir: String,
+
+              /// number of top TLDs and words to keep per list (default: 20)
+              #[argh(option, short = 'n', default = "20usize")]
+              top: usize,
+          }
+          ```
+
+          **main() logic (async tokio):**
+          1. Parse args with `argh::from_env()`
+          2. `std::fs::create_dir_all(&args.output_dir)`
+          3. Build HTTP client with `fetch::build_client()`
+          4. For each source in `config::SOURCES`:
+             a. Log: `"Fetching {name} ({url})..."`
+             b. `fetch::fetch(&client, source.url).await?`
+             c. `stats::parse_list_data(source.name, source.url, source.category, &content)`
+             d. Collect into `Vec<model::ListData>`
+          5. Compute:
+             - `global = stats::compute_global_stats(&all_data, args.top)`
+             - `list_stats: Vec<_>` = for each data, `stats::compute_list_stats(data, args.top)`
+             - `categories = stats::compute_categories(&all_data)`
+             - `overlap = stats::compute_overlap_matrix(&all_data)`
+          6. Build `model::Report { generated_at, global, lists: list_stats, categories, overlap_matrix: overlap }`
+             - `generated_at` = current UTC time formatted as ISO-8601.
+               Use std only: `std::time::SystemTime::now().duration_since(UNIX_EPOCH)` formatted
+               manually as `"YYYY-MM-DDTHH:MM:SSZ"` — no chrono dependency needed.
+          7. Write output:
+             - `output::write_json(&report, &Path::new(&args.output_dir).join("stats.json"))`
+             - `output::write_csv(&all_data, &Path::new(&args.output_dir).join("stats.csv"))`
+          8. Print summary: total lists processed, unique domains, output dir.
+
+          Use `env_logger` initialized at the start of main with `env_logger::init()`.
+          Use `log::info!` / `log::warn!` / `log::error!` for all log output.
+
+          Error handling: use `Box<dyn std::error::Error>` as the return type of main
+          (`fn main() -> Result<(), Box<dyn std::error::Error>>`). Propagate errors with `?`.
+          On fetch error for a single list, log a warning and continue (don't abort).
+        files:
+          - list-stats/src/config.rs
+          - list-stats/src/model.rs
+          - list-stats/src/fetch.rs
+          - list-stats/src/stats.rs
+          - list-stats/src/output.rs
+  - name: "Frontend: static HTML"
+    tasks:
+      - id: "6.1"
+        summary: "Static HTML page with ECharts to visualize stats.json"
+        prompt: |
+          Create /home/seb/workspace/dgaard/list-stats/assets/index.html.
+
+          This is a standalone static HTML file that:
+          1. Loads `stats.json` via `fetch('stats.json')`
+          2. Renders the data using Apache ECharts (loaded from CDN:
+             `https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js`)
+
+          **Layout (single page, responsive):**
+
+          ```
+          ┌─────────────────────────────────────────────────────────┐
+          │  Blocklist Statistics       Generated: <date>            │
+          │  <total_entries> total  |  <unique_entries> unique       │
+          ├──────────────────┬──────────────────────────────────────┤
+          │  Top TLDs (bar)  │  Entry types (pie: plain/wc/regex)   │
+          ├──────────────────┴──────────────────────────────────────┤
+          │  Top words (horizontal bar)                             │
+          ├─────────────────────────────────────────────────────────┤
+          │  Overlap matrix (heatmap)                               │
+          ├─────────────────────────────────────────────────────────┤
+          │  Per-list table (filterable by category)                │
+          │  Columns: Name | Category | Total | Plain | Wildcard |  │
+          │           Regex | Top TLD                               │
+          └─────────────────────────────────────────────────────────┘
+          ```
+
+          **Implementation requirements:**
+          - Pure HTML + JS, no build step, no external CSS framework
+          - Use inline `<style>` for a clean dark theme (background #1a1a2e, accent #4fc3f7)
+          - ECharts loaded from CDN only (no local copy)
+          - Category filter: a row of buttons above the table, one per category + "All"
+          - Clicking a category button filters the per-list table to that category
+          - The 4 charts (TLD bar, entry-type pie, word bar, overlap heatmap) always show
+            global data (not filtered)
+          - If `stats.json` fails to load, show a clear error message: "Could not load
+            stats.json. Run list-stats in this directory first."
+          - Handle the case where overlap_matrix is empty (hide the heatmap section)
+          - The page must work when opened directly from the filesystem (`file://`)
+            — so fetch() will fail on some browsers. Add a note in the HTML: "Serve this
+            directory with a local HTTP server for full functionality.
+            Example: python3 -m http.server"
+
+          Use vanilla JS (no jQuery, no Alpine). Keep the file readable and well-structured.
+          Comments in English only.

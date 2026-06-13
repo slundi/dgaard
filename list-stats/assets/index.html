@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Blocklist Statistics</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #1a1a2e; color: #e0e0e0; font-family: 'Segoe UI', system-ui, sans-serif; padding: 24px; }
+    h1 { color: #4fc3f7; font-size: 1.8rem; margin-bottom: 4px; }
+    .subtitle { color: #aaa; font-size: 0.9rem; margin-bottom: 24px; }
+    .card { background: #16213e; border-radius: 8px; padding: 20px; margin-bottom: 24px; }
+    .summary { display: flex; gap: 32px; flex-wrap: wrap; margin-bottom: 24px; }
+    .stat-box { background: #16213e; border-radius: 8px; padding: 16px 24px; text-align: center; }
+    .stat-box .value { font-size: 2rem; font-weight: bold; color: #4fc3f7; }
+    .stat-box .label { font-size: 0.8rem; color: #aaa; margin-top: 4px; }
+    .charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
+    .chart-container { background: #16213e; border-radius: 8px; padding: 16px; }
+    .chart-container h3 { color: #4fc3f7; margin-bottom: 12px; font-size: 1rem; }
+    .chart { height: 320px; }
+    .filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+    .filter-btn { background: #16213e; border: 1px solid #4fc3f7; color: #e0e0e0; padding: 6px 16px; border-radius: 20px; cursor: pointer; font-size: 0.85rem; transition: background 0.2s; }
+    .filter-btn.active, .filter-btn:hover { background: #4fc3f7; color: #1a1a2e; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th { background: #0f3460; color: #4fc3f7; text-align: left; padding: 10px 12px; }
+    td { padding: 8px 12px; border-bottom: 1px solid #0f3460; }
+    tr:hover td { background: #0f3460; }
+    .tag { display: inline-block; background: #0f3460; border-radius: 4px; padding: 2px 8px; font-size: 0.75rem; color: #4fc3f7; }
+    .error { background: #2d1b1b; border: 1px solid #f44; border-radius: 8px; padding: 24px; color: #f88; }
+    .error code { background: #111; padding: 4px 8px; border-radius: 4px; font-size: 0.9rem; }
+    section h2 { color: #4fc3f7; font-size: 1.2rem; margin-bottom: 16px; }
+    @media (max-width: 768px) { .charts-row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <h1>Blocklist Statistics</h1>
+  <div class="subtitle" id="subtitle">Loading...</div>
+
+  <div id="app" style="display:none">
+    <div class="summary" id="summary"></div>
+
+    <section>
+      <div class="charts-row">
+        <div class="chart-container">
+          <h3>Top TLDs</h3>
+          <div class="chart" id="chart-tlds"></div>
+        </div>
+        <div class="chart-container">
+          <h3>Entry Types</h3>
+          <div class="chart" id="chart-types"></div>
+        </div>
+      </div>
+      <div class="chart-container" style="margin-bottom:24px">
+        <h3>Top Words</h3>
+        <div class="chart" id="chart-words" style="height:360px"></div>
+      </div>
+    </section>
+
+    <section id="section-overlap" style="display:none; margin-bottom:24px">
+      <h2>Overlap Matrix</h2>
+      <div class="chart-container">
+        <div class="chart" id="chart-overlap" style="height:500px"></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Lists</h2>
+      <div class="filters" id="filters"></div>
+      <div class="card" style="padding:0; overflow:auto">
+        <table id="list-table">
+          <thead>
+            <tr>
+              <th>Name</th><th>Category</th><th>Total</th>
+              <th>Plain</th><th>Wildcard</th><th>Regex</th><th>Top TLD</th>
+            </tr>
+          </thead>
+          <tbody id="list-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <div id="error-box" style="display:none" class="error">
+    <strong>Could not load stats.json.</strong> Run <code>list-stats</code> in this directory first.<br><br>
+    Serve this directory with a local HTTP server for full functionality.<br>
+    Example: <code>python3 -m http.server</code>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <script>
+    const ACCENT = '#4fc3f7';
+    const BG = '#16213e';
+    const charts = [];
+
+    function initChart(id) {
+      const c = echarts.init(document.getElementById(id), null, { renderer: 'canvas' });
+      charts.push(c);
+      return c;
+    }
+
+    function renderTlds(data) {
+      const c = initChart('chart-tlds');
+      const vals = data.global.top_tlds.slice(0, 15);
+      c.setOption({
+        backgroundColor: BG,
+        tooltip: { trigger: 'axis' },
+        grid: { left: 60, right: 20, top: 10, bottom: 30 },
+        xAxis: { type: 'value', axisLabel: { color: '#aaa' }, splitLine: { lineStyle: { color: '#0f3460' } } },
+        yAxis: { type: 'category', data: vals.map(e => e.value).reverse(), axisLabel: { color: '#e0e0e0' } },
+        series: [{ type: 'bar', data: vals.map(e => e.count).reverse(), itemStyle: { color: ACCENT } }]
+      });
+    }
+
+    function renderTypes(data) {
+      const c = initChart('chart-types');
+      const t = data.global.entry_types;
+      c.setOption({
+        backgroundColor: BG,
+        tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+        legend: { bottom: 0, textStyle: { color: '#e0e0e0' } },
+        series: [{
+          type: 'pie', radius: ['40%', '70%'], center: ['50%', '45%'],
+          data: [
+            { value: t.plain, name: 'Plain', itemStyle: { color: ACCENT } },
+            { value: t.wildcard, name: 'Wildcard', itemStyle: { color: '#81d4fa' } },
+            { value: t.regex, name: 'Regex', itemStyle: { color: '#0288d1' } },
+          ].filter(d => d.value > 0),
+          label: { color: '#e0e0e0' }
+        }]
+      });
+    }
+
+    function renderWords(data) {
+      const c = initChart('chart-words');
+      const vals = data.global.top_words.slice(0, 20);
+      c.setOption({
+        backgroundColor: BG,
+        tooltip: { trigger: 'axis' },
+        grid: { left: 80, right: 20, top: 10, bottom: 30 },
+        xAxis: { type: 'value', axisLabel: { color: '#aaa' }, splitLine: { lineStyle: { color: '#0f3460' } } },
+        yAxis: { type: 'category', data: vals.map(e => e.value).reverse(), axisLabel: { color: '#e0e0e0' } },
+        series: [{ type: 'bar', data: vals.map(e => e.count).reverse(), itemStyle: { color: '#81d4fa' } }]
+      });
+    }
+
+    function renderOverlap(data) {
+      if (!data.overlap_matrix || data.overlap_matrix.length === 0) return;
+      document.getElementById('section-overlap').style.display = '';
+
+      // Collect unique list names
+      const names = [...new Set(data.overlap_matrix.flatMap(e => [e.list_a, e.list_b]))].sort();
+      const idx = Object.fromEntries(names.map((n, i) => [n, i]));
+
+      const heatData = data.overlap_matrix.map(e => [idx[e.list_b], idx[e.list_a], +e.pct_a.toFixed(1)]);
+
+      const c = initChart('chart-overlap');
+      c.setOption({
+        backgroundColor: BG,
+        tooltip: {
+          formatter: p => `${p.data[1] !== undefined ? names[p.data[1]] : ''} ∩ ${names[p.data[0]]}: ${p.data[2]}%`
+        },
+        grid: { left: 120, right: 100, top: 20, bottom: 120 },
+        xAxis: { type: 'category', data: names, axisLabel: { rotate: 45, color: '#e0e0e0', interval: 0 } },
+        yAxis: { type: 'category', data: names, axisLabel: { color: '#e0e0e0' } },
+        visualMap: { min: 0, max: 100, calculable: true, orient: 'vertical', right: 0, top: 'center', textStyle: { color: '#e0e0e0' }, inRange: { color: ['#16213e', '#4fc3f7'] } },
+        series: [{ type: 'heatmap', data: heatData, emphasis: { itemStyle: { shadowBlur: 10 } } }]
+      });
+    }
+
+    function renderTable(lists, activeCategory) {
+      const tbody = document.getElementById('list-tbody');
+      tbody.innerHTML = '';
+      for (const l of lists) {
+        if (activeCategory !== 'all' && l.category !== activeCategory) continue;
+        const topTld = l.top_tlds && l.top_tlds[0] ? l.top_tlds[0].value : '—';
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${l.name}</td>
+          <td><span class="tag">${l.category}</span></td>
+          <td>${l.count.toLocaleString()}</td>
+          <td>${l.entry_types.plain.toLocaleString()}</td>
+          <td>${l.entry_types.wildcard.toLocaleString()}</td>
+          <td>${l.entry_types.regex.toLocaleString()}</td>
+          <td>${topTld}</td>`;
+        tbody.appendChild(tr);
+      }
+    }
+
+    function renderFilters(data) {
+      const cats = ['all', ...data.categories.map(c => c.name).sort()];
+      const div = document.getElementById('filters');
+      let active = 'all';
+      for (const cat of cats) {
+        const btn = document.createElement('button');
+        btn.className = 'filter-btn' + (cat === 'all' ? ' active' : '');
+        btn.textContent = cat === 'all' ? 'All' : cat;
+        btn.onclick = () => {
+          active = cat;
+          div.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          renderTable(data.lists, active);
+        };
+        div.appendChild(btn);
+      }
+      renderTable(data.lists, 'all');
+    }
+
+    async function main() {
+      try {
+        const res = await fetch('stats.json');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        document.getElementById('subtitle').textContent = `Generated: ${data.generated_at}`;
+        document.getElementById('app').style.display = '';
+
+        const summary = document.getElementById('summary');
+        summary.innerHTML = `
+          <div class="stat-box"><div class="value">${data.global.total_entries.toLocaleString()}</div><div class="label">Total entries</div></div>
+          <div class="stat-box"><div class="value">${data.global.unique_entries.toLocaleString()}</div><div class="label">Unique entries</div></div>
+          <div class="stat-box"><div class="value">${data.lists.length}</div><div class="label">Lists</div></div>
+          <div class="stat-box"><div class="value">${data.categories.length}</div><div class="label">Categories</div></div>`;
+
+        renderTlds(data);
+        renderTypes(data);
+        renderWords(data);
+        renderOverlap(data);
+        renderFilters(data);
+
+        window.addEventListener('resize', () => charts.forEach(c => c.resize()));
+      } catch (e) {
+        document.getElementById('subtitle').textContent = '';
+        document.getElementById('error-box').style.display = '';
+        console.error(e);
+      }
+    }
+
+    main();
+  </script>
+</body>
+</html>
