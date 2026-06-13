@@ -88,6 +88,7 @@
         packages.dgaard = mkCrate "dgaard";
         packages.dgaard-daemon = mkCrate "dgaard-daemon";
         packages.dgaard-monitor = mkCrate "dgaard-monitor";
+        packages.dgaard-rest = mkCrate "dgaard-rest";
         packages.default = self.packages.${system}.dgaard;
 
         # `nix run .#codium` — VSCodium with all extensions pre-installed
@@ -98,6 +99,7 @@
           dgaard-daemon-module = pkgs.callPackage ./nix/tests/dgaard-daemon.nix { };
           dgaard-monitor-module = pkgs.callPackage ./nix/tests/dgaard-monitor.nix { };
           dgaard-module = pkgs.callPackage ./nix/tests/dgaard.nix { };
+          dgaard-rest-module = pkgs.callPackage ./nix/tests/dgaard-rest.nix { };
         };
 
         devShells.default = pkgs.mkShell {
@@ -140,6 +142,7 @@
         dgaard = import ./nix/modules/dgaard.nix;
         dgaard-daemon = import ./nix/modules/dgaard-daemon.nix;
         dgaard-monitor = import ./nix/modules/dgaard-monitor.nix;
+        dgaard-rest = import ./nix/modules/dgaard-rest.nix;
       };
     };
 }
