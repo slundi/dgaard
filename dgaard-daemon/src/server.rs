@@ -35,23 +35,37 @@ impl Drop for SocketGuard {
     }
 }
 
-/// Bind the Unix socket, removing any stale file first, then restrict
-/// permissions to owner-only (`0o600`).
+/// Temporarily replace the process umask, returning the previous value.
 ///
-/// Returns the listener paired with a `SocketGuard` that removes the socket
-/// file when dropped.
+/// Callers must restore the old mask with a second call immediately after the
+/// syscall they are guarding, even on the error path.
+fn swap_umask(mask: u32) -> u32 {
+    unsafe extern "C" {
+        fn umask(cmask: u32) -> u32;
+    }
+    unsafe { umask(mask) }
+}
+
+/// Bind the Unix socket with owner-only permissions (`0o600`), applied
+/// atomically via umask so there is no window between `bind(2)` and a
+/// subsequent `chmod`/`set_permissions` call where the socket is accessible
+/// to other users.
+///
+/// Removes any stale socket file first. Returns the listener paired with a
+/// `SocketGuard` that removes the socket file when dropped.
 pub fn bind_listener(socket_path: &str) -> std::io::Result<(UnixListener, SocketGuard)> {
     if let Err(e) = std::fs::remove_file(socket_path)
         && e.kind() != std::io::ErrorKind::NotFound
     {
         return Err(e);
     }
-    let listener = UnixListener::bind(socket_path)?;
-    std::fs::set_permissions(
-        socket_path,
-        std::os::unix::fs::PermissionsExt::from_mode(0o600),
-    )?;
-    Ok((listener, SocketGuard(socket_path.to_owned())))
+
+    // 0o177 masks out all group/other bits: 0o777 & !0o177 == 0o600.
+    let old_mask = swap_umask(0o177);
+    let result = UnixListener::bind(socket_path);
+    swap_umask(old_mask);
+
+    Ok((result?, SocketGuard(socket_path.to_owned())))
 }
 
 /// Wait for SIGTERM or SIGINT, whichever arrives first.
@@ -162,7 +176,15 @@ pub async fn sighup_reload_task(state: Arc<ArcSwap<EngineState>>, config_file: S
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{LazyLock, Mutex};
+
     use super::*;
+
+    // `umask(2)` is process-wide, so tests that call `bind_listener` (which
+    // temporarily changes the umask) must not run concurrently with each other
+    // or with tests that create filesystem objects, since a wrong umask would
+    // strip the execute bit from freshly created directories.
+    static BIND_LOCK: LazyLock<Mutex<()>> = LazyLock::new(Mutex::default);
 
     /// Returns a `(TempDir, socket_path)` pair.  The `TempDir` must be bound
     /// for the duration of the test; dropping it removes the directory.
@@ -176,6 +198,7 @@ mod tests {
 
     #[test]
     fn socket_guard_removes_file_on_drop() {
+        let _lock = BIND_LOCK.lock().unwrap();
         let (_dir, path) = temp_socket("guard_drop");
         std::fs::write(&path, b"").unwrap();
         assert!(Path::new(&path).exists(), "file should exist before drop");
@@ -188,6 +211,7 @@ mod tests {
 
     #[test]
     fn socket_guard_is_silent_when_file_already_gone() {
+        let _lock = BIND_LOCK.lock().unwrap();
         let (_dir, path) = temp_socket("guard_missing");
         // No file created — drop must not panic
         drop(SocketGuard(path));
@@ -197,6 +221,7 @@ mod tests {
 
     #[tokio::test]
     async fn bind_listener_creates_socket_file() {
+        let _lock = BIND_LOCK.lock().unwrap();
         let (_dir, path) = temp_socket("create");
         let result = bind_listener(&path);
         assert!(result.is_ok(), "bind_listener should succeed: {result:?}");
@@ -205,6 +230,7 @@ mod tests {
 
     #[tokio::test]
     async fn bind_listener_removes_stale_socket_file() {
+        let _lock = BIND_LOCK.lock().unwrap();
         let (_dir, path) = temp_socket("stale");
         std::fs::write(&path, b"stale socket").unwrap();
         let result = bind_listener(&path);
@@ -216,6 +242,7 @@ mod tests {
 
     #[tokio::test]
     async fn bind_listener_sets_owner_only_permissions() {
+        let _lock = BIND_LOCK.lock().unwrap();
         use std::os::unix::fs::PermissionsExt;
 
         let (_dir, path) = temp_socket("perms");
@@ -229,6 +256,7 @@ mod tests {
 
     #[tokio::test]
     async fn bind_listener_twice_same_path_after_cleanup() {
+        let _lock = BIND_LOCK.lock().unwrap();
         let (_dir, path) = temp_socket("twice");
 
         let first = bind_listener(&path);
