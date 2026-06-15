@@ -175,12 +175,12 @@ pub mod tests {
 
         for domain in blocklist {
             let hash = twox_hash::XxHash64::oneshot(SEED, domain.as_bytes());
-            fast_map.insert(hash, DomainEntryFlags::NONE.bits());
+            fast_map.insert(hash, (DomainEntryFlags::NONE.bits(), (*domain).into()));
         }
 
         for domain in whitelist {
             let hash = twox_hash::XxHash64::oneshot(SEED, domain.as_bytes());
-            fast_map.insert(hash, DomainEntryFlags::WHITELIST.bits());
+            fast_map.insert(hash, (DomainEntryFlags::WHITELIST.bits(), (*domain).into()));
         }
 
         let mut hierarchical_list = Vec::new();

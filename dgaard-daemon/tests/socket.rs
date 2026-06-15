@@ -25,7 +25,7 @@ fn state_with_domain(domain: &str, flags: u8) -> Arc<ArcSwap<EngineState>> {
     let seed = 0u64;
     let hash = twox_hash::XxHash64::oneshot(seed, domain.as_bytes());
     let mut fast_map = HashMap::new();
-    fast_map.insert(hash, flags);
+    fast_map.insert(hash, (flags, domain.into()));
     Arc::new(ArcSwap::from_pointee(EngineState {
         engine: FilterEngine {
             fast_map,

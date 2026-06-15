@@ -21,7 +21,7 @@ pub fn load_list_file(
     path: &str,
     base_flags: DomainEntryFlags,
     seed: u64,
-    fast_map: &mut HashMap<u64, u8>,
+    fast_map: &mut HashMap<u64, (u8, Box<str>)>,
     hierarchical_list: &mut Vec<DomainEntry>,
     wildcard_patterns: &mut Vec<String>,
     regex_pool: &mut Vec<Regex>,
@@ -106,7 +106,7 @@ mod tests {
 
     #[allow(clippy::type_complexity)]
     fn make_collections() -> (
-        HashMap<u64, u8>,
+        HashMap<u64, (u8, Box<str>)>,
         Vec<DomainEntry>,
         Vec<String>,
         Vec<Regex>,

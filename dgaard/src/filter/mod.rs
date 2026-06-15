@@ -62,7 +62,7 @@ pub(crate) async fn load_source(
     base_flags: DomainEntryFlags,
     seed: u64,
     client: &HttpsClient,
-    fast_map: &mut HashMap<u64, u8>,
+    fast_map: &mut HashMap<u64, (u8, Box<str>)>,
     hierarchical_list: &mut Vec<DomainEntry>,
     wildcard_patterns: &mut Vec<String>,
     regex_pool: &mut Vec<Regex>,
@@ -140,7 +140,7 @@ async fn reload_lists_inner() {
     let seed = GLOBAL_SEED.load(Ordering::Relaxed);
     let sources = &cfg.sources;
 
-    let mut fast_map: HashMap<u64, u8> = HashMap::new();
+    let mut fast_map: HashMap<u64, (u8, Box<str>)> = HashMap::new();
     let mut hierarchical_list: Vec<DomainEntry> = Vec::new();
     let mut regex_pool: Vec<Regex> = Vec::new();
     let mut wildcard_patterns: Vec<String> = Vec::new();

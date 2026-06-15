@@ -65,11 +65,11 @@ pub mod tests {
         let mut fast_map = HashMap::new();
         for domain in blocklist {
             let hash = twox_hash::XxHash64::oneshot(42, domain.as_bytes());
-            fast_map.insert(hash, DomainEntryFlags::NONE.bits());
+            fast_map.insert(hash, (DomainEntryFlags::NONE.bits(), (*domain).into()));
         }
         for domain in whitelist {
             let hash = twox_hash::XxHash64::oneshot(42, domain.as_bytes());
-            fast_map.insert(hash, DomainEntryFlags::WHITELIST.bits());
+            fast_map.insert(hash, (DomainEntryFlags::WHITELIST.bits(), (*domain).into()));
         }
         let mut hierarchical_list: Vec<DomainEntry> = Vec::new();
         for domain in wildcards {

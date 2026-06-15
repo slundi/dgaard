@@ -19,7 +19,11 @@ use parser::{detect_format, parse_dnsmasq_line, parse_host_line, parse_plain_dom
 use crate::model::{DomainEntry, DomainEntryFlags, RawDomainEntry};
 
 /// Checks if a domain is already covered by a broader rule (lower depth).
-fn is_redundant(entry: &RawDomainEntry, fast_map: &HashMap<u64, u8>, seed: u64) -> bool {
+fn is_redundant(
+    entry: &RawDomainEntry,
+    fast_map: &HashMap<u64, (u8, Box<str>)>,
+    seed: u64,
+) -> bool {
     let domain = &entry.value;
 
     if entry.flags.contains(DomainEntryFlags::REGEX) {
@@ -55,7 +59,7 @@ pub(crate) fn process_line(
     line: &str,
     base_flags: DomainEntryFlags,
     seed: u64,
-    fast_map: &mut HashMap<u64, u8>,
+    fast_map: &mut HashMap<u64, (u8, Box<str>)>,
     hierarchical_list: &mut Vec<DomainEntry>,
     wildcard_patterns: &mut Vec<String>,
     regex_pool: &mut Vec<Regex>,
@@ -113,7 +117,23 @@ pub(crate) fn process_line(
                     data_idx,
                 });
             } else {
-                fast_map.insert(entry.hash, combined_flags.bits());
+                match fast_map.entry(entry.hash) {
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert((combined_flags.bits(), entry.value.as_str().into()));
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut slot) => {
+                        let (stored_flags, stored_domain) = slot.get_mut();
+                        if stored_domain.as_ref() == entry.value.as_str() {
+                            *stored_flags |= combined_flags.bits();
+                        } else {
+                            eprintln!(
+                                "Warning: hash collision between '{}' and '{}' (hash {:016x}); \
+                                 dropping new entry",
+                                stored_domain, entry.value, entry.hash
+                            );
+                        }
+                    }
+                }
                 host_index.insert(entry.hash, entry.value.clone());
 
                 hierarchical_list.push(DomainEntry {
@@ -154,7 +174,7 @@ pub fn load_list_content(
     content: &str,
     base_flags: DomainEntryFlags,
     seed: u64,
-    fast_map: &mut HashMap<u64, u8>,
+    fast_map: &mut HashMap<u64, (u8, Box<str>)>,
     hierarchical_list: &mut Vec<DomainEntry>,
     wildcard_patterns: &mut Vec<String>,
     regex_pool: &mut Vec<Regex>,
@@ -205,7 +225,7 @@ mod tests {
 
     #[allow(clippy::type_complexity)]
     fn make_collections() -> (
-        HashMap<u64, u8>,
+        HashMap<u64, (u8, Box<str>)>,
         Vec<DomainEntry>,
         Vec<String>,
         Vec<Regex>,
@@ -444,9 +464,9 @@ mod tests {
 
     #[test]
     fn test_is_redundant_parent_blocked() {
-        let mut fast_map = HashMap::new();
+        let mut fast_map: HashMap<u64, (u8, Box<str>)> = HashMap::new();
         let hash = twox_hash::XxHash64::oneshot(SEED, "example.com".as_bytes());
-        fast_map.insert(hash, DomainEntryFlags::NONE.bits());
+        fast_map.insert(hash, (DomainEntryFlags::NONE.bits(), "example.com".into()));
 
         let entry = RawDomainEntry {
             value: "sub.example.com".to_string(),
@@ -459,9 +479,9 @@ mod tests {
 
     #[test]
     fn test_is_redundant_not_redundant() {
-        let mut fast_map = HashMap::new();
+        let mut fast_map: HashMap<u64, (u8, Box<str>)> = HashMap::new();
         let hash = twox_hash::XxHash64::oneshot(SEED, "other.com".as_bytes());
-        fast_map.insert(hash, DomainEntryFlags::NONE.bits());
+        fast_map.insert(hash, (DomainEntryFlags::NONE.bits(), "other.com".into()));
 
         let entry = RawDomainEntry {
             value: "example.com".to_string(),

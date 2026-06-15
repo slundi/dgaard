@@ -27,7 +27,7 @@ pub struct GeoipFileMeta {
 
 pub struct FilterEngine {
     // Exact match (WL & BL without wildcards)
-    pub fast_map: HashMap<u64, u8>,
+    pub fast_map: HashMap<u64, (u8, Box<str>)>,
 
     // For TLD & Wildcards (sorted by depth then hash)
     pub hierarchical_list: Vec<DomainEntry>,
@@ -137,7 +137,7 @@ impl FilterEngine {
     pub fn build_from_files(config: &Config, seed: u64) -> Self {
         let sources = &config.sources;
 
-        let mut fast_map: HashMap<u64, u8> = HashMap::new();
+        let mut fast_map: HashMap<u64, (u8, Box<str>)> = HashMap::new();
         let mut hierarchical_list: Vec<DomainEntry> = Vec::new();
         let mut regex_pool: Vec<Regex> = Vec::new();
         let mut wildcard_patterns: Vec<String> = Vec::new();

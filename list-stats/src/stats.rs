@@ -13,7 +13,7 @@ use crate::model::{
 /// Parse raw list content into a ListData struct.
 pub fn parse_list_data(name: &str, url: &str, category: &str, content: &str) -> ListData {
     let seed = 42u64;
-    let mut fast_map: HashMap<u64, u8> = HashMap::new();
+    let mut fast_map: HashMap<u64, (u8, Box<str>)> = HashMap::new();
     let mut hierarchical_list: Vec<DomainEntry> = Vec::new();
     let mut wildcard_patterns: Vec<String> = Vec::new();
     let mut regex_pool: Vec<Regex> = Vec::new();

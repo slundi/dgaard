@@ -6,7 +6,13 @@ fn fast_lookup(domain: &str, filter: &FilterEngine) -> Option<DomainEntryFlags> 
     filter
         .fast_map
         .get(&hash)
-        .map(|&flags_bits| DomainEntryFlags::from_bits_truncate(flags_bits))
+        .and_then(|(flags_bits, stored_domain)| {
+            if stored_domain.as_ref() == domain {
+                Some(DomainEntryFlags::from_bits_truncate(*flags_bits))
+            } else {
+                None
+            }
+        })
 }
 
 /// Check if domain is whitelisted (exact match in fast_map with WHITELIST flag).
