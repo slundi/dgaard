@@ -248,8 +248,8 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
 
         println!("Dgaard listening on {} with {} workers", CONFIG.load().server.listen_addr, cpus);
 
-        // Wait for shutdown signal
-        tokio::signal::ctrl_c().await.expect("Failed to listen for ctrl_c");
+        // Wait for shutdown signal (SIGINT or SIGTERM).
+        wait_for_shutdown_signal().await;
         println!("\nShutdown signal received, waiting for {} active tasks...", guard.active_count());
         let _ = shutdown_tx.send(true);
 
@@ -265,6 +265,18 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
     })
 }
 
+/// Resolves when either SIGINT (Ctrl-C) or SIGTERM is received, whichever
+/// comes first.  Used by both the single-worker and multi-worker paths so that
+/// `systemd` unit stops (which send SIGTERM) go through the same graceful
+/// shutdown path as keyboard interrupts.
+async fn wait_for_shutdown_signal() {
+    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to bind SIGTERM handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = sigterm.recv() => {}
+    }
+}
+
 async fn worker_loop(
     tokio_socket: Arc<UdpSocket>,
     guard: &ShutdownGuard,
@@ -273,12 +285,19 @@ async fn worker_loop(
 ) {
     // Buffer for incoming DNS packets (DNS over UDP is typically 512 bytes,
     // but can be larger with EDNS0, so 4096 is a safe buffer size).
+    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to bind SIGTERM handler");
     let mut buf = [0u8; 4096];
     loop {
         tokio::select! {
             biased;
 
             _ = tokio::signal::ctrl_c() => {
+                println!("\nShutdown signal received, waiting for {} active tasks...", guard.active_count());
+                let _ = shutdown_tx.send(true);
+                break;
+            }
+
+            _ = sigterm.recv() => {
                 println!("\nShutdown signal received, waiting for {} active tasks...", guard.active_count());
                 let _ = shutdown_tx.send(true);
                 break;
