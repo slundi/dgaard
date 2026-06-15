@@ -1,11 +1,116 @@
 use std::borrow::Cow;
 use std::net::SocketAddr;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
+use tokio::sync::{Semaphore, SemaphorePermit};
 use tokio::time::timeout;
 
 use crate::CONFIG;
+
+/// Number of UDP sockets pre-allocated per address family.
+const POOL_SIZE: usize = 8;
+
+/// Bounded pool of pre-bound UDP sockets.
+///
+/// The semaphore enforces the bound: callers that need a socket block until
+/// one is returned rather than creating a new FD, keeping total FD usage at
+/// `POOL_SIZE` per address family regardless of query rate.
+struct SocketPool {
+    sockets: Mutex<Vec<UdpSocket>>,
+    available: Semaphore,
+}
+
+impl SocketPool {
+    fn build(bind_addr: &str) -> std::io::Result<Self> {
+        let mut sockets = Vec::with_capacity(POOL_SIZE);
+        for _ in 0..POOL_SIZE {
+            let std_sock = std::net::UdpSocket::bind(bind_addr)?;
+            std_sock.set_nonblocking(true)?;
+            sockets.push(UdpSocket::from_std(std_sock)?);
+        }
+        Ok(Self {
+            sockets: Mutex::new(sockets),
+            available: Semaphore::new(POOL_SIZE),
+        })
+    }
+
+    async fn acquire(&self) -> SocketGuard<'_> {
+        let permit = self.available.acquire().await.expect("semaphore closed");
+        let socket = self
+            .sockets
+            .lock()
+            .expect("pool mutex poisoned")
+            .pop()
+            .unwrap();
+        SocketGuard {
+            socket: Some(socket),
+            pool: self,
+            _permit: permit,
+        }
+    }
+
+    fn release(&self, socket: UdpSocket) {
+        self.sockets
+            .lock()
+            .expect("pool mutex poisoned")
+            .push(socket);
+    }
+}
+
+struct SocketGuard<'a> {
+    socket: Option<UdpSocket>,
+    pool: &'a SocketPool,
+    _permit: SemaphorePermit<'a>,
+}
+
+impl SocketGuard<'_> {
+    fn get(&self) -> &UdpSocket {
+        self.socket.as_ref().unwrap()
+    }
+}
+
+impl Drop for SocketGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(s) = self.socket.take() {
+            self.pool.release(s);
+        }
+        // _permit drops after, decrementing the semaphore count
+    }
+}
+
+/// Holds either a pooled socket guard or a one-shot ephemeral socket so that
+/// the forwarding path uses a single `&UdpSocket` regardless of which branch
+/// was taken.
+enum UpstreamRef<'a> {
+    Pooled(SocketGuard<'a>),
+    Ephemeral(UdpSocket),
+}
+
+impl UpstreamRef<'_> {
+    fn socket(&self) -> &UdpSocket {
+        match self {
+            Self::Pooled(g) => g.get(),
+            Self::Ephemeral(s) => s,
+        }
+    }
+}
+
+static V4_POOL: OnceLock<Option<SocketPool>> = OnceLock::new();
+static V6_POOL: OnceLock<Option<SocketPool>> = OnceLock::new();
+
+/// Return the pre-allocated pool for the given address family, initialising it
+/// on the first call.  Returns `None` if binding failed (e.g. IPv6 disabled on
+/// the host); the caller falls back to creating an ephemeral socket.
+fn pool_for(is_ipv6: bool) -> Option<&'static SocketPool> {
+    let cell = if is_ipv6 { &V6_POOL } else { &V4_POOL };
+    cell.get_or_init(|| {
+        let addr = if is_ipv6 { "[::]:0" } else { "0.0.0.0:0" };
+        SocketPool::build(addr).ok()
+    })
+    .as_ref()
+}
 
 /// Forward a DNS query to an upstream server and return the response.
 pub(crate) async fn forward_to_upstream(packet: &[u8]) -> std::io::Result<Vec<u8>> {
@@ -25,27 +130,32 @@ pub(crate) async fn forward_to_upstream(packet: &[u8]) -> std::io::Result<Vec<u8
         Cow::Borrowed(packet)
     };
 
-    // Try each upstream server in order
+    // Try each upstream server in order.
     for server_addr in &config.upstream.servers {
         let addr: SocketAddr = match server_addr.parse() {
             Ok(a) => a,
             Err(_) => continue,
         };
 
-        // Bind to appropriate address family based on upstream server type
         let bind_addr = if addr.is_ipv6() {
             "[::]:0"
         } else {
             "0.0.0.0:0"
         };
 
-        // Create a new socket for upstream communication
-        let upstream_socket = match UdpSocket::bind(bind_addr).await {
-            Ok(s) => s,
-            Err(_) => continue,
+        // Acquire a pre-bound socket from the pool, or fall back to an ephemeral
+        // socket if the pool failed to initialise for this address family.
+        let upstream_ref = if let Some(pool) = pool_for(addr.is_ipv6()) {
+            UpstreamRef::Pooled(pool.acquire().await)
+        } else {
+            match UdpSocket::bind(bind_addr).await {
+                Ok(s) => UpstreamRef::Ephemeral(s),
+                Err(_) => continue,
+            }
         };
+        let upstream_socket = upstream_ref.socket();
 
-        // Send the query to upstream
+        // Send the query to upstream.
         if upstream_socket.send_to(&outgoing, addr).await.is_err() {
             continue;
         }
@@ -499,6 +609,29 @@ mod tests {
             "0.0.0.0:0"
         };
         assert_eq!(bind_addr, "[::]:0");
+    }
+
+    // --- socket pool ---
+
+    #[tokio::test]
+    async fn pool_acquire_and_release_cycles_correctly() {
+        let pool = SocketPool::build("0.0.0.0:0").expect("IPv4 pool init");
+        // Acquire and release POOL_SIZE times to verify sockets return to the pool.
+        for _ in 0..POOL_SIZE * 2 {
+            let guard = pool.acquire().await;
+            let _ = guard.get().local_addr().expect("socket is live");
+            // guard drops here, returning the socket
+        }
+        // All POOL_SIZE permits must be available again.
+        assert_eq!(pool.available.available_permits(), POOL_SIZE);
+    }
+
+    #[tokio::test]
+    async fn pool_for_ipv4_returns_some() {
+        assert!(
+            pool_for(false).is_some(),
+            "IPv4 socket pool must be available"
+        );
     }
 
     #[test]
