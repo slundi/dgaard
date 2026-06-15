@@ -19,6 +19,9 @@ pub(crate) fn build_https_client() -> HttpsClient {
     Client::builder(TokioExecutor::new()).build(https)
 }
 
+/// Maximum response body size accepted when downloading a list (50 MiB).
+const MAX_RESPONSE_SIZE: usize = 50 * 1024 * 1024;
+
 /// Download a list from a URL using the provided HTTP client.
 pub async fn download_list(
     client: &HttpsClient,
@@ -37,6 +40,31 @@ pub async fn download_list(
         return Err(format!("HTTP error: {}", status).into());
     }
 
-    let body = res.collect().await?.to_bytes();
-    Ok(String::from_utf8_lossy(&body).into_owned())
+    // Reject early when the server advertises an oversized body.
+    if let Some(cl) = res.headers().get(hyper::header::CONTENT_LENGTH) {
+        if let Ok(len) = cl.to_str().unwrap_or("").parse::<usize>() {
+            if len > MAX_RESPONSE_SIZE {
+                return Err(format!(
+                    "Content-Length {len} exceeds limit of {MAX_RESPONSE_SIZE} bytes"
+                )
+                .into());
+            }
+        }
+    }
+
+    // Stream the body frame by frame so a large payload never fully materialises.
+    let mut body = res.into_body();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(frame) = body.frame().await {
+        if let Some(data) = frame?.data_ref() {
+            buf.extend_from_slice(data);
+            if buf.len() > MAX_RESPONSE_SIZE {
+                return Err(
+                    format!("Response body exceeded limit of {MAX_RESPONSE_SIZE} bytes").into(),
+                );
+            }
+        }
+    }
+
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
