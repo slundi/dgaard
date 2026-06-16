@@ -230,12 +230,15 @@ pub fn score_answer(
 
 /// Check if an IPv4 address falls in a private or reserved range.
 pub(crate) fn is_private_ipv4(ip: std::net::Ipv4Addr) -> bool {
-    let [a, b, _, _] = ip.octets();
+    let [a, b, c, _] = ip.octets();
     matches!(a, 0 | 10 | 127)
         || (a == 100 && (64..=127).contains(&b))
         || (a == 169 && b == 254)
         || (a == 172 && (16..=31).contains(&b))
         || (a == 192 && b == 168)
+        || (a == 192 && b == 0 && c == 2)   // RFC 5737 TEST-NET-1
+        || (a == 198 && b == 51 && c == 100) // RFC 5737 TEST-NET-2
+        || (a == 203 && b == 0 && c == 113) // RFC 5737 TEST-NET-3
 }
 
 /// Check if an IPv6 address falls in a private or reserved range.
@@ -343,6 +346,22 @@ mod tests {
         assert!(is_private_ipv4("10.0.0.1".parse().unwrap()));
         assert!(is_private_ipv4("172.16.0.1".parse().unwrap()));
         assert!(is_private_ipv4("192.168.1.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ipv4_rfc5737_test_nets() {
+        // TEST-NET-1 192.0.2.0/24
+        assert!(is_private_ipv4("192.0.2.0".parse().unwrap()));
+        assert!(is_private_ipv4("192.0.2.255".parse().unwrap()));
+        assert!(!is_private_ipv4("192.0.3.1".parse().unwrap()));
+        // TEST-NET-2 198.51.100.0/24
+        assert!(is_private_ipv4("198.51.100.0".parse().unwrap()));
+        assert!(is_private_ipv4("198.51.100.254".parse().unwrap()));
+        assert!(!is_private_ipv4("198.51.101.1".parse().unwrap()));
+        // TEST-NET-3 203.0.113.0/24
+        assert!(is_private_ipv4("203.0.113.0".parse().unwrap()));
+        assert!(is_private_ipv4("203.0.113.255".parse().unwrap()));
+        assert!(!is_private_ipv4("203.0.114.1".parse().unwrap()));
     }
 
     #[test]
