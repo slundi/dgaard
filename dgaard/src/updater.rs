@@ -65,17 +65,17 @@ pub fn validate_input(input: &str) -> Result<Resource, ResourceError> {
 }
 
 pub async fn spawn_update_task() {
-    let hours = CONFIG.load().sources.update_interval_hours;
-    let interval = Duration::from_hours(hours.into());
-
     tokio::spawn(async move {
         loop {
-            // 1. Wait for the next update cycle
-            tokio::time::sleep(interval).await;
+            // Re-read on every iteration so a SIGHUP config reload takes effect
+            // without restarting the process.
+            let hours = CONFIG.load().sources.update_interval_hours;
+            if hours == 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_hours(hours.into())).await;
 
             println!("Starting scheduled rule update...");
-
-            // 2. Download and Parse
             reload_lists().await;
         }
     });
