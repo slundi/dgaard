@@ -365,12 +365,16 @@ impl ExternalNgramModel {
 
         for _ in 0..entry_count {
             if reader.read_exact(&mut entry_buf).is_err() {
-                break;
+                return None; // truncated file — reject the partial model
             }
             let ngram = entry_buf[..ngram_size as usize].to_vec();
             let prob_bytes: [u8; 4] = entry_buf[ngram_size as usize..].try_into().ok()?;
             let prob = f32::from_le_bytes(prob_bytes);
             entries.insert(ngram, prob);
+        }
+
+        if entries.len() < entry_count {
+            return None; // duplicate keys in a well-formed file indicate corruption
         }
 
         Some(Self {
@@ -781,6 +785,26 @@ mod tests {
         f.write_all(&[1u8, 2u8, 0u8, 0u8, 0u8, 0u8]).unwrap();
         let model = ExternalNgramModel::load_from_file(&path);
         assert!(model.is_none(), "Wrong magic should return None");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn external_ngram_model_load_truncated_file_returns_none() {
+        use std::io::Write;
+        let path = format!("/tmp/dgaard_ngram_truncated_{}", std::process::id());
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(b"NGRM").unwrap();
+        f.write_all(&[1u8]).unwrap(); // version
+        f.write_all(&[2u8]).unwrap(); // bigrams
+        f.write_all(&10u32.to_le_bytes()).unwrap(); // claims 10 entries
+        // Write only 2 entries instead of 10
+        f.write_all(&[b'a', b'b']).unwrap();
+        f.write_all(&(-1.0f32).to_le_bytes()).unwrap();
+        f.write_all(&[b'b', b'c']).unwrap();
+        f.write_all(&(-2.0f32).to_le_bytes()).unwrap();
+        drop(f);
+        let model = ExternalNgramModel::load_from_file(&path);
+        assert!(model.is_none(), "Truncated file should return None");
         let _ = std::fs::remove_file(&path);
     }
 
