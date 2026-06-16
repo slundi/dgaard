@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -114,21 +113,25 @@ fn pool_for(is_ipv6: bool) -> Option<&'static SocketPool> {
 
 /// Forward a DNS query to an upstream server and return the response.
 pub(crate) async fn forward_to_upstream(packet: &[u8]) -> std::io::Result<Vec<u8>> {
+    if packet.len() < 2 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "DNS packet too short to contain a TXID",
+        ));
+    }
+
     let config = CONFIG.load();
     let timeout_duration = Duration::from_millis(config.upstream.timeout_ms);
     let use_0x20 = config.upstream.use_0x20_randomization;
 
-    // Optionally apply 0x20 case randomization to the outgoing query.
-    let outgoing: Cow<[u8]> = if use_0x20 {
-        let mut modified = packet.to_vec();
-        if apply_0x20(&mut modified) {
-            Cow::Owned(modified)
-        } else {
-            Cow::Borrowed(packet)
-        }
-    } else {
-        Cow::Borrowed(packet)
-    };
+    // Save the client's original TXID so we can echo it back in the response.
+    let original_txid = [packet[0], packet[1]];
+
+    // Always copy: we need to rewrite the TXID and optionally apply 0x20.
+    let mut outgoing = packet.to_vec();
+    let random_txid = randomize_txid(&mut outgoing);
+    // Only guard verify_0x20 when we actually mutated the QNAME.
+    let applied_0x20 = use_0x20 && apply_0x20(&mut outgoing);
 
     // Try each upstream server in order.
     for server_addr in &config.upstream.servers {
@@ -161,9 +164,8 @@ pub(crate) async fn forward_to_upstream(packet: &[u8]) -> std::io::Result<Vec<u8
         }
 
         // Wait for a response from the correct upstream within the timeout window.
-        // Packets arriving from any other source are silently discarded — an
-        // off-path attacker who guesses the 16-bit TXID and ephemeral port can
-        // inject forged answers, so we must validate the sender address.
+        // An off-path attacker who guesses the ephemeral port must also match the
+        // randomized TXID (16 bits of additional entropy) to inject a forged answer.
         let mut buf = [0u8; 4096];
         let deadline = tokio::time::Instant::now() + timeout_duration;
         'recv: loop {
@@ -174,15 +176,22 @@ pub(crate) async fn forward_to_upstream(packet: &[u8]) -> std::io::Result<Vec<u8
             match timeout(remaining, upstream_socket.recv_from(&mut buf)).await {
                 Ok(Ok((len, peer))) => {
                     if peer != addr {
-                        // Spoofed or stray packet — discard and wait for another.
+                        // Wrong source — discard and keep waiting.
                         continue 'recv;
                     }
-                    let response = buf[..len].to_vec();
+                    if len < 2 || buf[0] != random_txid[0] || buf[1] != random_txid[1] {
+                        // TXID mismatch: stray or forged response — discard and keep waiting.
+                        continue 'recv;
+                    }
+                    let mut response = buf[..len].to_vec();
                     // Verify 0x20 echo: reject forged / case-normalizing responses.
-                    if use_0x20 && !verify_0x20(&outgoing, &response) {
+                    if applied_0x20 && !verify_0x20(&outgoing, &response) {
                         // Non-compliant or forged resolver — try next server.
                         break 'recv;
                     }
+                    // Restore the original client TXID before returning.
+                    response[0] = original_txid[0];
+                    response[1] = original_txid[1];
                     return Ok(response);
                 }
                 Ok(Err(_)) | Err(_) => break 'recv,
@@ -194,6 +203,24 @@ pub(crate) async fn forward_to_upstream(packet: &[u8]) -> std::io::Result<Vec<u8
         std::io::ErrorKind::TimedOut,
         "All upstream servers failed",
     ))
+}
+
+/// Replace the 2-byte Transaction ID in a DNS packet with OS-provided random
+/// bytes and return the new TXID.
+///
+/// If the entropy source fails or `packet` is shorter than 2 bytes the field
+/// is left unchanged and the existing value is returned, preserving liveness.
+fn randomize_txid(packet: &mut [u8]) -> [u8; 2] {
+    if packet.len() >= 2 {
+        let mut rnd = [0u8; 2];
+        if getrandom::fill(&mut rnd).is_ok() {
+            packet[0] = rnd[0];
+            packet[1] = rnd[1];
+        }
+        [packet[0], packet[1]]
+    } else {
+        [0, 0]
+    }
 }
 
 /// Randomize the ASCII case of alphabetic bytes in the QNAME of a DNS query
@@ -354,6 +381,62 @@ mod tests {
         // QTYPE + QCLASS
         pkt.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
         pkt
+    }
+
+    // --- randomize_txid ---
+
+    #[test]
+    fn randomize_txid_rewrites_header_bytes() {
+        let mut pkt = EXAMPLE_COM_QUERY.to_vec();
+        let returned = randomize_txid(&mut pkt);
+        // Returned value must reflect what is now in the packet.
+        assert_eq!(returned, [pkt[0], pkt[1]]);
+        // Bytes beyond the header must be unchanged.
+        assert_eq!(&pkt[2..], &EXAMPLE_COM_QUERY[2..]);
+    }
+
+    #[test]
+    fn randomize_txid_produces_random_values() {
+        // P(false negative) = (1/65536)^100 ≈ 0 — any collision is a collision
+        let original = [EXAMPLE_COM_QUERY[0], EXAMPLE_COM_QUERY[1]];
+        let mut any_different = false;
+        for _ in 0..100 {
+            let mut pkt = EXAMPLE_COM_QUERY.to_vec();
+            let returned = randomize_txid(&mut pkt);
+            if returned != original {
+                any_different = true;
+                break;
+            }
+        }
+        assert!(
+            any_different,
+            "TXID was never randomized over 100 iterations"
+        );
+    }
+
+    #[test]
+    fn randomize_txid_short_packet_returns_zeros() {
+        let mut pkt = vec![0x01u8]; // shorter than 2 bytes
+        assert_eq!(randomize_txid(&mut pkt), [0, 0]);
+    }
+
+    #[test]
+    fn randomize_txid_original_txid_restored_in_response() {
+        // Simulate the full round-trip: save original, randomize, restore.
+        let original_txid = [EXAMPLE_COM_QUERY[0], EXAMPLE_COM_QUERY[1]];
+        let mut outgoing = EXAMPLE_COM_QUERY.to_vec();
+        let random_txid = randomize_txid(&mut outgoing);
+
+        // Simulate an upstream response that echoes our random TXID.
+        let mut response = EXAMPLE_COM_QUERY.to_vec();
+        response[0] = random_txid[0];
+        response[1] = random_txid[1];
+
+        // Restore original TXID.
+        response[0] = original_txid[0];
+        response[1] = original_txid[1];
+
+        assert_eq!([response[0], response[1]], original_txid);
     }
 
     // --- apply_0x20 ---
