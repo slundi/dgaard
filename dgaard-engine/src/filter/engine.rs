@@ -459,11 +459,16 @@ impl FilterEngine {
         })
     }
 
-    /// Check if a TLD hash is in the suspicious set.
+    /// Return `true` if `tld` should be treated as in-scope for heuristic
+    /// checks.
+    ///
+    /// When `suspicious_tld_hashes` is empty no TLD filter is configured, so
+    /// every TLD is considered in-scope (fail-open: check all).  Once at least
+    /// one TLD is added to the set, only those TLDs are in-scope.
     #[inline]
-    pub fn is_suspicious_tld(&self, tld: &str) -> bool {
+    pub fn tld_is_in_scope(&self, tld: &str) -> bool {
         if self.suspicious_tld_hashes.is_empty() {
-            return true; // No TLD restriction = all TLDs suspicious
+            return true; // no filter configured → all TLDs in scope
         }
         let hash = twox_hash::XxHash64::oneshot(self.seed, tld.to_ascii_lowercase().as_bytes());
         self.suspicious_tld_hashes.contains(&hash)
@@ -534,10 +539,11 @@ mod tests {
     }
 
     #[test]
-    fn test_is_suspicious_tld_with_empty_set() {
+    fn test_tld_is_in_scope_with_empty_set() {
         let engine = make_engine();
-        assert!(engine.is_suspicious_tld("com"));
-        assert!(engine.is_suspicious_tld("xyz"));
+        // Empty set → no filter configured → all TLDs in scope.
+        assert!(engine.tld_is_in_scope("com"));
+        assert!(engine.tld_is_in_scope("xyz"));
     }
 
     #[test]

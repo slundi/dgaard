@@ -39,7 +39,7 @@ pub fn compute_score(domain: &str, filter: &FilterEngine, config: &Config) -> Su
     // 3. Suspicious TLD check
     if !filter.suspicious_tld_hashes.is_empty()
         && let Some(tld) = domain.rsplit('.').next()
-        && filter.is_suspicious_tld(tld)
+        && filter.tld_is_in_scope(tld)
     {
         if let Some(keyword_reason) = check_lexical(domain, filter) {
             score.add(score_points::KEYWORD_SUSPICIOUS_TLD, keyword_reason);

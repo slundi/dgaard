@@ -18,7 +18,7 @@ pub fn check_lexical(domain: &str, filter: &FilterEngine) -> Option<BlockReason>
     let automaton = filter.keyword_automaton.as_ref()?;
 
     let tld = domain.rsplit('.').next()?;
-    if !filter.is_suspicious_tld(tld) {
+    if !filter.tld_is_in_scope(tld) {
         return None;
     }
 
