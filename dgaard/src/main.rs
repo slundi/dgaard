@@ -1,3 +1,4 @@
+mod cache;
 mod cli;
 mod config;
 mod debug;
@@ -17,6 +18,7 @@ use std::{
     sync::{Arc, atomic::AtomicU64},
 };
 
+use crate::cache::ResponseCache;
 use crate::runtime::{init_global_seed, start_with_single_worker, start_with_workers};
 use crate::stats::{StatsCounters, StatsSender};
 use crate::{config::Config, filter::engine::FilterEngine};
@@ -34,6 +36,8 @@ pub static STATS_COUNTERS: StatsCounters = StatsCounters::new();
 /// Global stats sender for emitting events to the collector.
 /// Initialized when the runtime starts.
 pub static STATS_SENDER: std::sync::OnceLock<StatsSender> = std::sync::OnceLock::new();
+/// TTL-aware LRU response cache.  Initialized at startup when `cache.enabled = true`.
+pub static RESPONSE_CACHE: std::sync::OnceLock<ResponseCache> = std::sync::OnceLock::new();
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // rustls 0.23 requires an explicit process-level crypto provider.

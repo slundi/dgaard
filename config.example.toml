@@ -434,13 +434,40 @@ extract_domain_only = true
 update_interval = 24
 
 # -----------------------------------------------------------------------------
-# Performance & Caching (The "Missed" items)
+# DNS Response Cache
 # -----------------------------------------------------------------------------
+#
+# TTL-aware LRU cache for upstream DNS responses.
+#
+# When enabled, successful responses are stored keyed by (domain, qtype).
+# Subsequent queries for the same (domain, qtype) pair are answered from the
+# cache without hitting the upstream resolver, reducing latency and upstream
+# load. Entries expire after the DNS TTL elapses and are evicted lazily.
+#
+# The response bytes are stored verbatim; the transaction ID (bytes 0–1) is
+# patched per-query before sending so each client receives a valid response.
+#
+# Only answers that contain at least one resource record (i.e., non-NXDOMAIN
+# responses) are cached. SERVFAIL and blocked responses are never stored.
+#
+# If `security.low_ttl.min_ttl_floor_secs` is set, that floor is applied to
+# the TTL before caching, preventing fast-flux domains from bypassing the
+# cache with near-zero TTLs.
 [cache]
-# Cache successful results to reduce upstream latency
+# Master switch — set to `false` to disable response caching entirely.
 enabled = true
+
+# Maximum number of entries in the LRU cache.
+# When full, the least-recently-used entry is evicted to make room.
+# Each entry holds the raw response bytes (~50–500 bytes typical) plus
+# metadata. 10 000 entries ≈ 5–50 MiB depending on response size.
 max_entries = 10000
-ttl_override = 0 # 0 means use the TTL from the DNS record
+
+# Override the DNS TTL for all cached entries (seconds).
+# When non-zero, this value replaces the TTL from the upstream response,
+# regardless of how short or long the authoritative TTL is.
+# 0 = use the TTL returned by the upstream resolver (recommended).
+ttl_override = 0
 
 [memory]
 # LRU Cache for frequent queries

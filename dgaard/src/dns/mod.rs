@@ -130,8 +130,20 @@ pub(crate) async fn handle_query(
     let cfg_snap = CONFIG.load();
     let scoring = &cfg_snap.security.scoring;
     let dnssec_cfg = cfg_snap.security.dnssec.clone();
+    let cache_ttl_override = cfg_snap.cache.ttl_override;
+    let low_ttl_floor = cfg_snap.security.low_ttl.min_ttl_floor_secs;
     let (response, stat_action) = match &action {
         Action::Allow => {
+            // Serve from cache when available — skip upstream entirely.
+            if let Some(cache) = crate::RESPONSE_CACHE.get() {
+                let txid = [packet[0], packet[1]];
+                if let Some(cached) = cache.get(&dns_packet.domain, dns_packet.qtype, txid) {
+                    STATS_COUNTERS.increment_cached();
+                    socket.send_to(&cached, peer).await?;
+                    return Ok(());
+                }
+            }
+
             let (upstream_result, dnssec_status) = if dnssec_cfg.enabled {
                 tokio::join!(
                     forward_to_upstream(&packet),
@@ -157,8 +169,9 @@ pub(crate) async fn handle_query(
             match upstream_result {
                 Ok(upstream_bytes) => {
                     // DPI: score the upstream answer; block if it crosses the configured threshold
-                    if let Some(answer) = InspectedAnswer::from_response(&upstream_bytes) {
-                        score_answer(&mut score, &answer);
+                    let inspected = InspectedAnswer::from_response(&upstream_bytes);
+                    if let Some(answer) = &inspected {
+                        score_answer(&mut score, answer);
                     }
                     let (is_blocked, stat_action) =
                         classify_score(&score, scoring, StatAction::Allowed);
@@ -169,6 +182,19 @@ pub(crate) async fn handle_query(
                             Some(stat_action),
                         )
                     } else {
+                        if let (Some(cache), Some(ttl)) = (
+                            crate::RESPONSE_CACHE.get(),
+                            inspected.and_then(|a| a.min_ttl),
+                        ) {
+                            let floored = low_ttl_floor.map_or(ttl, |f| ttl.max(f));
+                            cache.insert(
+                                &dns_packet.domain,
+                                dns_packet.qtype,
+                                &upstream_bytes,
+                                floored,
+                                cache_ttl_override,
+                            );
+                        }
                         STATS_COUNTERS.increment_allowed();
                         (upstream_bytes, Some(stat_action))
                     }
@@ -183,6 +209,16 @@ pub(crate) async fn handle_query(
             }
         }
         Action::ProxyToUpstream => {
+            // Serve from cache when available — skip upstream entirely.
+            if let Some(cache) = crate::RESPONSE_CACHE.get() {
+                let txid = [packet[0], packet[1]];
+                if let Some(cached) = cache.get(&dns_packet.domain, dns_packet.qtype, txid) {
+                    STATS_COUNTERS.increment_cached();
+                    socket.send_to(&cached, peer).await?;
+                    return Ok(());
+                }
+            }
+
             let (upstream_result, dnssec_status) = if dnssec_cfg.enabled {
                 tokio::join!(
                     forward_to_upstream(&packet),
@@ -208,8 +244,9 @@ pub(crate) async fn handle_query(
             match upstream_result {
                 Ok(upstream_bytes) => {
                     // DPI: score the upstream answer; block if it crosses the configured threshold
-                    if let Some(answer) = InspectedAnswer::from_response(&upstream_bytes) {
-                        score_answer(&mut score, &answer);
+                    let inspected = InspectedAnswer::from_response(&upstream_bytes);
+                    if let Some(answer) = &inspected {
+                        score_answer(&mut score, answer);
                     }
                     let (is_blocked, stat_action) =
                         classify_score(&score, scoring, StatAction::Proxied);
@@ -220,6 +257,19 @@ pub(crate) async fn handle_query(
                             Some(stat_action),
                         )
                     } else {
+                        if let (Some(cache), Some(ttl)) = (
+                            crate::RESPONSE_CACHE.get(),
+                            inspected.and_then(|a| a.min_ttl),
+                        ) {
+                            let floored = low_ttl_floor.map_or(ttl, |f| ttl.max(f));
+                            cache.insert(
+                                &dns_packet.domain,
+                                dns_packet.qtype,
+                                &upstream_bytes,
+                                floored,
+                                cache_ttl_override,
+                            );
+                        }
                         STATS_COUNTERS.increment_proxied();
                         (upstream_bytes, Some(stat_action))
                     }

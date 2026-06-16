@@ -144,6 +144,16 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
             crate::dnssec::init(&CONFIG.load().upstream.servers.clone());
         }
 
+        let cache_cfg = CONFIG.load().cache.clone();
+        if cache_cfg.enabled {
+            let _ =
+                crate::RESPONSE_CACHE.set(crate::cache::ResponseCache::new(cache_cfg.max_entries));
+            println!(
+                "Response cache enabled ({} max entries)",
+                cache_cfg.max_entries
+            );
+        }
+
         let tokio_socket = get_socket(&CONFIG.load().server.listen_addr)?;
 
         let semaphore = Arc::new(Semaphore::new(
@@ -196,6 +206,12 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
 
         if CONFIG.load().security.dnssec.enabled {
             crate::dnssec::init(&CONFIG.load().upstream.servers.clone());
+        }
+
+        let cache_cfg = CONFIG.load().cache.clone();
+        if cache_cfg.enabled {
+            let _ = crate::RESPONSE_CACHE.set(crate::cache::ResponseCache::new(cache_cfg.max_entries));
+            println!("Response cache enabled ({} max entries)", cache_cfg.max_entries);
         }
 
         let semaphore = Arc::new(Semaphore::new(

@@ -131,6 +131,7 @@ pub struct StatsCounters {
     pub queries_blocked: AtomicU64,
     pub queries_allowed: AtomicU64,
     pub queries_proxied: AtomicU64,
+    pub queries_cached: AtomicU64,
 }
 
 impl StatsCounters {
@@ -140,6 +141,7 @@ impl StatsCounters {
             queries_blocked: AtomicU64::new(0),
             queries_allowed: AtomicU64::new(0),
             queries_proxied: AtomicU64::new(0),
+            queries_cached: AtomicU64::new(0),
         }
     }
 
@@ -159,6 +161,10 @@ impl StatsCounters {
         self.queries_proxied.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn increment_cached(&self) {
+        self.queries_cached.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn get_total(&self) -> u64 {
         self.queries_total.load(Ordering::Relaxed)
     }
@@ -173,6 +179,10 @@ impl StatsCounters {
 
     pub fn get_proxied(&self) -> u64 {
         self.queries_proxied.load(Ordering::Relaxed)
+    }
+
+    pub fn get_cached(&self) -> u64 {
+        self.queries_cached.load(Ordering::Relaxed)
     }
 }
 

@@ -61,6 +61,7 @@ fn render() -> String {
     let blocked = STATS_COUNTERS.queries_blocked.load(Ordering::Relaxed);
     let allowed = STATS_COUNTERS.queries_allowed.load(Ordering::Relaxed);
     let proxied = STATS_COUNTERS.queries_proxied.load(Ordering::Relaxed);
+    let cached = STATS_COUNTERS.queries_cached.load(Ordering::Relaxed);
 
     format!(
         "# HELP dgaard_queries_total Total DNS queries received\n\
@@ -74,7 +75,10 @@ fn render() -> String {
          dgaard_queries_allowed {allowed}\n\
          # HELP dgaard_queries_proxied DNS queries proxied to upstream\n\
          # TYPE dgaard_queries_proxied counter\n\
-         dgaard_queries_proxied {proxied}\n"
+         dgaard_queries_proxied {proxied}\n\
+         # HELP dgaard_queries_cached DNS queries served from the response cache\n\
+         # TYPE dgaard_queries_cached counter\n\
+         dgaard_queries_cached {cached}\n"
     )
 }
 
@@ -84,17 +88,19 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     #[test]
-    fn render_contains_all_four_counters() {
+    fn render_contains_all_five_counters() {
         STATS_COUNTERS.queries_total.store(10, Ordering::Relaxed);
         STATS_COUNTERS.queries_blocked.store(2, Ordering::Relaxed);
         STATS_COUNTERS.queries_allowed.store(5, Ordering::Relaxed);
         STATS_COUNTERS.queries_proxied.store(3, Ordering::Relaxed);
+        STATS_COUNTERS.queries_cached.store(4, Ordering::Relaxed);
 
         let out = render();
         assert!(out.contains("dgaard_queries_total 10"));
         assert!(out.contains("dgaard_queries_blocked 2"));
         assert!(out.contains("dgaard_queries_allowed 5"));
         assert!(out.contains("dgaard_queries_proxied 3"));
+        assert!(out.contains("dgaard_queries_cached 4"));
     }
 
     #[test]
@@ -104,6 +110,8 @@ mod tests {
         assert!(out.contains("# TYPE dgaard_queries_total counter"));
         assert!(out.contains("# HELP dgaard_queries_blocked"));
         assert!(out.contains("# TYPE dgaard_queries_blocked counter"));
+        assert!(out.contains("# HELP dgaard_queries_cached"));
+        assert!(out.contains("# TYPE dgaard_queries_cached counter"));
     }
 
     #[test]
