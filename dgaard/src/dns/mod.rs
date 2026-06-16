@@ -48,10 +48,12 @@ fn classify_score(
 ///
 /// This function:
 /// 1. Parses the DNS packet
-/// 2. Runs the domain through the resolve pipeline
-/// 3. Either blocks the query (NXDOMAIN) or forwards to upstream
-/// 4. Sends the response back to the client
-/// 5. Emits stats events for telemetry
+/// 2. QType/QClass wardens (cheap static checks)
+/// 3. Hot-cache lookup — serves instantly if cached, skipping steps 4–6
+/// 4. Runs the domain through the resolve pipeline
+/// 5. Either blocks the query (NXDOMAIN) or forwards to upstream
+/// 6. Sends the response back to the client
+/// 7. Emits stats events for telemetry
 pub(crate) async fn handle_query(
     socket: Arc<UdpSocket>,
     packet: Vec<u8>,
@@ -115,7 +117,18 @@ pub(crate) async fn handle_query(
         return Ok(());
     }
 
-    // 2c. Run domain through the filter pipeline
+    // 2c. Hot cache: serve a cached response before touching the filter pipeline.
+    //     A hit skips resolve_with_score, upstream forwarding, and DNSSEC entirely.
+    if let Some(cache) = crate::RESPONSE_CACHE.get() {
+        let txid = [packet[0], packet[1]];
+        if let Some(cached) = cache.get(&dns_packet.domain, dns_packet.qtype, txid) {
+            STATS_COUNTERS.increment_cached();
+            socket.send_to(&cached, peer).await?;
+            return Ok(());
+        }
+    }
+
+    // 2d. Run domain through the filter pipeline
     let resolve_result = resolve_with_score(&dns_packet.domain);
     let action = resolve_result.action;
     let mut score = resolve_result.score;
@@ -134,16 +147,6 @@ pub(crate) async fn handle_query(
     let low_ttl_floor = cfg_snap.security.low_ttl.min_ttl_floor_secs;
     let (response, stat_action) = match &action {
         Action::Allow => {
-            // Serve from cache when available — skip upstream entirely.
-            if let Some(cache) = crate::RESPONSE_CACHE.get() {
-                let txid = [packet[0], packet[1]];
-                if let Some(cached) = cache.get(&dns_packet.domain, dns_packet.qtype, txid) {
-                    STATS_COUNTERS.increment_cached();
-                    socket.send_to(&cached, peer).await?;
-                    return Ok(());
-                }
-            }
-
             let (upstream_result, dnssec_status) = if dnssec_cfg.enabled {
                 tokio::join!(
                     forward_to_upstream(&packet),
@@ -209,16 +212,6 @@ pub(crate) async fn handle_query(
             }
         }
         Action::ProxyToUpstream => {
-            // Serve from cache when available — skip upstream entirely.
-            if let Some(cache) = crate::RESPONSE_CACHE.get() {
-                let txid = [packet[0], packet[1]];
-                if let Some(cached) = cache.get(&dns_packet.domain, dns_packet.qtype, txid) {
-                    STATS_COUNTERS.increment_cached();
-                    socket.send_to(&cached, peer).await?;
-                    return Ok(());
-                }
-            }
-
             let (upstream_result, dnssec_status) = if dnssec_cfg.enabled {
                 tokio::join!(
                     forward_to_upstream(&packet),
