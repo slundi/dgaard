@@ -79,7 +79,17 @@ async fn main() {
             EngineConfig::default()
         });
 
-    let state = Arc::new(ArcSwap::from_pointee(EngineState::new(engine_config)));
+    // Generate a random seed once per process lifetime.  Using a secret seed
+    // makes hash values unpredictable across restarts, raising the cost of
+    // crafting deliberate hash collisions in the fast_map.
+    let seed = getrandom::u64().unwrap_or_else(|_| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(1)
+    });
+
+    let state = Arc::new(ArcSwap::from_pointee(EngineState::new(engine_config, seed)));
 
     let (listener, _socket_guard) = bind_listener(&daemon_cfg.socket_path).unwrap_or_else(|e| {
         log::error!("Failed to bind {}: {e}", daemon_cfg.socket_path);
@@ -96,6 +106,7 @@ async fn main() {
     tokio::spawn(sighup_reload_task(
         Arc::clone(&state),
         daemon_cfg.config_file.clone(),
+        seed,
     ));
 
     run_accept_loop(listener, state, shutdown_signal()).await;
