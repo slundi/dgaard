@@ -62,6 +62,7 @@ fn render() -> String {
     let allowed = STATS_COUNTERS.queries_allowed.load(Ordering::Relaxed);
     let proxied = STATS_COUNTERS.queries_proxied.load(Ordering::Relaxed);
     let cached = STATS_COUNTERS.queries_cached.load(Ordering::Relaxed);
+    let dropped = STATS_COUNTERS.stats_events_dropped.load(Ordering::Relaxed);
 
     format!(
         "# HELP dgaard_queries_total Total DNS queries received\n\
@@ -78,7 +79,10 @@ fn render() -> String {
          dgaard_queries_proxied {proxied}\n\
          # HELP dgaard_queries_cached DNS queries served from the response cache\n\
          # TYPE dgaard_queries_cached counter\n\
-         dgaard_queries_cached {cached}\n"
+         dgaard_queries_cached {cached}\n\
+         # HELP dgaard_stats_events_dropped Telemetry events dropped due to stats channel backpressure\n\
+         # TYPE dgaard_stats_events_dropped counter\n\
+         dgaard_stats_events_dropped {dropped}\n"
     )
 }
 
@@ -88,12 +92,15 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     #[test]
-    fn render_contains_all_five_counters() {
+    fn render_contains_all_six_counters() {
         STATS_COUNTERS.queries_total.store(10, Ordering::Relaxed);
         STATS_COUNTERS.queries_blocked.store(2, Ordering::Relaxed);
         STATS_COUNTERS.queries_allowed.store(5, Ordering::Relaxed);
         STATS_COUNTERS.queries_proxied.store(3, Ordering::Relaxed);
         STATS_COUNTERS.queries_cached.store(4, Ordering::Relaxed);
+        STATS_COUNTERS
+            .stats_events_dropped
+            .store(7, Ordering::Relaxed);
 
         let out = render();
         assert!(out.contains("dgaard_queries_total 10"));
@@ -101,6 +108,7 @@ mod tests {
         assert!(out.contains("dgaard_queries_allowed 5"));
         assert!(out.contains("dgaard_queries_proxied 3"));
         assert!(out.contains("dgaard_queries_cached 4"));
+        assert!(out.contains("dgaard_stats_events_dropped 7"));
     }
 
     #[test]
@@ -112,6 +120,8 @@ mod tests {
         assert!(out.contains("# TYPE dgaard_queries_blocked counter"));
         assert!(out.contains("# HELP dgaard_queries_cached"));
         assert!(out.contains("# TYPE dgaard_queries_cached counter"));
+        assert!(out.contains("# HELP dgaard_stats_events_dropped"));
+        assert!(out.contains("# TYPE dgaard_stats_events_dropped counter"));
     }
 
     #[test]

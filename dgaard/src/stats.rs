@@ -55,12 +55,16 @@ impl StatsSender {
             // If the channel is full, skip the insert so we retry next time.
             if self.tx.try_send(mapping).is_ok() {
                 self.announced.insert(hash);
+            } else {
+                crate::STATS_COUNTERS.increment_stats_dropped();
             }
         }
 
         // Send the event
         let event = StatEvent::new(hash, client_addr, action);
-        let _ = self.tx.try_send(StatMessage::Event(event));
+        if self.tx.try_send(StatMessage::Event(event)).is_err() {
+            crate::STATS_COUNTERS.increment_stats_dropped();
+        }
     }
 
     /// Send a block event with a specific reason.
@@ -132,6 +136,7 @@ pub struct StatsCounters {
     pub queries_allowed: AtomicU64,
     pub queries_proxied: AtomicU64,
     pub queries_cached: AtomicU64,
+    pub stats_events_dropped: AtomicU64,
 }
 
 impl StatsCounters {
@@ -142,6 +147,7 @@ impl StatsCounters {
             queries_allowed: AtomicU64::new(0),
             queries_proxied: AtomicU64::new(0),
             queries_cached: AtomicU64::new(0),
+            stats_events_dropped: AtomicU64::new(0),
         }
     }
 
@@ -165,6 +171,10 @@ impl StatsCounters {
         self.queries_cached.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn increment_stats_dropped(&self) {
+        self.stats_events_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn get_total(&self) -> u64 {
         self.queries_total.load(Ordering::Relaxed)
     }
@@ -183,6 +193,10 @@ impl StatsCounters {
 
     pub fn get_cached(&self) -> u64 {
         self.queries_cached.load(Ordering::Relaxed)
+    }
+
+    pub fn get_stats_dropped(&self) -> u64 {
+        self.stats_events_dropped.load(Ordering::Relaxed)
     }
 }
 
@@ -310,5 +324,35 @@ mod tests {
     fn test_try_recv_empty() {
         let (_sender, mut receiver) = channel();
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_stats_counters_dropped() {
+        let counters = StatsCounters::new();
+        assert_eq!(counters.get_stats_dropped(), 0);
+        counters.increment_stats_dropped();
+        counters.increment_stats_dropped();
+        assert_eq!(counters.get_stats_dropped(), 2);
+    }
+
+    #[tokio::test]
+    async fn send_event_increments_drop_counter_when_channel_full() {
+        init_test_seed();
+
+        // Use a capacity-1 channel so it fills after the first domain mapping.
+        let (tx, _rx) = mpsc::channel::<StatMessage>(1);
+        let sender = StatsSender {
+            tx,
+            announced: std::sync::Arc::new(dashmap::DashSet::new()),
+        };
+
+        let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+
+        // First call: mapping fills the single slot → event is dropped.
+        let before = crate::STATS_COUNTERS.get_stats_dropped();
+        sender.send_event("overflow.test", addr, StatAction::Allowed);
+        let after = crate::STATS_COUNTERS.get_stats_dropped();
+        // The event try_send must have been dropped (channel already full).
+        assert!(after > before, "expected at least one drop");
     }
 }
