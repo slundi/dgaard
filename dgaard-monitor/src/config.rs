@@ -127,25 +127,57 @@ impl Default for TuiConfig {
     }
 }
 
+/// Wire format for forwarded events (file/stdout and HTTP POST).
+#[derive(Debug, Default, PartialEq, Clone)]
+pub enum ForwardFormat {
+    /// Template string with `{timestamp}`, `{client_ip}`, `{action}`, `{domain}` placeholders.
+    #[default]
+    Template,
+    /// Compact JSON object.
+    Json,
+    /// RFC 5424 syslog line with structured-data block (SD-ID `dgaard@32473`).
+    Syslog,
+    /// ArcSight Common Event Format v0 (`CEF:0|…`).
+    Cef,
+    /// Elasticsearch Bulk API NDJSON: `{"index":{}}\n{document}`.
+    Elasticsearch,
+}
+
+impl ForwardFormat {
+    /// HTTP `Content-Type` to use when POSTing events in this format.
+    pub fn content_type(&self) -> &'static str {
+        match self {
+            ForwardFormat::Template | ForwardFormat::Syslog | ForwardFormat::Cef => {
+                "text/plain; charset=utf-8"
+            }
+            ForwardFormat::Json => "application/json",
+            ForwardFormat::Elasticsearch => "application/x-ndjson",
+        }
+    }
+}
+
 /// Controls where enriched events are forwarded.
 ///
 /// When `file` is set events are appended to that path; otherwise they go to
 /// stdout (if any forwarding option is active).  `template` is a
 /// [strftime-like] format string where the following placeholders are
 /// replaced: `{timestamp}`, `{client_ip}`, `{action}`, `{domain}`.
-/// `forward_url` sends each matching event as an HTTP POST (JSON body).
+/// `forward_url` sends each matching event as an HTTP POST.
 /// `filter` lists the action variants to forward; an empty list means *all*.
 #[derive(Debug)]
 pub struct ForwardingConfig {
     /// Append formatted lines to this file instead of stdout.
     pub file: Option<String>,
-    /// Template string for each forwarded line.
+    /// Template string used when `format = "template"`.
     pub template: String,
-    /// HTTP(S) endpoint to POST JSON events to (SOAR, Slack incoming webhook, …).
+    /// HTTP(S) endpoint to POST events to (SOAR, Slack incoming webhook, …).
     pub forward_url: Option<String>,
     /// Action variants to forward. Empty list = forward everything.
     /// Valid values: "Allowed", "Proxied", "Blocked", "Suspicious", "HighlySuspicious".
     pub filter: Vec<String>,
+    /// Wire format for both file/stdout and HTTP POST output.
+    /// Valid values: "template" (default), "json", "syslog", "cef", "elasticsearch".
+    pub format: ForwardFormat,
 }
 
 fn default_template() -> String {
@@ -159,6 +191,7 @@ impl Default for ForwardingConfig {
             template: default_template(),
             forward_url: None,
             filter: Vec::new(),
+            format: ForwardFormat::default(),
         }
     }
 }
@@ -427,6 +460,21 @@ fn parse_forwarding(table: &toml_span::value::Table<'_>) -> Result<ForwardingCon
     if let Some(arr) = get_string_array(table, "filter")? {
         cfg.filter = arr;
     }
+    if let Some(s) = get_str(table, "format")? {
+        cfg.format = match s {
+            "template" => ForwardFormat::Template,
+            "json" => ForwardFormat::Json,
+            "syslog" => ForwardFormat::Syslog,
+            "cef" => ForwardFormat::Cef,
+            "elasticsearch" => ForwardFormat::Elasticsearch,
+            other => {
+                return Err(ConfigError::Parse(format!(
+                    "invalid value '{other}' for forwarding.format; \
+                     expected template, json, syslog, cef, or elasticsearch"
+                )));
+            }
+        };
+    }
     Ok(cfg)
 }
 
@@ -625,6 +673,29 @@ key_quit = "esc"
         assert_eq!(cfg.tui.key_pause, "space");
     }
 
+    // --- ForwardFormat ---
+
+    #[test]
+    fn test_forward_format_content_type() {
+        assert_eq!(
+            ForwardFormat::Template.content_type(),
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(ForwardFormat::Json.content_type(), "application/json");
+        assert_eq!(
+            ForwardFormat::Syslog.content_type(),
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(
+            ForwardFormat::Cef.content_type(),
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(
+            ForwardFormat::Elasticsearch.content_type(),
+            "application/x-ndjson"
+        );
+    }
+
     // --- ForwardingConfig ---
 
     #[test]
@@ -634,10 +705,33 @@ key_quit = "esc"
         assert!(cfg.forwarding.file.is_none());
         assert!(cfg.forwarding.forward_url.is_none());
         assert!(cfg.forwarding.filter.is_empty());
+        assert_eq!(cfg.forwarding.format, ForwardFormat::Template);
         assert_eq!(
             cfg.forwarding.template,
             "{timestamp} {client_ip} {action} {domain}"
         );
+    }
+
+    #[test]
+    fn test_forwarding_format_variants() {
+        for (value, expected) in [
+            ("template", ForwardFormat::Template),
+            ("json", ForwardFormat::Json),
+            ("syslog", ForwardFormat::Syslog),
+            ("cef", ForwardFormat::Cef),
+            ("elasticsearch", ForwardFormat::Elasticsearch),
+        ] {
+            let f = write_temp(&format!("[forwarding]\nformat = \"{value}\"\n"));
+            let cfg = Config::load(f.path().to_str().unwrap()).unwrap();
+            assert_eq!(cfg.forwarding.format, expected, "failed for value={value}");
+        }
+    }
+
+    #[test]
+    fn test_forwarding_invalid_format_is_parse_error() {
+        let f = write_temp("[forwarding]\nformat = \"ndjson\"\n");
+        let result = Config::load(f.path().to_str().unwrap());
+        assert!(matches!(result, Err(ConfigError::Parse(_))));
     }
 
     #[test]

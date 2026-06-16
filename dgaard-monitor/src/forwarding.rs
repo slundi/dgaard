@@ -9,8 +9,8 @@ use hyper_util::rt::TokioExecutor;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 
-use crate::config::ForwardingConfig;
-use crate::protocol::StatAction;
+use crate::config::{ForwardFormat, ForwardingConfig};
+use crate::protocol::{StatAction, StatBlockReason};
 use crate::state::AppState;
 
 // --- HTTP client ---
@@ -46,6 +46,7 @@ pub async fn run(
         template,
         forward_url,
         filter,
+        format,
     } = config;
     let filter: HashSet<String> = filter.into_iter().collect();
 
@@ -73,19 +74,30 @@ pub async fn run(
                             continue;
                         }
 
-                        // Resolve once; reuse for both sinks.
                         let domain = resolve_domain(&state, event.domain_hash).await;
                         let ip = format_ip(&event.client_ip);
-                        let act = action_name(&event.action);
 
-                        let line = apply_template(&template, event.timestamp, &ip, act, &domain);
-                        if let Err(e) = output.write_line(&line).await {
+                        let body = format_event(
+                            &format,
+                            &template,
+                            event.timestamp,
+                            &ip,
+                            &event.action,
+                            &domain,
+                        );
+                        if let Err(e) = output.write_line(&body).await {
                             eprintln!("forwarding: write error: {e}");
                         }
 
                         if let (Some(client), Some(url)) = (&http_client, &forward_url) {
-                            let json = format_json(event.timestamp, &ip, act, &domain);
-                            post_event(client, url, &json).await;
+                            let ct = format.content_type();
+                            // ES bulk API requires a trailing newline after the last document.
+                            // write_line already handles the file case; add it here for HTTP.
+                            if ct == "application/x-ndjson" {
+                                post_event(client, url, &format!("{body}\n"), ct).await;
+                            } else {
+                                post_event(client, url, &body, ct).await;
+                            }
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -100,13 +112,13 @@ pub async fn run(
 
 // --- HTTP sink ---
 
-/// POST `json` to `url`, logging any transport or non-2xx errors.
-async fn post_event(client: &HttpsClient, url: &str, json: &str) {
-    let body = Full::new(Bytes::from(json.to_owned()));
+/// POST `body` to `url` with the given `content_type`, logging any errors.
+async fn post_event(client: &HttpsClient, url: &str, body: &str, content_type: &str) {
+    let body = Full::new(Bytes::from(body.to_owned()));
     let req = match Request::builder()
         .method("POST")
         .uri(url)
-        .header("content-type", "application/json")
+        .header("content-type", content_type)
         .body(body)
     {
         Ok(r) => r,
@@ -155,6 +167,191 @@ fn json_escape(s: &str) -> String {
         }
     }
     out
+}
+
+// --- RFC 3339 timestamp ---
+
+/// Convert Unix epoch seconds to an RFC 3339 UTC string without external crates.
+///
+/// Uses Howard Hinnant's `civil_from_days` algorithm for the date portion.
+fn unix_to_rfc3339(secs: u64) -> String {
+    let days = secs / 86400;
+    let rem = secs % 86400;
+    let hh = rem / 3600;
+    let mm = (rem % 3600) / 60;
+    let ss = rem % 60;
+
+    let z = days as i64 + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+    let yr = if mo <= 2 { y + 1 } else { y };
+
+    format!("{yr:04}-{mo:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
+}
+
+// --- Reason labels ---
+
+/// Return a `|`-joined list of set flag names from the action's reason, or `"-"`.
+fn reason_labels(action: &StatAction) -> String {
+    let reason = match action {
+        StatAction::Blocked(r) | StatAction::Suspicious(r) | StatAction::HighlySuspicious(r) => *r,
+        _ => return "-".to_string(),
+    };
+    if reason.is_empty() {
+        return "-".to_string();
+    }
+    let named: Vec<&str> = reason.iter_names().map(|(n, _)| n).collect();
+    let unknown = reason.bits() & !StatBlockReason::all().bits();
+    if unknown != 0 {
+        return if named.is_empty() {
+            format!("CUSTOM_0x{unknown:08x}")
+        } else {
+            format!("{}|CUSTOM_0x{unknown:08x}", named.join("|"))
+        };
+    }
+    named.join("|")
+}
+
+// --- RFC 5424 syslog ---
+
+/// Escape `"`, `\`, and `]` for RFC 5424 structured-data param-values.
+fn syslog_sd_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            ']' => out.push_str("\\]"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn syslog_severity(action: &StatAction) -> u8 {
+    match action {
+        StatAction::Allowed | StatAction::Proxied => 6,
+        StatAction::Suspicious(_) => 5,
+        StatAction::HighlySuspicious(_) | StatAction::Blocked(_) => 4,
+    }
+}
+
+fn format_syslog(timestamp: u64, ip: &str, action: &StatAction, domain: &str) -> String {
+    let severity = syslog_severity(action);
+    let pri = 4u8 * 8 + severity; // facility 4 = security/authorization messages
+    let ts = unix_to_rfc3339(timestamp);
+    let act = action_name(action);
+    let reason = reason_labels(action);
+    format!(
+        "<{pri}>1 {ts} - dgaard - DNS-QUERY \
+         [dgaard@32473 domain=\"{dom_esc}\" client_ip=\"{ip_esc}\" \
+         action=\"{act}\" reason=\"{reason_esc}\"] \
+         DNS query {act}: {domain}",
+        dom_esc = syslog_sd_escape(domain),
+        ip_esc = syslog_sd_escape(ip),
+        reason_esc = syslog_sd_escape(&reason),
+    )
+}
+
+// --- CEF ---
+
+/// Escape `\`, `=`, and newlines for CEF extension field values.
+fn cef_ext_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '=' => out.push_str("\\="),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn cef_severity(action: &StatAction) -> u8 {
+    match action {
+        StatAction::Allowed | StatAction::Proxied => 1,
+        StatAction::Suspicious(_) => 5,
+        StatAction::HighlySuspicious(_) => 7,
+        StatAction::Blocked(_) => 8,
+    }
+}
+
+fn format_cef(timestamp: u64, ip: &str, action: &StatAction, domain: &str) -> String {
+    let (sig_id, event_name) = match action {
+        StatAction::Allowed => ("DNS-ALLOWED", "DNS Query Allowed"),
+        StatAction::Proxied => ("DNS-PROXIED", "DNS Query Proxied"),
+        StatAction::Suspicious(_) => ("DNS-SUSPICIOUS", "DNS Query Suspicious"),
+        StatAction::HighlySuspicious(_) => ("DNS-HIGHLY-SUSPICIOUS", "DNS Query Highly Suspicious"),
+        StatAction::Blocked(_) => ("DNS-BLOCKED", "DNS Query Blocked"),
+    };
+    let act = action_name(action);
+    let reason = reason_labels(action);
+    let rt_ms = timestamp.saturating_mul(1000);
+    format!(
+        "CEF:0|Stamus Networks|dgaard|1.0|{sig_id}|{event_name}|{sev}|\
+         src={ip} dhost={domain} act={act} reason={reason} rt={rt_ms}",
+        sev = cef_severity(action),
+        ip = cef_ext_escape(ip),
+        domain = cef_ext_escape(domain),
+        act = cef_ext_escape(act),
+        reason = cef_ext_escape(&reason),
+    )
+}
+
+// --- Elasticsearch bulk ---
+
+fn format_elasticsearch(timestamp: u64, ip: &str, action: &StatAction, domain: &str) -> String {
+    let ts = unix_to_rfc3339(timestamp);
+    let act = action_name(action);
+    let reason = reason_labels(action);
+    let (kind, category, ev_type) = match action {
+        StatAction::Allowed | StatAction::Proxied => ("event", "network", "allowed"),
+        StatAction::Blocked(_) => ("alert", "network", "denied"),
+        StatAction::Suspicious(_) | StatAction::HighlySuspicious(_) => {
+            ("alert", "intrusion_detection", "info")
+        }
+    };
+    format!(
+        "{index_action}\n{{{doc}}}",
+        index_action = r#"{"index":{}}"#,
+        doc = format!(
+            r#""@timestamp":"{ts}","client_ip":"{ip}","action":"{act}","domain":"{domain}","reason":"{reason}","event":{{"kind":"{kind}","category":["{category}"],"type":["{ev_type}"],"dataset":"dgaard.dns"}}"#,
+            ip = json_escape(ip),
+            act = json_escape(act),
+            domain = json_escape(domain),
+            reason = json_escape(&reason),
+        )
+    )
+}
+
+// --- Format dispatcher ---
+
+fn format_event(
+    format: &ForwardFormat,
+    template: &str,
+    timestamp: u64,
+    ip: &str,
+    action: &StatAction,
+    domain: &str,
+) -> String {
+    match format {
+        ForwardFormat::Template => {
+            apply_template(template, timestamp, ip, action_name(action), domain)
+        }
+        ForwardFormat::Json => format_json(timestamp, ip, action_name(action), domain),
+        ForwardFormat::Syslog => format_syslog(timestamp, ip, action, domain),
+        ForwardFormat::Cef => format_cef(timestamp, ip, action, domain),
+        ForwardFormat::Elasticsearch => format_elasticsearch(timestamp, ip, action, domain),
+    }
 }
 
 // --- Output sink ---
@@ -498,7 +695,7 @@ mod tests {
         let client = build_https_client();
         let url = format!("http://127.0.0.1:{port}/events");
         let json = format_json(1_700_000_000, "192.168.1.1", "Blocked", "evil.com");
-        post_event(&client, &url, &json).await;
+        post_event(&client, &url, &json, "application/json").await;
 
         let raw_request = server.await.unwrap();
         assert!(
@@ -544,6 +741,320 @@ mod tests {
         let client = build_https_client();
         let url = format!("http://127.0.0.1:{port}/events");
         // Should not panic — just logs the error.
-        post_event(&client, &url, "{}").await;
+        post_event(&client, &url, "{}", "application/json").await;
+    }
+
+    // --- unix_to_rfc3339 ---
+
+    #[test]
+    fn test_unix_to_rfc3339_known_timestamp() {
+        // python3: datetime.utcfromtimestamp(1700000000) == 2023-11-14 22:13:20
+        assert_eq!(unix_to_rfc3339(1_700_000_000), "2023-11-14T22:13:20Z");
+    }
+
+    #[test]
+    fn test_unix_to_rfc3339_epoch() {
+        assert_eq!(unix_to_rfc3339(0), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn test_unix_to_rfc3339_leap_day() {
+        // 2000-02-29T00:00:00Z = 951782400
+        assert_eq!(unix_to_rfc3339(951_782_400), "2000-02-29T00:00:00Z");
+    }
+
+    // --- reason_labels ---
+
+    #[test]
+    fn test_reason_labels_allowed_proxied_returns_dash() {
+        assert_eq!(reason_labels(&StatAction::Allowed), "-");
+        assert_eq!(reason_labels(&StatAction::Proxied), "-");
+    }
+
+    #[test]
+    fn test_reason_labels_empty_reason_returns_dash() {
+        assert_eq!(
+            reason_labels(&StatAction::Blocked(StatBlockReason::empty())),
+            "-"
+        );
+    }
+
+    #[test]
+    fn test_reason_labels_single_flag() {
+        let r = StatBlockReason::HIGH_ENTROPY;
+        assert_eq!(reason_labels(&StatAction::Blocked(r)), "HIGH_ENTROPY");
+    }
+
+    #[test]
+    fn test_reason_labels_multiple_flags_pipe_joined() {
+        let r = StatBlockReason::STATIC_BLACKLIST | StatBlockReason::NRD_LIST;
+        let labels = reason_labels(&StatAction::Blocked(r));
+        assert!(labels.contains("STATIC_BLACKLIST"), "got: {labels}");
+        assert!(labels.contains("NRD_LIST"), "got: {labels}");
+        assert!(labels.contains('|'), "expected pipe separator: {labels}");
+    }
+
+    #[test]
+    fn test_reason_labels_suspicious_and_highly_suspicious() {
+        let r = StatBlockReason::CNAME_CLOAKING;
+        assert_eq!(reason_labels(&StatAction::Suspicious(r)), "CNAME_CLOAKING");
+        assert_eq!(
+            reason_labels(&StatAction::HighlySuspicious(r)),
+            "CNAME_CLOAKING"
+        );
+    }
+
+    // --- format_syslog ---
+
+    #[test]
+    fn test_format_syslog_blocked_pri_36() {
+        let action = StatAction::Blocked(StatBlockReason::STATIC_BLACKLIST);
+        let line = format_syslog(1_700_000_000, "192.168.1.1", &action, "evil.com");
+        // facility=4, severity=4 (Warning) → PRI = 36
+        assert!(line.starts_with("<36>1 "), "wrong PRI: {line}");
+        assert!(line.contains("2023-11-14T22:13:20Z"), "missing ts: {line}");
+        assert!(line.contains("dgaard"), "missing app-name: {line}");
+        assert!(
+            line.contains(r#"domain="evil.com""#),
+            "missing domain SD: {line}"
+        );
+        assert!(
+            line.contains(r#"client_ip="192.168.1.1""#),
+            "missing ip SD: {line}"
+        );
+        assert!(
+            line.contains(r#"action="Blocked""#),
+            "missing action SD: {line}"
+        );
+        assert!(
+            line.contains(r#"reason="STATIC_BLACKLIST""#),
+            "missing reason SD: {line}"
+        );
+        assert!(line.contains("[dgaard@32473 "), "missing SD-ID: {line}");
+    }
+
+    #[test]
+    fn test_format_syslog_allowed_pri_38() {
+        // facility=4, severity=6 (Informational) → PRI = 38
+        let line = format_syslog(0, "1.2.3.4", &StatAction::Allowed, "example.com");
+        assert!(line.starts_with("<38>1 "), "expected PRI 38: {line}");
+    }
+
+    #[test]
+    fn test_format_syslog_suspicious_pri_37() {
+        // facility=4, severity=5 (Notice) → PRI = 37
+        let action = StatAction::Suspicious(StatBlockReason::empty());
+        let line = format_syslog(0, "1.2.3.4", &action, "x.com");
+        assert!(line.starts_with("<37>1 "), "expected PRI 37: {line}");
+    }
+
+    #[test]
+    fn test_format_syslog_escapes_double_quote_in_domain() {
+        let action = StatAction::Allowed;
+        let line = format_syslog(0, "1.2.3.4", &action, r#"bad"domain.com"#);
+        assert!(
+            line.contains(r#"domain=\"bad\"domain.com\""#) || line.contains(r#"bad\"domain"#),
+            "quote not escaped: {line}"
+        );
+    }
+
+    // --- format_cef ---
+
+    #[test]
+    fn test_format_cef_blocked_structure() {
+        let action = StatAction::Blocked(StatBlockReason::STATIC_BLACKLIST);
+        let line = format_cef(1_700_000_000, "192.168.1.1", &action, "evil.com");
+        assert!(
+            line.starts_with("CEF:0|Stamus Networks|dgaard|1.0|DNS-BLOCKED|DNS Query Blocked|8|"),
+            "wrong header: {line}"
+        );
+        assert!(line.contains("src=192.168.1.1"), "missing src: {line}");
+        assert!(line.contains("dhost=evil.com"), "missing dhost: {line}");
+        assert!(line.contains("act=Blocked"), "missing act: {line}");
+        assert!(
+            line.contains("reason=STATIC_BLACKLIST"),
+            "missing reason: {line}"
+        );
+        assert!(line.contains("rt=1700000000000"), "wrong rt: {line}");
+    }
+
+    #[test]
+    fn test_format_cef_severity_mapping() {
+        let cases: &[(&StatAction, u8)] = &[
+            (&StatAction::Allowed, 1),
+            (&StatAction::Proxied, 1),
+            (&StatAction::Suspicious(StatBlockReason::empty()), 5),
+            (&StatAction::HighlySuspicious(StatBlockReason::empty()), 7),
+            (&StatAction::Blocked(StatBlockReason::empty()), 8),
+        ];
+        for (action, expected_sev) in cases {
+            let line = format_cef(0, "1.2.3.4", action, "x.com");
+            let sev_marker = format!("|{expected_sev}|");
+            assert!(
+                line.contains(&sev_marker),
+                "action {:?} → expected severity {expected_sev}: {line}",
+                action
+            );
+        }
+    }
+
+    #[test]
+    fn test_format_cef_escapes_equals_in_ext_values() {
+        let line = format_cef(0, "1.2.3.4", &StatAction::Allowed, "a=b.com");
+        assert!(line.contains(r"dhost=a\=b.com"), "= not escaped: {line}");
+    }
+
+    // --- format_elasticsearch ---
+
+    #[test]
+    fn test_format_elasticsearch_two_lines() {
+        let action = StatAction::Blocked(StatBlockReason::HIGH_ENTROPY);
+        let body = format_elasticsearch(1_700_000_000, "192.168.1.1", &action, "evil.com");
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 2, "expected 2 lines");
+        assert_eq!(lines[0], r#"{"index":{}}"#);
+    }
+
+    #[test]
+    fn test_format_elasticsearch_document_fields() {
+        let action = StatAction::Blocked(StatBlockReason::HIGH_ENTROPY);
+        let body = format_elasticsearch(1_700_000_000, "192.168.1.1", &action, "evil.com");
+        let doc = body.lines().nth(1).unwrap();
+        assert!(
+            doc.contains(r#""@timestamp":"2023-11-14T22:13:20Z""#),
+            "missing @timestamp: {doc}"
+        );
+        assert!(
+            doc.contains(r#""client_ip":"192.168.1.1""#),
+            "missing client_ip: {doc}"
+        );
+        assert!(
+            doc.contains(r#""action":"Blocked""#),
+            "missing action: {doc}"
+        );
+        assert!(
+            doc.contains(r#""domain":"evil.com""#),
+            "missing domain: {doc}"
+        );
+        assert!(
+            doc.contains(r#""reason":"HIGH_ENTROPY""#),
+            "missing reason: {doc}"
+        );
+        assert!(
+            doc.contains(r#""dataset":"dgaard.dns""#),
+            "missing dataset: {doc}"
+        );
+    }
+
+    #[test]
+    fn test_format_elasticsearch_event_classification() {
+        let cases: &[(&StatAction, &str, &str)] = &[
+            (&StatAction::Allowed, "event", "allowed"),
+            (&StatAction::Proxied, "event", "allowed"),
+            (
+                &StatAction::Blocked(StatBlockReason::empty()),
+                "alert",
+                "denied",
+            ),
+            (
+                &StatAction::Suspicious(StatBlockReason::empty()),
+                "alert",
+                "info",
+            ),
+            (
+                &StatAction::HighlySuspicious(StatBlockReason::empty()),
+                "alert",
+                "info",
+            ),
+        ];
+        for (action, kind, ev_type) in cases {
+            let body = format_elasticsearch(0, "1.2.3.4", action, "x.com");
+            assert!(
+                body.contains(&format!(r#""kind":"{kind}""#)),
+                "action {:?} expected kind={kind}: {body}",
+                action
+            );
+            assert!(
+                body.contains(&format!(r#""type":["{ev_type}"]"#)),
+                "action {:?} expected type={ev_type}: {body}",
+                action
+            );
+        }
+    }
+
+    // --- format_event dispatcher ---
+
+    #[test]
+    fn test_format_event_template_dispatch() {
+        use crate::config::ForwardFormat;
+        let body = format_event(
+            &ForwardFormat::Template,
+            "{timestamp} {domain}",
+            100,
+            "1.2.3.4",
+            &StatAction::Allowed,
+            "example.com",
+        );
+        assert_eq!(body, "100 example.com");
+    }
+
+    #[test]
+    fn test_format_event_json_dispatch() {
+        use crate::config::ForwardFormat;
+        let body = format_event(
+            &ForwardFormat::Json,
+            "",
+            0,
+            "1.2.3.4",
+            &StatAction::Allowed,
+            "example.com",
+        );
+        assert!(body.starts_with('{'), "expected JSON object: {body}");
+        assert!(body.contains(r#""action":"Allowed""#));
+    }
+
+    #[test]
+    fn test_format_event_syslog_dispatch() {
+        use crate::config::ForwardFormat;
+        let body = format_event(
+            &ForwardFormat::Syslog,
+            "",
+            0,
+            "1.2.3.4",
+            &StatAction::Allowed,
+            "example.com",
+        );
+        assert!(body.starts_with("<38>1 "), "expected syslog PRI: {body}");
+    }
+
+    #[test]
+    fn test_format_event_cef_dispatch() {
+        use crate::config::ForwardFormat;
+        let body = format_event(
+            &ForwardFormat::Cef,
+            "",
+            0,
+            "1.2.3.4",
+            &StatAction::Allowed,
+            "example.com",
+        );
+        assert!(body.starts_with("CEF:0|"), "expected CEF header: {body}");
+    }
+
+    #[test]
+    fn test_format_event_elasticsearch_dispatch() {
+        use crate::config::ForwardFormat;
+        let body = format_event(
+            &ForwardFormat::Elasticsearch,
+            "",
+            0,
+            "1.2.3.4",
+            &StatAction::Allowed,
+            "example.com",
+        );
+        assert!(
+            body.starts_with(r#"{"index":{}}"#),
+            "expected ES index action: {body}"
+        );
     }
 }
