@@ -158,6 +158,7 @@ pub async fn sighup_reload_task(state: Arc<ArcSwap<EngineState>>, config_file: S
         let path = config_file.clone();
         let result = tokio::task::spawn_blocking(move || {
             let new_cfg = EngineConfig::load(Path::new(&path)).map_err(|e| e.to_string())?;
+            new_cfg.validate().map_err(|e| e.to_string())?;
             Ok::<EngineState, String>(EngineState::new(new_cfg, seed))
         })
         .await;

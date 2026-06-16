@@ -1008,6 +1008,49 @@ impl Config {
         let content = std::fs::read_to_string(path)?;
         Self::parse(&content)
     }
+
+    /// Validate semantic constraints that cannot be checked from TOML structure alone.
+    ///
+    /// Checks:
+    /// - Every `upstream.servers` entry is a valid `ip:port` or `[ipv6]:port` socket address.
+    /// - Every `security.asn_filter.blocked_ranges` entry is a valid CIDR range (only when the
+    ///   filter is enabled, since disabled ranges are never evaluated).
+    ///
+    /// Called by the SIGHUP hot-reload path before building and atomically swapping in the new
+    /// engine, so a misconfigured reload leaves the running engine untouched rather than silently
+    /// degrading service.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        for server in &self.upstream.servers {
+            if server.parse::<std::net::SocketAddr>().is_err() {
+                return Err(ConfigError::InvalidValue {
+                    key: "upstream.servers".to_string(),
+                    message: format!(
+                        "\"{server}\" is not a valid socket address (expected ip:port or [ipv6]:port)"
+                    ),
+                    span: toml_span::Span::default(),
+                });
+            }
+        }
+
+        if self.security.asn_filter.enabled {
+            for range in &self.security.asn_filter.blocked_ranges {
+                let valid = if range.contains(':') {
+                    crate::filter::engine::parse_cidr_v6(range).is_some()
+                } else {
+                    crate::filter::engine::parse_cidr_v4(range).is_some()
+                };
+                if !valid {
+                    return Err(ConfigError::InvalidValue {
+                        key: "security.asn_filter.blocked_ranges".to_string(),
+                        message: format!("\"{range}\" is not a valid CIDR range"),
+                        span: toml_span::Span::default(),
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2514,6 +2557,99 @@ list_path = []
             Config::load(f.path()).is_err(),
             "missing required 'code' field should be rejected"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Config::validate
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_accepts_valid_ipv4_upstream_servers() {
+        let mut cfg = Config::default();
+        cfg.upstream.servers = vec!["1.1.1.1:53".into(), "9.9.9.9:53".into()];
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_valid_ipv6_upstream_server() {
+        let mut cfg = Config::default();
+        cfg.upstream.servers = vec!["[::1]:53".into()];
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_empty_upstream_servers() {
+        let mut cfg = Config::default();
+        cfg.upstream.servers = vec![];
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_server_without_port() {
+        let mut cfg = Config::default();
+        cfg.upstream.servers = vec!["1.1.1.1".into()];
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::InvalidValue { key, .. } if key == "upstream.servers"),
+            "unexpected error: {err}"
+        );
+        assert!(err.to_string().contains("1.1.1.1"));
+    }
+
+    #[test]
+    fn validate_rejects_garbage_server_address() {
+        let mut cfg = Config::default();
+        cfg.upstream.servers = vec!["not-an-address".into()];
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::InvalidValue { key, .. } if key == "upstream.servers"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_first_bad_server_in_mixed_list() {
+        let mut cfg = Config::default();
+        cfg.upstream.servers = vec!["1.1.1.1:53".into(), "bad".into(), "9.9.9.9:53".into()];
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_valid_asn_cidr_when_enabled() {
+        let mut cfg = Config::default();
+        cfg.security.asn_filter.enabled = true;
+        cfg.security.asn_filter.blocked_ranges = vec!["192.0.2.0/24".into()];
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_asn_cidr_when_enabled() {
+        let mut cfg = Config::default();
+        cfg.security.asn_filter.enabled = true;
+        cfg.security.asn_filter.blocked_ranges = vec!["999.999.0.0/24".into()];
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::InvalidValue { key, .. }
+                if key == "security.asn_filter.blocked_ranges"),
+            "unexpected error: {err}"
+        );
+        assert!(err.to_string().contains("999.999.0.0/24"));
+    }
+
+    #[test]
+    fn validate_ignores_invalid_asn_cidr_when_disabled() {
+        let mut cfg = Config::default();
+        cfg.security.asn_filter.enabled = false;
+        cfg.security.asn_filter.blocked_ranges = vec!["not-a-cidr".into()];
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_valid_ipv6_asn_cidr() {
+        let mut cfg = Config::default();
+        cfg.security.asn_filter.enabled = true;
+        cfg.security.asn_filter.blocked_ranges = vec!["2001:db8::/32".into()];
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]
