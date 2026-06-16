@@ -393,6 +393,10 @@ fn parse_server(table: &toml_span::value::Table<'_>) -> Result<ServerConfig, Con
         cfg.runtime = parse_runtime(rt_table)?;
     }
 
+    if let Some(s) = get_str(table, "metrics_listen")? {
+        cfg.metrics_listen = Some(s.to_string());
+    }
+
     Ok(cfg)
 }
 
@@ -1030,6 +1034,18 @@ impl Config {
                     span: toml_span::Span::default(),
                 });
             }
+        }
+
+        if let Some(addr) = &self.server.metrics_listen
+            && addr.parse::<std::net::SocketAddr>().is_err()
+        {
+            return Err(ConfigError::InvalidValue {
+                key: "server.metrics_listen".to_string(),
+                message: format!(
+                    "\"{addr}\" is not a valid socket address (expected ip:port or [ipv6]:port)"
+                ),
+                span: toml_span::Span::default(),
+            });
         }
 
         if self.security.asn_filter.enabled {
@@ -2668,5 +2684,49 @@ code = "MINIMAL"
         assert_eq!(flag.description, "");
         assert_eq!(flag.suspicious_score, 1);
         assert!(flag.list_path.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // metrics_listen
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_metrics_listen_absent_yields_none() {
+        let cfg = Config::parse("").unwrap();
+        assert_eq!(cfg.server.metrics_listen, None);
+    }
+
+    #[test]
+    fn parse_metrics_listen_sets_address() {
+        let cfg = Config::parse(
+            r#"
+[server]
+metrics_listen = "127.0.0.1:9153"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.server.metrics_listen, Some("127.0.0.1:9153".into()));
+    }
+
+    #[test]
+    fn validate_accepts_valid_metrics_listen() {
+        let mut cfg = Config::default();
+        cfg.server.metrics_listen = Some("127.0.0.1:9153".into());
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_metrics_listen() {
+        let mut cfg = Config::default();
+        cfg.server.metrics_listen = Some("not-an-address".into());
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("server.metrics_listen"));
+    }
+
+    #[test]
+    fn validate_accepts_none_metrics_listen() {
+        let mut cfg = Config::default();
+        cfg.server.metrics_listen = None;
+        assert!(cfg.validate().is_ok());
     }
 }

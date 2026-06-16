@@ -3,6 +3,7 @@ mod config;
 mod debug;
 mod dns;
 mod filter;
+mod metrics;
 mod model;
 mod resolve;
 mod runtime;

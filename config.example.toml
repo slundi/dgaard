@@ -13,6 +13,26 @@ stats_socket_path = "/var/run/dgaard/stats.sock"
 # Reject any domain containing non-ANSI characters (Punycode)
 block_idn = true
 
+# Optional Prometheus scrape endpoint.
+# When set, dgaard binds an HTTP server on this address and exposes
+# /metrics in OpenMetrics text format (Content-Type: text/plain; version=0.0.4).
+# Leave commented out (the default) to disable the endpoint entirely.
+#
+# Exposed counters:
+#   dgaard_queries_total   — every DNS query received
+#   dgaard_queries_blocked — queries blocked by any filter
+#   dgaard_queries_allowed — queries explicitly allowed (whitelist / hot-cache)
+#   dgaard_queries_proxied — queries forwarded to the upstream resolver
+#
+# Typical Prometheus scrape config:
+#   - job_name: dgaard
+#     static_configs:
+#       - targets: ['127.0.0.1:9153']
+#
+# Port 9153 is the conventional port for DNS-related exporters (used by CoreDNS).
+# Use 0.0.0.0:9153 to allow scraping from a remote Prometheus server on the LAN.
+# metrics_listen = "127.0.0.1:9153"
+
 # The default order optimized for OpenWrt
 pipeline = [
   "Whitelist", # 1. Instant pass

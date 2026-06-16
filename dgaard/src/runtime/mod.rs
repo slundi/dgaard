@@ -134,7 +134,11 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
 
         // Initialize stats channel and spawn collector
         let stats_receiver = init_stats_channel();
-        tokio::spawn(stats_collector_task(stats_receiver, shutdown_rx));
+        tokio::spawn(stats_collector_task(stats_receiver, shutdown_rx.clone()));
+
+        if let Some(addr) = CONFIG.load().server.metrics_listen.clone() {
+            tokio::spawn(crate::metrics::serve(addr, shutdown_rx.clone()));
+        }
 
         let tokio_socket = get_socket(&CONFIG.load().server.listen_addr)?;
 
@@ -181,6 +185,10 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
         // Initialize stats channel and spawn collector
         let stats_receiver = init_stats_channel();
         tokio::spawn(stats_collector_task(stats_receiver, shutdown_rx.clone()));
+
+        if let Some(addr) = CONFIG.load().server.metrics_listen.clone() {
+            tokio::spawn(crate::metrics::serve(addr, shutdown_rx.clone()));
+        }
 
         let semaphore = Arc::new(Semaphore::new(
             CONFIG.load().server.runtime.max_concurrent_queries,

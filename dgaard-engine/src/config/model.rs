@@ -111,6 +111,11 @@ pub struct ServerConfig {
 
     /// Tokio runtime tuning parameters.
     pub runtime: RuntimeConfig,
+
+    /// Optional `ip:port` on which to expose a Prometheus `/metrics` scrape
+    /// endpoint.  Leave unset (the default) to disable the endpoint entirely.
+    /// Example: `"127.0.0.1:9153"`.
+    pub metrics_listen: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -129,6 +134,7 @@ impl Default for ServerConfig {
                 PipelineStep::Upstream,
             ],
             runtime: RuntimeConfig::default(),
+            metrics_listen: None,
         }
     }
 }
