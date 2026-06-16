@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod debug;
 mod dns;
+mod dnssec;
 mod filter;
 mod metrics;
 mod model;

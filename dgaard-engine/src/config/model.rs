@@ -745,6 +745,48 @@ impl Default for GeoIpConfig {
 }
 
 // ---------------------------------------------------------------------------
+// [security.dnssec]
+// ---------------------------------------------------------------------------
+
+/// Action taken when DNSSEC validation returns BOGUS for a domain.
+#[derive(Debug, Default, PartialEq, Clone)]
+pub enum DnssecAction {
+    /// Return SERVFAIL to the client — the standard RFC-compliant response for
+    /// a DNSSEC validation failure.
+    #[default]
+    Block,
+    /// Forward the upstream response unchanged and log the BOGUS result.
+    /// Use this during a trial period to measure false-positive rates before
+    /// enabling full enforcement.
+    Log,
+}
+
+/// DNSSEC validation policy using a side-channel hickory resolver.
+///
+/// When enabled, each forwarded query is validated in parallel against the
+/// same upstream servers with DNSSEC validation active. If the response is
+/// BOGUS (signature mismatch or missing chain of trust), the configured action
+/// is applied.
+///
+/// Maps to `[security.dnssec]` in the configuration file.
+#[derive(Debug, PartialEq, Clone)]
+pub struct DnssecConfig {
+    /// Master switch — set to `true` to enable DNSSEC validation.
+    pub enabled: bool,
+    /// Action taken on BOGUS validation results.
+    pub action: DnssecAction,
+}
+
+impl Default for DnssecConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            action: DnssecAction::Block,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // [security]
 // ---------------------------------------------------------------------------
 
@@ -805,6 +847,8 @@ pub struct SecurityConfig {
     pub geo_ip: GeoIpConfig,
     /// RFC 6761 special-use domain isolation.
     pub special_use: SpecialUseConfig,
+    /// DNSSEC validation policy.
+    pub dnssec: DnssecConfig,
     /// User-defined custom threat intelligence feeds mapped to bits 16–31.
     pub custom_flags: Vec<CustomFlagConfig>,
 }

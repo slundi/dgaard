@@ -140,6 +140,10 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
             tokio::spawn(crate::metrics::serve(addr, shutdown_rx.clone()));
         }
 
+        if CONFIG.load().security.dnssec.enabled {
+            crate::dnssec::init(&CONFIG.load().upstream.servers.clone());
+        }
+
         let tokio_socket = get_socket(&CONFIG.load().server.listen_addr)?;
 
         let semaphore = Arc::new(Semaphore::new(
@@ -188,6 +192,10 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
 
         if let Some(addr) = CONFIG.load().server.metrics_listen.clone() {
             tokio::spawn(crate::metrics::serve(addr, shutdown_rx.clone()));
+        }
+
+        if CONFIG.load().security.dnssec.enabled {
+            crate::dnssec::init(&CONFIG.load().upstream.servers.clone());
         }
 
         let semaphore = Arc::new(Semaphore::new(

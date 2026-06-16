@@ -615,6 +615,32 @@ fn parse_special_use(table: &toml_span::value::Table<'_>) -> Result<SpecialUseCo
     Ok(cfg)
 }
 
+/// Parse `[security.dnssec]` section.
+fn parse_dnssec(table: &toml_span::value::Table<'_>) -> Result<DnssecConfig, ConfigError> {
+    let mut cfg = DnssecConfig::default();
+
+    if let Some(b) = get_bool(table, "enabled")? {
+        cfg.enabled = b;
+    }
+    if let Some(s) = get_str(table, "action")? {
+        cfg.action = match s {
+            "block" => DnssecAction::Block,
+            "log" => DnssecAction::Log,
+            other => {
+                return Err(ConfigError::InvalidValue {
+                    key: "security.dnssec.action".to_string(),
+                    message: format!(
+                        "\"{other}\" is not a valid action (expected \"block\" or \"log\")"
+                    ),
+                    span: toml_span::Span::default(),
+                });
+            }
+        };
+    }
+
+    Ok(cfg)
+}
+
 /// Parse `[security.geo_ip]` section.
 fn parse_geo_ip(table: &toml_span::value::Table<'_>) -> Result<GeoIpConfig, ConfigError> {
     let mut cfg = GeoIpConfig::default();
@@ -776,6 +802,9 @@ fn parse_security(table: &toml_span::value::Table<'_>) -> Result<SecurityConfig,
     }
     if let Some(t) = get_table(table, "special_use")? {
         cfg.special_use = parse_special_use(t)?;
+    }
+    if let Some(t) = get_table(table, "dnssec")? {
+        cfg.dnssec = parse_dnssec(t)?;
     }
 
     cfg.custom_flags = parse_custom_flags(table)?;

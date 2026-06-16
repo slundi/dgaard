@@ -7,10 +7,12 @@ use std::sync::Arc;
 
 use tokio::net::UdpSocket;
 
+use crate::config::DnssecAction;
 use crate::config::ScoringConfig;
 use crate::debug::debug_print;
 use crate::dns::packet::DnsPacket;
 use crate::dns::upstream::forward_to_upstream;
+use crate::dnssec::DnssecStatus;
 use crate::model::{Action, StatAction, StatBlockReason, SuspicionScore};
 use crate::resolve::{check_qclass, check_qtype, resolve_with_score, score_answer};
 use crate::{CONFIG, STATS_COUNTERS, STATS_SENDER};
@@ -125,11 +127,34 @@ pub(crate) async fn handle_query(
     );
 
     // 3. Process the action and determine stat action
-    let scoring = &CONFIG.load();
-    let scoring = &scoring.security.scoring;
+    let cfg_snap = CONFIG.load();
+    let scoring = &cfg_snap.security.scoring;
+    let dnssec_cfg = cfg_snap.security.dnssec.clone();
     let (response, stat_action) = match &action {
         Action::Allow => {
-            match forward_to_upstream(&packet).await {
+            let (upstream_result, dnssec_status) = if dnssec_cfg.enabled {
+                tokio::join!(
+                    forward_to_upstream(&packet),
+                    crate::dnssec::validate(&dns_packet.domain, dns_packet.qtype),
+                )
+            } else {
+                (forward_to_upstream(&packet).await, DnssecStatus::Ok)
+            };
+            if dnssec_status == DnssecStatus::Bogus {
+                if dnssec_cfg.action == DnssecAction::Block {
+                    STATS_COUNTERS.increment_blocked();
+                    socket
+                        .send_to(
+                            &DnsPacket::build_servfail_response(&dns_packet.message),
+                            peer,
+                        )
+                        .await?;
+                    return Ok(());
+                } else {
+                    log::warn!("DNSSEC BOGUS (log-only): {}", dns_packet.domain);
+                }
+            }
+            match upstream_result {
                 Ok(upstream_bytes) => {
                     // DPI: score the upstream answer; block if it crosses the configured threshold
                     if let Some(answer) = InspectedAnswer::from_response(&upstream_bytes) {
@@ -158,7 +183,29 @@ pub(crate) async fn handle_query(
             }
         }
         Action::ProxyToUpstream => {
-            match forward_to_upstream(&packet).await {
+            let (upstream_result, dnssec_status) = if dnssec_cfg.enabled {
+                tokio::join!(
+                    forward_to_upstream(&packet),
+                    crate::dnssec::validate(&dns_packet.domain, dns_packet.qtype),
+                )
+            } else {
+                (forward_to_upstream(&packet).await, DnssecStatus::Ok)
+            };
+            if dnssec_status == DnssecStatus::Bogus {
+                if dnssec_cfg.action == DnssecAction::Block {
+                    STATS_COUNTERS.increment_blocked();
+                    socket
+                        .send_to(
+                            &DnsPacket::build_servfail_response(&dns_packet.message),
+                            peer,
+                        )
+                        .await?;
+                    return Ok(());
+                } else {
+                    log::warn!("DNSSEC BOGUS (log-only): {}", dns_packet.domain);
+                }
+            }
+            match upstream_result {
                 Ok(upstream_bytes) => {
                     // DPI: score the upstream answer; block if it crosses the configured threshold
                     if let Some(answer) = InspectedAnswer::from_response(&upstream_bytes) {

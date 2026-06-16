@@ -19,7 +19,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "time"] }
 
 # DNS Protocol handling and for Domain/TLD parsing logic
-hickory-resolver.workspace = true
+hickory-resolver = { workspace = true, features = ["dnssec-ring"] }
 # to handle multiple socket on the same port
 socket2.workspace = true
 

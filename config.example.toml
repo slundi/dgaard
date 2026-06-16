@@ -482,3 +482,27 @@ expected_total_domains = 1000000
 # `suspicious_threshold` but not `highly_suspicious_threshold`.
 # Default: `false`.
 # log_suspicious = false
+
+# DNSSEC validation using a side-channel hickory resolver.
+#
+# When enabled, every forwarded query is also sent to the upstream resolvers
+# with DNSSEC validation active. The two lookups run in parallel so the added
+# latency is at most the difference between the two response times.
+#
+# If the side-channel resolver returns BOGUS (signature mismatch, broken chain
+# of trust), the configured `action` is applied to the client query:
+#   "block" — return SERVFAIL (RFC-standard DNSSEC failure response)
+#   "log"   — log the event and forward the upstream response unchanged
+#             (useful during a trial period to measure false-positive rates)
+#
+# Zones that do not publish DNSSEC records (Insecure) and queries where the
+# validator cannot reach the upstream (Indeterminate) are fail-open: the
+# upstream response is forwarded normally.
+#
+# Note: enabling DNSSEC doubles the number of outgoing queries for each
+# forwarded DNS request. Keep this in mind on bandwidth-constrained links.
+#
+# Default: disabled.
+[security.dnssec]
+# enabled = false
+# action = "block"
