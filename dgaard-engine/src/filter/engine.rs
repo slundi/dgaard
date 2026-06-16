@@ -407,7 +407,7 @@ impl FilterEngine {
             if line.is_empty() {
                 continue;
             }
-            let hash = twox_hash::XxHash64::oneshot(seed, line.as_bytes());
+            let hash = twox_hash::XxHash64::oneshot(seed, line.to_ascii_lowercase().as_bytes());
             map.insert(hash, ());
         }
         Ok(map)
@@ -616,6 +616,7 @@ mod tests {
         writeln!(f, "# this is a comment").unwrap();
         writeln!(f, "bad.tld").unwrap();
         writeln!(f, "  spaced.domain.net  ").unwrap();
+        writeln!(f, "MIXED.Case.COM").unwrap(); // must match as lowercase
         f.flush().unwrap();
 
         let mut cfg = Config::default();
@@ -638,7 +639,12 @@ mod tests {
         assert_eq!(bit, 16);
         assert_eq!(score, 5);
 
-        for domain in &["evil.example.com", "bad.tld", "spaced.domain.net"] {
+        for domain in &[
+            "evil.example.com",
+            "bad.tld",
+            "spaced.domain.net",
+            "mixed.case.com",
+        ] {
             let hash = twox_hash::XxHash64::oneshot(SEED, domain.as_bytes());
             assert!(
                 map.contains_key(&hash),
