@@ -67,3 +67,6 @@ lru.workspace = true
 arc-swap.workspace = true
 bitflags.workspace = true
 dashmap.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

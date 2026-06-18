@@ -729,6 +729,7 @@ dependencies = [
  "regex",
  "rkyv",
  "rustls",
+ "serde_json",
  "socket2",
  "thiserror 2.0.18",
  "tokio",

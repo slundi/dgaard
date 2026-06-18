@@ -57,6 +57,7 @@ coverage:
 # Check that overall line coverage meets the 80% threshold
 # BASE is accepted for interface compatibility with CI (e.g.: just coverage-check master)
 coverage-check BASE="master":
+    cargo build -p dgaard-monitor
     cargo llvm-cov --lcov --output-path lcov.info
     cargo llvm-cov report --fail-under-lines 80
 
