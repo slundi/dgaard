@@ -190,7 +190,10 @@ blacklists = ["{blocklist}"]
             }
             if let Ok(sock) = UdpSocket::bind("127.0.0.1:0") {
                 sock.set_read_timeout(Some(Duration::from_millis(300))).ok();
-                let probe = build_dns_query(0xBEEF, "example.com", QTYPE_A);
+                // Use a blocked domain so the probe is served locally (no upstream
+                // round-trip) and no hot-cache entry is created for clean domains
+                // that tests may later query to verify non-blocked behaviour.
+                let probe = build_dns_query(0xBEEF, "samsungads.com", QTYPE_A);
                 if sock.send_to(&probe, addr).is_ok() {
                     let mut buf = [0u8; 512];
                     if sock.recv_from(&mut buf).is_ok() {
