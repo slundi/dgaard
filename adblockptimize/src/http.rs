@@ -41,15 +41,13 @@ pub async fn download_list(
     }
 
     // Reject early when the server advertises an oversized body.
-    if let Some(cl) = res.headers().get(hyper::header::CONTENT_LENGTH) {
-        if let Ok(len) = cl.to_str().unwrap_or("").parse::<usize>() {
-            if len > MAX_RESPONSE_SIZE {
-                return Err(format!(
-                    "Content-Length {len} exceeds limit of {MAX_RESPONSE_SIZE} bytes"
-                )
-                .into());
-            }
-        }
+    if let Some(cl) = res.headers().get(hyper::header::CONTENT_LENGTH)
+        && let Ok(len) = cl.to_str().unwrap_or("").parse::<usize>()
+        && len > MAX_RESPONSE_SIZE
+    {
+        return Err(
+            format!("Content-Length {len} exceeds limit of {MAX_RESPONSE_SIZE} bytes").into(),
+        );
     }
 
     // Stream the body frame by frame so a large payload never fully materialises.
