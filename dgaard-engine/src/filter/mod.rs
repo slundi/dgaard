@@ -89,7 +89,11 @@ pub(crate) fn process_line(
             }
 
             if combined_flags.contains(DomainEntryFlags::REGEX) {
-                regex_pool.push(Regex::new(&entry.value).unwrap());
+                let Ok(re) = Regex::new(&entry.value) else {
+                    eprintln!("Warning: invalid regex '{}'; skipping", entry.value);
+                    return;
+                };
+                regex_pool.push(re);
                 hierarchical_list.push(DomainEntry {
                     hash: entry.hash,
                     flags: combined_flags,
