@@ -139,6 +139,17 @@ impl Database {
         tx.commit()
     }
 
+    /// Run `PRAGMA wal_checkpoint(TRUNCATE)` so the WAL file is flushed
+    /// into the main database and truncated. Called during graceful
+    /// shutdown to make sure the on-disk DB reflects every committed
+    /// event before the process exits.
+    pub fn wal_checkpoint(&self) -> rusqlite::Result<()> {
+        let conn = lock_conn(&self.conn);
+        // pragma_query_value would also work; execute_batch is sufficient
+        // since we don't need to inspect the return columns.
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+    }
+
     pub fn prune_old(&self) -> rusqlite::Result<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

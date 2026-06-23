@@ -255,23 +255,28 @@ async fn main() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
-        let mut sigterm =
-            signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
-
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                println!("\nReceived SIGINT, shutting down...");
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {
+                        println!("\nReceived SIGINT, shutting down...");
+                    }
+                    _ = sigterm.recv() => {
+                        println!("Received SIGTERM, shutting down...");
+                    }
+                }
             }
-            _ = sigterm.recv() => {
-                println!("Received SIGTERM, shutting down...");
+            Err(e) => {
+                eprintln!("warn: SIGTERM handler unavailable ({e}); using Ctrl-C only");
+                let _ = tokio::signal::ctrl_c().await;
             }
         }
     }
     #[cfg(not(unix))]
     {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to register Ctrl-C handler");
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            eprintln!("warn: Ctrl-C handler error: {e}");
+        }
         println!("\nReceived Ctrl-C, shutting down...");
     }
 
@@ -281,6 +286,18 @@ async fn main() {
     // Wait for every task to finish (up to 10 s each).
     for handle in handles {
         let _ = tokio::time::timeout(Duration::from_secs(10), handle).await;
+    }
+
+    // Checkpoint the SQLite WAL so the main DB file is up-to-date on disk
+    // even if the OS doesn't get a chance to flush before we exit.
+    if let Some(db_arc) = db {
+        let db_for_checkpoint = std::sync::Arc::clone(&db_arc);
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Err(e) = db_for_checkpoint.wal_checkpoint() {
+                eprintln!("warn: WAL checkpoint on shutdown failed: {e}");
+            }
+        })
+        .await;
     }
 
     println!("All tasks stopped. Bye.");

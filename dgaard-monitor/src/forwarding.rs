@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use http_body_util::{BodyExt, Full};
 use hyper::Request;
@@ -8,6 +9,7 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
+use tokio::time::timeout;
 
 use crate::config::{ForwardFormat, ForwardingConfig};
 use crate::protocol::{StatAction, StatBlockReason};
@@ -112,6 +114,11 @@ pub async fn run(
 
 // --- HTTP sink ---
 
+/// Cap on a single outbound POST to a SOAR/webhook endpoint, including
+/// the response body drain. A hung sink that never replies must not be
+/// allowed to back-pressure the forwarding task and stall every event.
+const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// POST `body` to `url` with the given `content_type`, logging any errors.
 async fn post_event(client: &HttpsClient, url: &str, body: &str, content_type: &str) {
     let body = Full::new(Bytes::from(body.to_owned()));
@@ -128,16 +135,24 @@ async fn post_event(client: &HttpsClient, url: &str, body: &str, content_type: &
         }
     };
 
-    match client.request(req).await {
-        Ok(resp) => {
-            let status = resp.status();
-            if !status.is_success() {
-                eprintln!("forwarding: HTTP POST returned {status}");
+    let send = async {
+        match client.request(req).await {
+            Ok(resp) => {
+                let status = resp.status();
+                if !status.is_success() {
+                    eprintln!("forwarding: HTTP POST returned {status}");
+                }
+                let _ = resp.into_body().collect().await;
             }
-            // Drain body so the connection can be reused.
-            let _ = resp.into_body().collect().await;
+            Err(e) => eprintln!("forwarding: HTTP POST failed: {e}"),
         }
-        Err(e) => eprintln!("forwarding: HTTP POST failed: {e}"),
+    };
+
+    if timeout(HTTP_REQUEST_TIMEOUT, send).await.is_err() {
+        eprintln!(
+            "forwarding: HTTP POST to {url} timed out after {}s",
+            HTTP_REQUEST_TIMEOUT.as_secs(),
+        );
     }
 }
 

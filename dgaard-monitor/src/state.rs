@@ -106,8 +106,12 @@ impl AppState {
     }
 
     pub async fn record_event(&self, event: StatEvent) {
-        let _ = self.events_tx.send(event.clone());
-        self.stats.write().await.record(event);
+        // Update the rolling stats first so a subscriber that reads `stats`
+        // immediately after receiving the broadcast sees a counter that
+        // already includes this event. The previous order opened a brief
+        // TOCTOU window where the counter trailed the broadcast.
+        self.stats.write().await.record(event.clone());
+        let _ = self.events_tx.send(event);
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<StatEvent> {

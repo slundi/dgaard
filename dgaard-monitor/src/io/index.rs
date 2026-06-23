@@ -6,6 +6,12 @@ use crate::error::MonitorError;
 const MAGIC: &[u8; 4] = b"DGHI";
 const VERSION: u8 = 0x01;
 
+/// Hard cap on the number of entries we will allocate `HashMap::with_capacity`
+/// for. A corrupt or hostile index header could otherwise claim
+/// `u32::MAX` entries (≈ 4 GB of HashMap slots) and OOM the process before
+/// the first read even happens.
+const MAX_INDEX_ENTRIES: u32 = 10_000_000;
+
 pub fn read_host_index(path: &str) -> Result<HashMap<u64, String>, MonitorError> {
     let file = std::fs::File::open(path)?;
     let mut reader = BufReader::new(file);
@@ -30,7 +36,13 @@ pub fn read_host_index(path: &str) -> Result<HashMap<u64, String>, MonitorError>
         )));
     }
 
-    let count = u32::from_le_bytes([header[5], header[6], header[7], header[8]]) as usize;
+    let count = u32::from_le_bytes([header[5], header[6], header[7], header[8]]);
+    if count > MAX_INDEX_ENTRIES {
+        return Err(MonitorError::InvalidIndex(format!(
+            "entry count {count} exceeds cap {MAX_INDEX_ENTRIES}"
+        )));
+    }
+    let count = count as usize;
     let mut map = HashMap::with_capacity(count);
 
     for _ in 0..count {
@@ -131,6 +143,21 @@ mod tests {
         file.write_all(b"DGHI").unwrap();
         file.write_all(&[0x02]).unwrap(); // wrong version
         file.write_all(&0u32.to_le_bytes()).unwrap();
+        file.flush().unwrap();
+
+        let result = read_host_index(file.path().to_str().unwrap());
+        assert!(matches!(result, Err(MonitorError::InvalidIndex(_))));
+    }
+
+    #[test]
+    fn test_count_above_cap_is_rejected() {
+        // Regression: a u32 count claiming u32::MAX entries would have
+        // forced a HashMap allocation of billions of slots before the
+        // first read.
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"DGHI").unwrap();
+        file.write_all(&[0x01]).unwrap();
+        file.write_all(&u32::MAX.to_le_bytes()).unwrap();
         file.flush().unwrap();
 
         let result = read_host_index(file.path().to_str().unwrap());

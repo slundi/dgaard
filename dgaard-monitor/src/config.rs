@@ -418,12 +418,27 @@ fn parse_persistence(
         cfg.db = s.to_string();
     }
     if let Some(n) = get_integer(table, "events_retention_hours")? {
-        cfg.events_retention_hours = n as u32;
+        cfg.events_retention_hours = clamp_non_negative_u32(n, "events_retention_hours");
     }
     if let Some(n) = get_integer(table, "aggregates_retention_days")? {
-        cfg.aggregates_retention_days = n as u32;
+        cfg.aggregates_retention_days = clamp_non_negative_u32(n, "aggregates_retention_days");
     }
     Ok(cfg)
+}
+
+/// Convert an i64 from TOML to u32 with explicit range validation. A
+/// negative value would otherwise wrap silently to a huge u32 (e.g. -1
+/// becomes 4_294_967_295) and effectively disable retention pruning.
+fn clamp_non_negative_u32(n: i64, key: &str) -> u32 {
+    if n < 0 {
+        eprintln!("config: {key} cannot be negative ({n}); treating as 0");
+        return 0;
+    }
+    if n > u32::MAX as i64 {
+        eprintln!("config: {key} exceeds u32::MAX ({n}); capping");
+        return u32::MAX;
+    }
+    n as u32
 }
 
 fn parse_tui(table: &toml_span::value::Table<'_>) -> Result<TuiConfig, ConfigError> {
@@ -584,6 +599,30 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clamp_non_negative_u32_handles_negative_zero_and_overflow() {
+        assert_eq!(clamp_non_negative_u32(0, "k"), 0);
+        assert_eq!(clamp_non_negative_u32(42, "k"), 42);
+        assert_eq!(clamp_non_negative_u32(-1, "k"), 0);
+        assert_eq!(clamp_non_negative_u32(i64::MIN, "k"), 0);
+        assert_eq!(clamp_non_negative_u32(u32::MAX as i64, "k"), u32::MAX);
+        assert_eq!(clamp_non_negative_u32(u32::MAX as i64 + 1, "k"), u32::MAX);
+        assert_eq!(clamp_non_negative_u32(i64::MAX, "k"), u32::MAX);
+    }
+
+    #[test]
+    fn negative_retention_clamps_to_zero_not_wraparound() {
+        // Regression: i64::MIN previously wrapped to u32::MAX silently.
+        let f = write_temp(
+            "[persistence]\n\
+             events_retention_hours = -1\n\
+             aggregates_retention_days = -7\n",
+        );
+        let cfg = Config::load(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(cfg.persistence.events_retention_hours, 0);
+        assert_eq!(cfg.persistence.aggregates_retention_days, 0);
+    }
 
     fn write_temp(content: &str) -> tempfile::NamedTempFile {
         use std::io::Write;
