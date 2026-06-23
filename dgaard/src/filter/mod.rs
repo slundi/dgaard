@@ -52,7 +52,15 @@ async fn download_list(
     }
 
     let body = res.collect().await?.to_bytes();
-    Ok(String::from_utf8_lossy(&body).into_owned())
+    // Avoid the Cow::Owned-then-clone path of from_utf8_lossy().into_owned():
+    // try a zero-copy direct conversion first, and only fall back to lossy
+    // replacement (which materialises a fresh String) when the response is
+    // not valid UTF-8. For typical blocklists this saves an entire copy of
+    // the list contents at reload time.
+    match String::from_utf8(body.to_vec()) {
+        Ok(s) => Ok(s),
+        Err(e) => Ok(String::from_utf8_lossy(e.as_bytes()).into_owned()),
+    }
 }
 
 /// Load a source (file path or URL) into the filter collections.

@@ -29,6 +29,10 @@ pub enum Resource {
 }
 
 pub fn validate_input(input: &str) -> Result<Resource, ResourceError> {
+    if input.is_empty() {
+        return Err(ResourceError::UnknownResource);
+    }
+
     // 1. Try to parse as a URL
     if let Ok(parsed_url) = Url::parse(input) {
         // Check if it's specifically HTTP or HTTPS
@@ -48,20 +52,18 @@ pub fn validate_input(input: &str) -> Result<Resource, ResourceError> {
         return Ok(Resource::FilePath(path.to_path_buf()));
     }
 
-    // Explicitly catch cases that look like paths but don't exist
-    // This uses a simple heuristic: if it contains a slash or backslash
-    if input.contains('/') || input.contains('\\') {
-        eprintln!("Invalid file path: {}", input);
-        return Err(ResourceError::InvalidFilePath(input.to_string()));
-    }
-
     // 3. If it looks like a URL (starts with http) but failed parsing
     if input.starts_with("http") {
         eprintln!("Invalid URL: {}", input);
         return Err(ResourceError::InvalidUrl(Url::parse(input).unwrap_err()));
     }
 
-    Err(ResourceError::UnknownResource)
+    // 4. Anything else that didn't parse as a URL and doesn't exist on disk
+    // is treated as a missing file path. The previous heuristic ("requires
+    // a slash") silently misclassified bare filenames like "blocklist.txt"
+    // as UnknownResource, which was confusing for operators.
+    eprintln!("Invalid file path: {}", input);
+    Err(ResourceError::InvalidFilePath(input.to_string()))
 }
 
 pub async fn spawn_update_task() {
@@ -115,5 +117,26 @@ mod tests {
         );
 
         assert!(validate_input("not_a_valid_resource").is_err())
+    }
+
+    #[test]
+    fn bare_filename_that_does_not_exist_is_invalid_file_path() {
+        // Regression: a bare filename like `blocklist.txt` with no slash used to
+        // be silently classified as UnknownResource, which made config errors
+        // confusing to debug.
+        match validate_input("definitely-not-a-real-file-blocklist.txt") {
+            Err(ResourceError::InvalidFilePath(s)) => {
+                assert_eq!(s, "definitely-not-a-real-file-blocklist.txt");
+            }
+            other => panic!("expected InvalidFilePath, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_input_returns_unknown_resource() {
+        assert!(matches!(
+            validate_input(""),
+            Err(ResourceError::UnknownResource)
+        ));
     }
 }

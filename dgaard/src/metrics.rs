@@ -1,12 +1,19 @@
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
     sync::watch,
+    time::timeout,
 };
 
 use crate::STATS_COUNTERS;
+
+/// Cap on how long a single metrics request line read may take. A slow-read
+/// scanner that holds the connection open indefinitely is otherwise free
+/// to exhaust tokio task slots.
+const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Serve a Prometheus-compatible `/metrics` endpoint on `addr`.
 ///
@@ -34,18 +41,19 @@ pub async fn serve(addr: String, mut shutdown_rx: watch::Receiver<bool>) {
                     Ok((mut stream, _)) => {
                         tokio::spawn(async move {
                             let mut buf = [0u8; 1024];
-                            let _ = stream.read(&mut buf).await;
-                            let body = render();
-                            let response = format!(
-                                "HTTP/1.1 200 OK\r\n\
-                                 Content-Type: text/plain; version=0.0.4; charset=utf-8\r\n\
-                                 Content-Length: {}\r\n\
-                                 Connection: close\r\n\
-                                 \r\n\
-                                 {}",
-                                body.len(),
-                                body
-                            );
+                            // Bound the read so a slow-loris scanner can't
+                            // pin the connection open indefinitely.
+                            let read_result = timeout(
+                                REQUEST_READ_TIMEOUT,
+                                stream.read(&mut buf),
+                            )
+                            .await;
+                            let n = match read_result {
+                                Ok(Ok(n)) => n,
+                                _ => return,
+                            };
+
+                            let response = build_response(&buf[..n]);
                             let _ = stream.write_all(response.as_bytes()).await;
                         });
                     }
@@ -53,6 +61,47 @@ pub async fn serve(addr: String, mut shutdown_rx: watch::Receiver<bool>) {
                 }
             }
         }
+    }
+}
+
+/// Build the HTTP response for a metrics request. Only `GET /metrics` is
+/// accepted; everything else returns 404. The body is included only on the
+/// happy path so that probes for `/`, `/foo`, etc. do not return counter
+/// values.
+fn build_response(request: &[u8]) -> String {
+    let first_line = std::str::from_utf8(request)
+        .unwrap_or("")
+        .split("\r\n")
+        .next()
+        .unwrap_or("");
+    let mut parts = first_line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("");
+
+    if method == "GET" && (path == "/metrics" || path.starts_with("/metrics?")) {
+        let body = render();
+        format!(
+            "HTTP/1.1 200 OK\r\n\
+             Content-Type: text/plain; version=0.0.4; charset=utf-8\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\
+             \r\n\
+             {}",
+            body.len(),
+            body,
+        )
+    } else {
+        let body = "not found\n";
+        format!(
+            "HTTP/1.1 404 Not Found\r\n\
+             Content-Type: text/plain\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\
+             \r\n\
+             {}",
+            body.len(),
+            body,
+        )
     }
 }
 
@@ -138,5 +187,37 @@ mod tests {
     fn render_ends_with_newline() {
         let out = render();
         assert!(out.ends_with('\n'));
+    }
+
+    #[test]
+    fn build_response_returns_200_for_get_metrics() {
+        let resp = build_response(b"GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(resp.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp.contains("dgaard_queries_total"));
+    }
+
+    #[test]
+    fn build_response_accepts_query_string_on_metrics() {
+        let resp = build_response(b"GET /metrics?foo=bar HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(resp.starts_with("HTTP/1.1 200 OK"));
+    }
+
+    #[test]
+    fn build_response_returns_404_for_root() {
+        let resp = build_response(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(resp.starts_with("HTTP/1.1 404 Not Found"));
+        assert!(!resp.contains("dgaard_queries_total"));
+    }
+
+    #[test]
+    fn build_response_returns_404_for_post() {
+        let resp = build_response(b"POST /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(resp.starts_with("HTTP/1.1 404 Not Found"));
+    }
+
+    #[test]
+    fn build_response_returns_404_for_empty_request() {
+        let resp = build_response(b"");
+        assert!(resp.starts_with("HTTP/1.1 404 Not Found"));
     }
 }
