@@ -7,6 +7,11 @@ use tokio::sync::watch;
 
 const DOMAIN_MAP_CAP: usize = 100_000;
 
+/// Maximum number of simultaneously connected stats clients. A flapping
+/// dashboard would otherwise grow `clients: Vec<UnixStream>` without
+/// bound, since drops only happen on actual write errors.
+const MAX_CLIENTS: usize = 8;
+
 /// Stats collector task that receives events and handles logging/streaming.
 ///
 /// This task:
@@ -23,12 +28,14 @@ pub(crate) async fn stats_collector_task(
     let mut domain_map: LruCache<u64, String> =
         LruCache::new(NonZeroUsize::new(DOMAIN_MAP_CAP).unwrap());
 
-    // Connected socket clients
+    // Connected socket clients. Capped to MAX_CLIENTS so a misbehaving
+    // dashboard that reconnects in a tight loop cannot grow this vec
+    // (and the per-event broadcast cost) without bound.
     let mut clients: Vec<UnixStream> = Vec::new();
 
     // Try to bind the Unix socket
     let socket_path = CONFIG.load().server.stats_socket_path.clone();
-    let listener = match setup_unix_socket(&socket_path) {
+    let listener = match setup_unix_socket(&socket_path).await {
         Ok(l) => {
             println!("Stats socket listening on {}", socket_path);
             Some(l)
@@ -53,9 +60,14 @@ pub(crate) async fn stats_collector_task(
                     while let Ok(msg) = receiver.try_recv() {
                         process_stat_message(&msg, &mut domain_map, &mut clients).await;
                     }
-                    // Clean up socket file
+                    // Clean up socket file in the blocking pool to avoid
+                    // stalling the runtime on slow filesystems.
                     if !socket_path.is_empty() {
-                        let _ = std::fs::remove_file(&socket_path);
+                        let cleanup_path = socket_path.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            let _ = std::fs::remove_file(&cleanup_path);
+                        })
+                        .await;
                     }
                     break;
                 }
@@ -70,6 +82,14 @@ pub(crate) async fn stats_collector_task(
             } => {
                 match result {
                     Ok((stream, _addr)) => {
+                        if clients.len() >= MAX_CLIENTS {
+                            eprintln!(
+                                "stats: refusing new client, MAX_CLIENTS ({MAX_CLIENTS}) reached"
+                            );
+                            // Dropping `stream` closes the connection immediately.
+                            drop(stream);
+                            continue;
+                        }
                         println!("Stats client connected ({} total)", clients.len() + 1);
                         // Send all current domain mappings to the new client
                         send_domain_mappings_to_client(&mut clients, &domain_map, stream).await;
@@ -92,7 +112,11 @@ pub(crate) async fn stats_collector_task(
 }
 
 /// Set up the Unix domain socket for stats streaming.
-pub(crate) fn setup_unix_socket(path: &str) -> std::io::Result<tokio::net::UnixListener> {
+///
+/// Filesystem prep (mkdir parent, unlink stale socket) runs in a blocking
+/// pool so the tokio executor isn't stalled on slow flash or NFS during
+/// startup.
+pub(crate) async fn setup_unix_socket(path: &str) -> std::io::Result<tokio::net::UnixListener> {
     use tokio::net::UnixListener;
 
     if path.is_empty() {
@@ -102,15 +126,17 @@ pub(crate) fn setup_unix_socket(path: &str) -> std::io::Result<tokio::net::UnixL
         ));
     }
 
-    // Remove existing socket file if it exists
-    let _ = std::fs::remove_file(path);
-
-    // Create parent directory if needed
-    if let Some(parent) = std::path::Path::new(path).parent()
-        && !parent.as_os_str().is_empty()
-    {
-        let _ = std::fs::create_dir_all(parent);
-    }
+    let path_owned = path.to_string();
+    tokio::task::spawn_blocking(move || {
+        let _ = std::fs::remove_file(&path_owned);
+        if let Some(parent) = std::path::Path::new(&path_owned).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    })
+    .await
+    .map_err(|e| std::io::Error::other(format!("setup_unix_socket join: {e}")))?;
 
     UnixListener::bind(path)
 }
@@ -464,7 +490,7 @@ mod tests {
 
     #[tokio::test]
     async fn setup_unix_socket_empty_path_returns_error() {
-        let result = setup_unix_socket("");
+        let result = setup_unix_socket("").await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
     }
@@ -472,8 +498,8 @@ mod tests {
     #[tokio::test]
     async fn setup_unix_socket_valid_path_creates_listener() {
         let path = format!("/tmp/dgaard_test_sock_{}", std::process::id());
-        let result = setup_unix_socket(&path);
-        assert!(result.is_ok(), "Should create listener: {result:?}");
+        let result = setup_unix_socket(&path).await;
+        assert!(result.is_ok(), "Should create listener: {:?}", result.err());
         // Cleanup
         let _ = std::fs::remove_file(&path);
     }
@@ -483,10 +509,11 @@ mod tests {
         let path = format!("/tmp/dgaard_test_stale_{}", std::process::id());
         // Create a stale file
         std::fs::write(&path, b"stale").unwrap();
-        let result = setup_unix_socket(&path);
+        let result = setup_unix_socket(&path).await;
         assert!(
             result.is_ok(),
-            "Should succeed after removing stale file: {result:?}"
+            "Should succeed after removing stale file: {:?}",
+            result.err()
         );
         let _ = std::fs::remove_file(&path);
     }
