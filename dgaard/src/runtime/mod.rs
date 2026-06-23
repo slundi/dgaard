@@ -220,14 +220,26 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
 
         let mut handles = Vec::new();
 
-        for _ in 0..cpus {
+        for worker_id in 0..cpus {
             let worker_guard = guard.clone();
             let worker_semaphore = Arc::clone(&semaphore);
             let mut worker_shutdown_rx = shutdown_rx.clone();
 
             handles.push(tokio::spawn(async move {
                 let addr = &CONFIG.load().server.listen_addr;
-                let tokio_socket = get_socket(addr).expect("Failed to bind socket");
+                let tokio_socket = match get_socket(addr) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        // A transient bind failure on one SO_REUSEPORT worker
+                        // shouldn't silently reduce capacity for the lifetime
+                        // of the process — log loudly so the operator notices.
+                        eprintln!(
+                            "worker {worker_id}: failed to bind {addr}: {e} \
+                             — this worker will not serve queries"
+                        );
+                        return;
+                    }
+                };
                 let mut buf = [0u8; 4096];
 
                 loop {
