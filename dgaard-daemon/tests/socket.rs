@@ -50,7 +50,7 @@ fn make_state() -> Arc<ArcSwap<EngineState>> {
 /// Serve exactly one connection on `listener` then return.
 async fn serve_one(listener: UnixListener, state: Arc<ArcSwap<EngineState>>) {
     let (stream, _) = listener.accept().await.unwrap();
-    handle_connection(stream, state).await;
+    handle_connection(stream, state, None).await;
 }
 
 /// Connect to the socket, send `domain\n`, read and parse the JSON response.
@@ -207,9 +207,14 @@ async fn accept_loop_drains_in_flight_connections_on_shutdown() {
     // Use a oneshot channel as the programmatic "shutdown signal"
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
-    let server = tokio::spawn(run_accept_loop(listener, Arc::clone(&state), async move {
-        shutdown_rx.await.ok();
-    }));
+    let server = tokio::spawn(run_accept_loop(
+        listener,
+        Arc::clone(&state),
+        None,
+        async move {
+            shutdown_rx.await.ok();
+        },
+    ));
 
     // Send a query to create an in-flight connection, then signal shutdown
     let json = query(&socket_path, "example.com").await;
@@ -232,7 +237,7 @@ async fn accept_loop_stops_immediately_when_no_connections_pending() {
     let listener = UnixListener::bind(&socket_path).unwrap();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
-    let server = tokio::spawn(run_accept_loop(listener, make_state(), async move {
+    let server = tokio::spawn(run_accept_loop(listener, make_state(), None, async move {
         shutdown_rx.await.ok();
     }));
 

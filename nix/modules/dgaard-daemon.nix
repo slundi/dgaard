@@ -7,11 +7,22 @@
 let
   cfg = config.services.dgaard-daemon;
   tomlFormat = pkgs.formats.toml { };
-  configFile = tomlFormat.generate "dgaard-daemon.toml" {
-    socket_path = cfg.socketPath;
-    config_file = cfg.configFile;
-    log_level = cfg.logLevel;
-  };
+  # Optional [nats] table is omitted from the generated TOML when disabled
+  # so the daemon falls back to its compiled-in default (publisher off).
+  configFile = tomlFormat.generate "dgaard-daemon.toml" (
+    {
+      socket_path = cfg.socketPath;
+      config_file = cfg.configFile;
+      log_level = cfg.logLevel;
+    }
+    // lib.optionalAttrs cfg.nats.enable {
+      nats = {
+        enabled = true;
+        url = cfg.nats.url;
+        subject = cfg.nats.subject;
+      };
+    }
+  );
 in
 {
   options.services.dgaard-daemon = {
@@ -48,6 +59,32 @@ in
       default = "info";
       description = "env_logger-compatible log level filter.";
     };
+
+    # -------------------------------------------------------------------------
+    # [nats] — optional publisher
+    # -------------------------------------------------------------------------
+    nats = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Publish one JSON ScoreEvent per scoring decision on a NATS subject.
+          The Unix socket reply path is never blocked by broker latency.
+        '';
+      };
+      url = lib.mkOption {
+        type = lib.types.str;
+        default = "nats://127.0.0.1:4222";
+        example = "nats://broker.internal:4222";
+        description = "NATS server URL the daemon connects to at startup.";
+      };
+      subject = lib.mkOption {
+        type = lib.types.str;
+        default = "dgaard.scores";
+        example = "site42.scores";
+        description = "Subject every ScoreEvent is published on.";
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -76,7 +113,16 @@ in
         ProtectKernelTunables = true;
         ProtectKernelModules = true;
         ProtectControlGroups = true;
-        RestrictAddressFamilies = [ "AF_UNIX" ];
+        # NATS uses TCP — when the publisher is on we must allow IP families.
+        RestrictAddressFamilies =
+          if cfg.nats.enable then
+            [
+              "AF_UNIX"
+              "AF_INET"
+              "AF_INET6"
+            ]
+          else
+            [ "AF_UNIX" ];
         RestrictNamespaces = true;
         LockPersonality = true;
         MemoryDenyWriteExecute = true;

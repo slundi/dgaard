@@ -7,6 +7,7 @@ use tokio::net::UnixListener;
 use tokio::task::JoinSet;
 
 use crate::handler::handle_connection;
+use crate::nats::NatsPublisher;
 
 /// Paired engine + config replaced atomically on SIGHUP.
 pub struct EngineState {
@@ -92,9 +93,14 @@ pub async fn shutdown_signal() {
 /// Each accepted connection is handled in its own `tokio::spawn` task.
 /// `state` is `ArcSwap`-wrapped so SIGHUP reloads are visible to connections
 /// accepted after the swap, and engine + config are always loaded as a pair.
+///
+/// When `nats` is `Some`, every handler clones the publisher (cheap — the
+/// underlying client is an `Arc`) and also fans the scoring decision out on
+/// the NATS bus.
 pub async fn run_accept_loop<F>(
     listener: UnixListener,
     state: Arc<ArcSwap<EngineState>>,
+    nats: Option<NatsPublisher>,
     shutdown: F,
 ) where
     F: std::future::Future<Output = ()>,
@@ -116,8 +122,9 @@ pub async fn run_accept_loop<F>(
                 match result {
                     Ok((stream, _addr)) => {
                         let state = Arc::clone(&state);
+                        let nats = nats.clone();
                         tasks.spawn(async move {
-                            handle_connection(stream, state).await;
+                            handle_connection(stream, state, nats).await;
                         });
                     }
                     Err(e) => {

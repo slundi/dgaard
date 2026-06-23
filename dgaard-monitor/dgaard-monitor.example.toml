@@ -112,3 +112,21 @@ beaconing_min_observations = 5
 # Lower = stricter.  0.15 catches highly regular C2 beacons while avoiding
 # most false positives from bursty-but-periodic background traffic.
 beaconing_cov_threshold = 0.15
+
+# ---------------------------------------------------------------------------
+# NATS — optional pub/sub federation
+# ---------------------------------------------------------------------------
+# Lets one monitor publish enriched events on a NATS subject and subscribe
+# to another daemon's or monitor's feed. Disabled by default; when enabled
+# the local Unix socket input still runs in parallel.
+[nats]
+enabled = false
+url = "nats://127.0.0.1:4222"
+
+# Subject the monitor publishes enriched events on. Empty disables this leg.
+publish_subject = "dgaard.events"
+
+# Subject the monitor subscribes to. Set to "dgaard.events" to relay events
+# from a peer monitor, or "dgaard.scores" to consume a daemon's scoring
+# feed. Empty disables this leg.
+subscribe_subject = ""

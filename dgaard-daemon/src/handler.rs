@@ -6,6 +6,7 @@ use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
+use crate::nats::{NatsPublisher, ScoreEvent};
 use crate::server::EngineState;
 
 /// Maximum domain length per RFC 1035.
@@ -14,7 +15,7 @@ const MAX_DOMAIN_LEN: usize = 253;
 /// JSON response written back to the Unix socket client.
 ///
 /// Wire format: `{"score": u8, "blocked": bool, "action": str, "reasons": [str]}\n`
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DomainResponse {
     pub score: u8,
     pub blocked: bool,
@@ -82,9 +83,17 @@ pub fn format_reason(reason: &BlockReason) -> String {
 /// of the connection, so SIGHUP reloads are visible to new connections
 /// immediately and engine + config are always a matched pair.
 ///
+/// When `nats` is `Some`, the daemon also publishes the scoring decision on
+/// the NATS bus. Publish failures are logged but never block the client
+/// reply, so a degraded broker cannot stall the scoring path.
+///
 /// Malformed input (empty or > 253 bytes) returns `{"error":"..."}`.
 /// IO errors are logged with `log::warn!` and the connection is dropped.
-pub async fn handle_connection(stream: UnixStream, state: Arc<ArcSwap<EngineState>>) {
+pub async fn handle_connection(
+    stream: UnixStream,
+    state: Arc<ArcSwap<EngineState>>,
+    nats: Option<NatsPublisher>,
+) {
     let (reader, mut writer) = stream.into_split();
     // 512 is generous enough to capture any oversized input so the explicit
     // `> MAX_DOMAIN_LEN` check below is the sole length gate after trim().
@@ -105,19 +114,26 @@ pub async fn handle_connection(stream: UnixStream, state: Arc<ArcSwap<EngineStat
 
     let domain = line.trim();
 
-    let response = if domain.is_empty() {
-        String::from(r#"{"error":"empty domain"}"#)
+    let (response, parsed) = if domain.is_empty() {
+        (String::from(r#"{"error":"empty domain"}"#), None)
     } else if domain.len() > MAX_DOMAIN_LEN {
-        String::from(r#"{"error":"domain exceeds 253 bytes"}"#)
+        (
+            String::from(r#"{"error":"domain exceeds 253 bytes"}"#),
+            None,
+        )
     } else {
         // Single load gives a consistent engine+config pair across any concurrent reload.
         let state_guard = state.load();
         let result = resolve_with_score(domain, &state_guard.engine, &state_guard.config);
-        match serde_json::to_string(&DomainResponse::from(result)) {
-            Ok(json) => json,
+        let parsed = DomainResponse::from(result);
+        match serde_json::to_string(&parsed) {
+            Ok(json) => (json, Some(parsed)),
             Err(e) => {
                 log::warn!("Serialization error: {e}");
-                String::from(r#"{"error":"internal serialization error"}"#)
+                (
+                    String::from(r#"{"error":"internal serialization error"}"#),
+                    None,
+                )
             }
         }
     };
@@ -126,6 +142,15 @@ pub async fn handle_connection(stream: UnixStream, state: Arc<ArcSwap<EngineStat
     response_line.push('\n');
     if let Err(e) = writer.write_all(response_line.as_bytes()).await {
         log::warn!("Connection write error: {e}");
+    }
+
+    // Optionally publish the decision after the reply has been written so
+    // a slow broker can never delay the client-facing response.
+    if let (Some(publisher), Some(parsed)) = (nats, parsed) {
+        let event = ScoreEvent::from_response(domain, &parsed);
+        if let Err(e) = publisher.publish(&event).await {
+            log::warn!("nats publish failed for {domain}: {e}");
+        }
     }
 }
 

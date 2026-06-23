@@ -14,8 +14,10 @@ path = "src/main.rs"
 [dependencies]
 arc-swap.workspace = true
 argh.workspace = true
+async-nats.workspace = true
 dgaard-engine.workspace = true
 env_logger.workspace = true
+futures-util.workspace = true
 getrandom.workspace = true
 log.workspace = true
 serde.workspace = true

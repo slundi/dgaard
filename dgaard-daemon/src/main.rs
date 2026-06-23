@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use dgaard_daemon::config::DaemonConfig;
+use dgaard_daemon::nats::NatsPublisher;
 use dgaard_daemon::server::{
     EngineState, bind_listener, run_accept_loop, shutdown_signal, sighup_reload_task,
 };
@@ -109,5 +110,30 @@ async fn main() {
         seed,
     ));
 
-    run_accept_loop(listener, state, shutdown_signal()).await;
+    // Optional NATS publisher. Connection failure is non-fatal: the daemon
+    // logs and runs in pure-UDS mode so a broker outage at startup never
+    // takes the scoring socket offline.
+    let nats = if daemon_cfg.nats.enabled {
+        match NatsPublisher::connect(&daemon_cfg.nats.url, &daemon_cfg.nats.subject).await {
+            Ok(pub_) => {
+                log::info!(
+                    "nats publisher connected to {} (subject={})",
+                    daemon_cfg.nats.url,
+                    daemon_cfg.nats.subject
+                );
+                Some(pub_)
+            }
+            Err(e) => {
+                log::warn!(
+                    "nats publisher disabled: connect to {} failed: {e}",
+                    daemon_cfg.nats.url
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    run_accept_loop(listener, state, nats, shutdown_signal()).await;
 }

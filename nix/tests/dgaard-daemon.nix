@@ -35,9 +35,29 @@ let
       }
     ]).config;
 
+  # --- scenario: NATS publisher enabled ---
+  cfgNats =
+    (pkgs.nixos [
+      ../../nix/modules/dgaard-daemon.nix
+      base
+      {
+        services.dgaard-daemon = {
+          enable = true;
+          package = pkgs.hello;
+          nats = {
+            enable = true;
+            url = "nats://broker.internal:4222";
+            subject = "site42.scores";
+          };
+        };
+      }
+    ]).config;
+
   tomlDefaults = cfgDefaults.environment.etc."dgaard-daemon/dgaard-daemon.toml".source;
   tomlCustom = cfgCustom.environment.etc."dgaard-daemon/dgaard-daemon.toml".source;
+  tomlNats = cfgNats.environment.etc."dgaard-daemon/dgaard-daemon.toml".source;
   svc = cfgDefaults.systemd.services.dgaard-daemon;
+  svcNats = cfgNats.systemd.services.dgaard-daemon;
 in
 
 # ---------------------------------------------------------------------------
@@ -48,6 +68,15 @@ assert cfgDefaults.systemd.services ? "dgaard-daemon";
 assert svc.serviceConfig.Restart == "on-failure";
 assert lib.hasInfix "--config /etc/dgaard-daemon/dgaard-daemon.toml" svc.serviceConfig.ExecStart;
 assert svc.serviceConfig.NoNewPrivileges == true;
+# UDS-only by default — no IP families allowed
+assert svc.serviceConfig.RestrictAddressFamilies == [ "AF_UNIX" ];
+# NATS publisher needs TCP — module must open AF_INET/AF_INET6 alongside AF_UNIX
+assert
+  svcNats.serviceConfig.RestrictAddressFamilies == [
+    "AF_UNIX"
+    "AF_INET"
+    "AF_INET6"
+  ];
 
 # ---------------------------------------------------------------------------
 # Content assertions (run at build time via shell)
@@ -64,6 +93,19 @@ pkgs.runCommand "test-dgaard-daemon-module" { nativeBuildInputs = [ pkgs.ripgrep
   rg -qF 'socket_path = "/run/custom/daemon.sock"' ${tomlCustom}
   rg -qF 'config_file = "/etc/custom/engine.toml"' ${tomlCustom}
   rg -qF 'log_level = "debug"'                     ${tomlCustom}
+
+  echo "=== dgaard-daemon: [nats] absent by default ==="
+  if rg -q '\[nats\]' ${tomlDefaults}; then
+    echo "FAIL: [nats] section should be absent when nats.enable = false"
+    exit 1
+  fi
+
+  echo "=== dgaard-daemon: [nats] populated when enabled ==="
+  cat ${tomlNats}
+  rg -qF '[nats]'                                  ${tomlNats}
+  rg -qF 'enabled = true'                          ${tomlNats}
+  rg -qF 'url = "nats://broker.internal:4222"'     ${tomlNats}
+  rg -qF 'subject = "site42.scores"'               ${tomlNats}
 
   echo "All dgaard-daemon checks passed"
   touch $out

@@ -62,8 +62,19 @@ let
     };
   };
 
+  # --- scenario: NATS federation enabled ---
+  cfgNats = eval {
+    nats = {
+      enable = true;
+      url = "nats://broker.internal:4222";
+      publishSubject = "site42.events";
+      subscribeSubject = "upstream.events";
+    };
+  };
+
   toml = cfg: cfg.environment.etc."dgaard-monitor/dgaard-monitor.toml".source;
   execStart = cfg: cfg.systemd.services.dgaard-monitor.serviceConfig.ExecStart;
+  restrictAddr = cfg: cfg.systemd.services.dgaard-monitor.serviceConfig.RestrictAddressFamilies;
 in
 
 # ---------------------------------------------------------------------------
@@ -80,6 +91,17 @@ assert !(lib.hasInfix "--headless" (execStart cfgTui));
 assert !(lib.hasInfix "engine_config_path" (builtins.readFile (toml cfgDefaults)));
 # engine_config_path present when set
 assert lib.hasInfix "engine_config_path" (builtins.readFile (toml cfgWithEngineConfig));
+# [nats] table absent when nats.enable = false
+assert !(lib.hasInfix "[nats]" (builtins.readFile (toml cfgDefaults)));
+# UDS-only by default
+assert restrictAddr cfgDefaults == [ "AF_UNIX" ];
+# NATS-only (no web/api/ws/mcp) still opens AF_INET / AF_INET6
+assert
+  restrictAddr cfgNats == [
+    "AF_UNIX"
+    "AF_INET"
+    "AF_INET6"
+  ];
 
 # ---------------------------------------------------------------------------
 # Content assertions
@@ -140,6 +162,19 @@ pkgs.runCommand "test-dgaard-monitor-module" { nativeBuildInputs = [ pkgs.ripgre
   rg -qF 'port = 8080'        ${toml cfgApi}
   rg -qF 'token = "api-token"' ${toml cfgApi}
   rg -qF 'root_path = "/api/v1"' ${toml cfgApi}
+
+  echo "=== dgaard-monitor: [nats] absent by default ==="
+  if rg -q '\[nats\]' ${toml cfgDefaults}; then
+    echo "FAIL: [nats] section should be absent when nats.enable = false"
+    exit 1
+  fi
+
+  echo "=== dgaard-monitor: [nats] populated when enabled ==="
+  cat ${toml cfgNats}
+  rg -qF '[nats]'                                       ${toml cfgNats}
+  rg -qF 'url = "nats://broker.internal:4222"'          ${toml cfgNats}
+  rg -qF 'publish_subject = "site42.events"'            ${toml cfgNats}
+  rg -qF 'subscribe_subject = "upstream.events"'        ${toml cfgNats}
 
   echo "All dgaard-monitor checks passed"
   touch $out

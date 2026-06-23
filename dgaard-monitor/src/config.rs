@@ -29,6 +29,7 @@ pub struct Config {
     pub websocket: ConnectivityConfig,
     pub mcp: ConnectivityConfig,
     pub web: WebConfig,
+    pub nats: NatsConfig,
 }
 
 #[derive(Debug)]
@@ -278,6 +279,44 @@ impl Default for WebConfig {
     }
 }
 
+/// Optional NATS publisher + subscriber configuration. Disabled by default.
+///
+/// When `enabled`, the monitor publishes every enriched event on
+/// `publish_subject` and (if `subscribe_subject` is non-empty) subscribes to
+/// that subject and feeds incoming events into the local stats/broadcast.
+/// This lets monitors federate or relay events from another dgaard daemon
+/// without sharing a Unix socket.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NatsConfig {
+    pub enabled: bool,
+    pub url: String,
+    /// Subject the monitor publishes enriched events on.
+    /// Empty string disables publishing.
+    pub publish_subject: String,
+    /// Subject the monitor subscribes to (e.g. `dgaard.events` or `dgaard.scores`).
+    /// Empty string disables subscription.
+    pub subscribe_subject: String,
+}
+
+fn default_nats_url() -> String {
+    "nats://127.0.0.1:4222".to_string()
+}
+
+fn default_nats_publish_subject() -> String {
+    "dgaard.events".to_string()
+}
+
+impl Default for NatsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: default_nats_url(),
+            publish_subject: default_nats_publish_subject(),
+            subscribe_subject: String::new(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helper extraction functions
 // ---------------------------------------------------------------------------
@@ -515,6 +554,23 @@ fn parse_connectivity(
     Ok(cfg)
 }
 
+fn parse_nats(table: &toml_span::value::Table<'_>) -> Result<NatsConfig, ConfigError> {
+    let mut cfg = NatsConfig::default();
+    if let Some(b) = get_bool(table, "enabled")? {
+        cfg.enabled = b;
+    }
+    if let Some(s) = get_str(table, "url")? {
+        cfg.url = s.to_string();
+    }
+    if let Some(s) = get_str(table, "publish_subject")? {
+        cfg.publish_subject = s.to_string();
+    }
+    if let Some(s) = get_str(table, "subscribe_subject")? {
+        cfg.subscribe_subject = s.to_string();
+    }
+    Ok(cfg)
+}
+
 fn parse_web(table: &toml_span::value::Table<'_>) -> Result<WebConfig, ConfigError> {
     let mut cfg = WebConfig::default();
     if let Some(b) = get_bool(table, "enabled")? {
@@ -585,6 +641,9 @@ impl Config {
         }
         if let Some(t) = get_table(root, "web")? {
             cfg.web = parse_web(t)?;
+        }
+        if let Some(t) = get_table(root, "nats")? {
+            cfg.nats = parse_nats(t)?;
         }
 
         Ok(cfg)
@@ -907,5 +966,42 @@ history_size = 5000
         let f = write_temp("this is not valid toml ][[[");
         let result = Config::load(f.path().to_str().unwrap());
         assert!(matches!(result, Err(ConfigError::Parse(_))));
+    }
+
+    // --- NatsConfig ---
+
+    #[test]
+    fn test_nats_defaults_disabled() {
+        let f = write_temp("[input]\n");
+        let cfg = Config::load(f.path().to_str().unwrap()).unwrap();
+        assert!(!cfg.nats.enabled);
+        assert_eq!(cfg.nats.url, "nats://127.0.0.1:4222");
+        assert_eq!(cfg.nats.publish_subject, "dgaard.events");
+        assert!(cfg.nats.subscribe_subject.is_empty());
+    }
+
+    #[test]
+    fn test_nats_custom_values() {
+        let f = write_temp(
+            r#"
+[nats]
+enabled = true
+url = "nats://broker.internal:4222"
+publish_subject = "site42.events"
+subscribe_subject = "upstream.events"
+"#,
+        );
+        let cfg = Config::load(f.path().to_str().unwrap()).unwrap();
+        assert!(cfg.nats.enabled);
+        assert_eq!(cfg.nats.url, "nats://broker.internal:4222");
+        assert_eq!(cfg.nats.publish_subject, "site42.events");
+        assert_eq!(cfg.nats.subscribe_subject, "upstream.events");
+    }
+
+    #[test]
+    fn test_nats_invalid_type_is_rejected() {
+        let f = write_temp("[nats]\nenabled = 1\n");
+        let result = Config::load(f.path().to_str().unwrap());
+        assert!(matches!(result, Err(ConfigError::InvalidType { .. })));
     }
 }

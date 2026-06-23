@@ -70,6 +70,7 @@ rustls = { version = "0.23.40", default-features = false, features = ["ring"] }
 socket2 = "0.6.4"
 
 # ── dgaard-monitor ───────────────────────────────────────────────────────────
+async-nats = { version = "0.49", default-features = false, features = ["server_2_10", "ring"] }
 async-trait = "0.1"
 axum = { version = "0.8.1", features = ["ws"] }
 constant_time_eq = "0.3"

@@ -19,6 +19,7 @@ hyper-rustls.workspace = true
 hyper-util.workspace = true
 rustls.workspace = true
 
+async-nats.workspace = true
 async-trait.workspace = true
 rust-mcp-sdk.workspace = true
 serde_json.workspace = true

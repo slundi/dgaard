@@ -550,6 +550,11 @@ fn custom_qtype_aaaa_blocked_by_warden() {
 fn pipeline_without_static_block_ignores_blocklist() {
     // "allowed-domain.com" has low entropy (≈ 3.24) and consonant ratio (0.54),
     // so no heuristic blocks it when StaticBlock is absent from the pipeline.
+    //
+    // Assertion is on the DNS RCODE rather than the stats stream so the test
+    // does not depend on upstream DNS reachability: StaticBlock returns NXDOMAIN
+    // (RCODE 3) when it fires; without it the query is proxied (NOERROR/0) or
+    // the upstream fails (SERVFAIL/2) — either way, not NXDOMAIN.
     let files_dir = TempDir::new().expect("files tempdir");
     let blacklist_path = files_dir.path().join("blacklist.txt");
     std::fs::write(&blacklist_path, "allowed-domain.com\n").expect("write blacklist");
@@ -565,20 +570,10 @@ fn pipeline_without_static_block_ignores_blocklist() {
         );
 
     let srv = FlexServer::start(&config);
-    let mut stats = srv.connect_stats();
-    drain_pending_messages(&mut stats);
-
-    let _ = srv.query("allowed-domain.com", QTYPE_A);
-
-    let _mapping = read_stat_message(&mut stats).expect("expected DomainMapping");
-    let event = read_stat_message(&mut stats).expect("expected Event");
-    match event {
-        StatMessage::Event { action } => {
-            assert!(
-                !matches!(&action, StatAction::Blocked(bits) if bits & REASON_STATIC_BLACKLIST != 0),
-                "pipeline without StaticBlock must not block a blocklisted domain, got: {action:?}"
-            );
-        }
-        other => panic!("expected Event, got: {other:?}"),
-    }
+    let resp = srv.query("allowed-domain.com", QTYPE_A);
+    assert_ne!(
+        rcode(&resp),
+        RCODE_NXDOMAIN,
+        "pipeline without StaticBlock must not return NXDOMAIN for a blocklisted domain"
+    );
 }

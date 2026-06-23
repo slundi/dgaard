@@ -18,7 +18,7 @@ use tokio::sync::watch;
 
 use state::AppState;
 
-use crate::connectivity::{api, mcp, websocket};
+use crate::connectivity::{api, mcp, nats, websocket};
 
 #[tokio::main]
 async fn main() {
@@ -42,6 +42,7 @@ async fn main() {
             websocket: config::ConnectivityConfig::default(),
             mcp: config::ConnectivityConfig::default(),
             web: config::WebConfig::default(),
+            nats: config::NatsConfig::default(),
         },
     };
 
@@ -67,6 +68,7 @@ async fn main() {
         websocket: ws_cfg,
         mcp: mcp_cfg,
         web: web_cfg,
+        nats: nats_cfg,
     } = cfg;
 
     // Warm-up: load host index.
@@ -218,6 +220,14 @@ async fn main() {
         let rx = shutdown_rx.clone();
         handles.push(tokio::spawn(async move {
             mcp::run(mcp_cfg, s, rx).await;
+        }));
+    }
+
+    if nats_cfg.enabled {
+        let s = Arc::clone(&state);
+        let rx = shutdown_rx.clone();
+        handles.push(tokio::spawn(async move {
+            nats::run(nats_cfg, s, rx).await;
         }));
     }
 

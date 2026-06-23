@@ -104,6 +104,16 @@ let
       beaconing_min_observations = cfg.web.beaconingMinObservations;
       beaconing_cov_threshold = cfg.web.beaconingCovThreshold;
     };
+  }
+  // lib.optionalAttrs cfg.nats.enable {
+    # Optional [nats] table is omitted when disabled so the monitor falls
+    # back to its compiled-in default (federation off).
+    nats = {
+      enabled = true;
+      url = cfg.nats.url;
+      publish_subject = cfg.nats.publishSubject;
+      subscribe_subject = cfg.nats.subscribeSubject;
+    };
   };
 
   configFile = tomlFormat.generate "dgaard-monitor.toml" monitorSettings;
@@ -296,6 +306,45 @@ in
         '';
       };
     };
+
+    # -------------------------------------------------------------------------
+    # [nats] — optional federation
+    # -------------------------------------------------------------------------
+    nats = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Connect to a NATS server to publish enriched events and/or subscribe
+          to a remote feed. The local Unix socket input still runs in parallel.
+        '';
+      };
+      url = lib.mkOption {
+        type = lib.types.str;
+        default = "nats://127.0.0.1:4222";
+        example = "nats://broker.internal:4222";
+        description = "NATS server URL.";
+      };
+      publishSubject = lib.mkOption {
+        type = lib.types.str;
+        default = "dgaard.events";
+        example = "site42.events";
+        description = ''
+          Subject the monitor publishes enriched events on. Empty string
+          disables publishing.
+        '';
+      };
+      subscribeSubject = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        example = "dgaard.events";
+        description = ''
+          Subject the monitor subscribes to and feeds into the local broadcast.
+          Use "dgaard.events" to relay a peer monitor or "dgaard.scores" to
+          consume a daemon's scoring feed. Empty string disables subscription.
+        '';
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -335,7 +384,8 @@ in
         RestrictRealtime = true;
       }
       //
-        lib.optionalAttrs (cfg.web.enabled || cfg.api.enabled || cfg.websocket.enabled || cfg.mcp.enabled)
+        lib.optionalAttrs
+          (cfg.web.enabled || cfg.api.enabled || cfg.websocket.enabled || cfg.mcp.enabled || cfg.nats.enable)
           {
             RestrictAddressFamilies = [
               "AF_UNIX"
@@ -345,7 +395,9 @@ in
           }
       //
         lib.optionalAttrs
-          (!(cfg.web.enabled || cfg.api.enabled || cfg.websocket.enabled || cfg.mcp.enabled))
+          (
+            !(cfg.web.enabled || cfg.api.enabled || cfg.websocket.enabled || cfg.mcp.enabled || cfg.nats.enable)
+          )
           {
             RestrictAddressFamilies = [ "AF_UNIX" ];
           };
