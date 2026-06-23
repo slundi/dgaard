@@ -82,9 +82,10 @@ impl StatMessage {
                 let domain = String::from_utf8(payload[10..10 + domain_len].to_vec()).ok()?;
                 Some(StatMessage::DomainMapping { hash, domain })
             }
-            // Event: [timestamp: u64 LE][domain_hash: u64 LE][client_ip: 16 bytes][action: u8][block_reason?: u16 LE]
+            // Event: [timestamp: u64 LE][domain_hash: u64 LE][client_ip: 16 bytes][action: u8][block_reason?: u32 LE]
             0x01 => {
-                if payload.len() < 25 {
+                // 8 (ts) + 8 (hash) + 16 (ip) + 1 (action) = 33 bytes minimum
+                if payload.len() < 33 {
                     return None;
                 }
                 let timestamp = u64::from_le_bytes(payload[0..8].try_into().ok()?);
@@ -307,6 +308,30 @@ mod tests {
         // action byte is at offset 2(len) + 1(type) + 8(ts) + 8(hash) + 16(ip) = 35
         bytes[35] = 0xFF;
         assert!(StatMessage::deserialize(&bytes).is_none());
+    }
+
+    #[test]
+    fn test_truncated_event_does_not_panic() {
+        // A well-formed Allowed event is 36 bytes; payload (after the 2-byte
+        // length prefix and 1-byte type) is 33 bytes. Truncating the payload
+        // below that must not panic and must return None.
+        let bytes = StatMessage::Event(make_event(StatAction::Allowed)).serialize();
+        assert_eq!(bytes.len(), 36);
+
+        // Iterate over every length that previously sat in the panic window
+        // (payload 25..=32 bytes, i.e. frame 28..=35 bytes) plus a few smaller.
+        for len in 3..bytes.len() {
+            // Patch the length prefix so the frame's self-declared length
+            // matches the truncated buffer; otherwise the early
+            // `bytes.len() < 2 + msg_len` check would catch us first.
+            let mut truncated = bytes[..len].to_vec();
+            let new_msg_len = (len - 2) as u16;
+            truncated[0..2].copy_from_slice(&new_msg_len.to_le_bytes());
+            assert!(
+                StatMessage::deserialize(&truncated).is_none(),
+                "deserialize must reject truncated frame of {len} bytes"
+            );
+        }
     }
 
     #[test]
