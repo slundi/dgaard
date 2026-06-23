@@ -139,7 +139,7 @@ async fn main() {
                 if *rx.borrow() {
                     break;
                 }
-                match io::socket::connect(&socket_path) {
+                match io::socket::connect(&socket_path).await {
                     Ok(mut stream) => {
                         println!("Connected to {socket_path}");
                         loop {

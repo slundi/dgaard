@@ -4,19 +4,18 @@ use tokio::net::UnixStream;
 use crate::error::MonitorError;
 use crate::protocol::StatMessage;
 
-pub fn connect(path: &str) -> Result<UnixStream, MonitorError> {
-    // UnixStream::connect is async; use std for sync connect then convert
-    // We use a blocking connect via std and then convert.
-    // Actually, for the main loop we want to call this from an async context.
-    // We'll provide both sync and async variants — the main.rs uses this in an async context.
-    // Use std::os::unix::net::UnixStream and convert.
-    let std_stream = std::os::unix::net::UnixStream::connect(path)
-        .map_err(|e| MonitorError::SocketError(format!("connect to {path}: {e}")))?;
-    std_stream
-        .set_nonblocking(true)
-        .map_err(|e| MonitorError::SocketError(format!("set_nonblocking: {e}")))?;
-    UnixStream::from_std(std_stream)
-        .map_err(|e| MonitorError::SocketError(format!("from_std: {e}")))
+/// Hard cap on the size of an inbound frame's `type + payload` segment.
+///
+/// The largest legitimate frame today is a `DomainMapping` carrying a
+/// 253-byte FQDN (~264 bytes) — 4 KiB leaves comfortable headroom for
+/// future extensions while preventing a malicious producer from forcing
+/// up to 64 KiB allocations per frame.
+pub const MAX_FRAME_PAYLOAD: usize = 4096;
+
+pub async fn connect(path: &str) -> Result<UnixStream, MonitorError> {
+    UnixStream::connect(path)
+        .await
+        .map_err(|e| MonitorError::SocketError(format!("connect to {path}: {e}")))
 }
 
 pub async fn read_frame(stream: &mut UnixStream) -> Result<StatMessage, MonitorError> {
@@ -24,6 +23,12 @@ pub async fn read_frame(stream: &mut UnixStream) -> Result<StatMessage, MonitorE
     let mut len_buf = [0u8; 2];
     stream.read_exact(&mut len_buf).await?;
     let msg_len = u16::from_le_bytes(len_buf) as usize;
+
+    if msg_len > MAX_FRAME_PAYLOAD {
+        return Err(MonitorError::InvalidMessage(format!(
+            "frame length {msg_len} exceeds cap {MAX_FRAME_PAYLOAD}"
+        )));
+    }
 
     // Read the rest of the frame (msg_len bytes: type + payload)
     let mut payload_buf = vec![0u8; msg_len];
@@ -109,6 +114,24 @@ mod tests {
         let mut stream = client;
         let result = read_frame(&mut stream).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_oversized_frame_is_rejected_without_allocating() {
+        let (client, mut server) = make_connected_pair().await;
+
+        // Announce a frame larger than MAX_FRAME_PAYLOAD; the reader must
+        // reject the length prefix without ever allocating a buffer for it.
+        let oversized: u16 = (MAX_FRAME_PAYLOAD + 1) as u16;
+        server.write_all(&oversized.to_le_bytes()).await.unwrap();
+        drop(server);
+
+        let mut stream = client;
+        let result = read_frame(&mut stream).await;
+        match result {
+            Err(MonitorError::InvalidMessage(_)) => {}
+            other => panic!("expected InvalidMessage error, got {other:?}"),
+        }
     }
 
     #[tokio::test]
