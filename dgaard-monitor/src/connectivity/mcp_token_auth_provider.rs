@@ -31,7 +31,7 @@ const TOKEN_TTL: Duration = Duration::from_secs(365 * 24 * 3600); // 1 year
 #[async_trait]
 impl AuthProvider for ConfigTokenAuthProvider {
     async fn verify_token(&self, access_token: String) -> Result<AuthInfo, AuthenticationError> {
-        if access_token == self.token {
+        if constant_time_eq::constant_time_eq(access_token.as_bytes(), self.token.as_bytes()) {
             Ok(AuthInfo {
                 token_unique_id: access_token,
                 client_id: None,
@@ -95,6 +95,14 @@ mod tests {
             matches!(err, AuthenticationError::InvalidOrExpiredToken(_)),
             "expected InvalidOrExpiredToken, got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn equal_length_wrong_token_returns_error() {
+        // Regression: comparison must be constant-time over equal-length inputs.
+        let p = provider("secret");
+        let err = p.verify_token("SeCrEt".into()).await.unwrap_err();
+        assert!(matches!(err, AuthenticationError::InvalidOrExpiredToken(_)));
     }
 
     #[tokio::test]

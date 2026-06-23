@@ -30,10 +30,11 @@ fn check_auth(token: &str, headers: &HeaderMap) -> bool {
     if token.is_empty() {
         return true;
     }
+    let expected = format!("Bearer {token}");
     headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-        .map(|v| v == format!("Bearer {token}"))
+        .map(|v| constant_time_eq::constant_time_eq(v.as_bytes(), expected.as_bytes()))
         .unwrap_or(false)
 }
 
@@ -235,6 +236,17 @@ mod tests {
         let addr = start_test_server(make_state(), "secret", "/").await;
         assert_eq!(
             ws_upgrade_status(addr, "/events/stream", Some("wrong")).await,
+            401
+        );
+    }
+
+    #[tokio::test]
+    async fn upgrade_equal_length_wrong_token_returns_401() {
+        // Regression: bearer comparison must run in constant time, so an
+        // equal-length-but-wrong token must still be rejected.
+        let addr = start_test_server(make_state(), "secret", "/").await;
+        assert_eq!(
+            ws_upgrade_status(addr, "/events/stream", Some("SeCrEt")).await,
             401
         );
     }
