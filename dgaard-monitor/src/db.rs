@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use rusqlite::{Connection, params};
@@ -17,6 +17,20 @@ pub struct Database {
     conn: Mutex<Connection>,
     events_retention_hours: u32,
     aggregates_retention_days: u32,
+}
+
+/// Acquire the connection mutex, recovering the guard if a previous holder
+/// panicked. The SQLite connection state is managed by the C library and is
+/// not invalidated by an arbitrary Rust panic, so the safe action is to
+/// continue rather than cascade the panic to every subsequent caller.
+fn lock_conn(m: &Mutex<Connection>) -> MutexGuard<'_, Connection> {
+    match m.lock() {
+        Ok(g) => g,
+        Err(poisoned) => {
+            eprintln!("db: recovering poisoned connection mutex");
+            poisoned.into_inner()
+        }
+    }
 }
 
 impl Database {
@@ -43,7 +57,7 @@ impl Database {
     }
 
     fn create_schema(&self) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = lock_conn(&self.conn);
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS dns_events (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,7 +88,7 @@ impl Database {
         if events.is_empty() {
             return Ok(());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = lock_conn(&self.conn);
         let tx = conn.transaction()?;
         {
             let mut stmt = tx.prepare(
@@ -103,7 +117,7 @@ impl Database {
         if acc.is_empty() {
             return Ok(());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = lock_conn(&self.conn);
         let tx = conn.transaction()?;
         {
             let mut stmt = tx.prepare(
@@ -133,7 +147,7 @@ impl Database {
         let event_cutoff = now.saturating_sub(self.events_retention_hours as u64 * 3600) as i64;
         let hourly_cutoff =
             now.saturating_sub(self.aggregates_retention_days as u64 * 86_400) as i64;
-        let conn = self.conn.lock().unwrap();
+        let conn = lock_conn(&self.conn);
         conn.execute(
             "DELETE FROM dns_events WHERE timestamp < ?1",
             params![event_cutoff],
@@ -154,7 +168,7 @@ impl Database {
         limit: usize,
         offset: usize,
     ) -> rusqlite::Result<Vec<EventRecord>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = lock_conn(&self.conn);
         let from_i = from as i64;
         // Clamp to i64::MAX to avoid overflow — unix timestamps fit comfortably.
         let to_i = to.min(i64::MAX as u64) as i64;
@@ -212,7 +226,7 @@ impl Database {
         &self,
         min_observations: i64,
     ) -> rusqlite::Result<Vec<(String, String, Option<String>, u64)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = lock_conn(&self.conn);
         let mut stmt = conn.prepare(
             "WITH candidates AS (
                  SELECT client_ip, domain_hash
@@ -367,6 +381,24 @@ mod tests {
             flags: None,
             flags_labels: vec![],
         }
+    }
+
+    #[test]
+    fn lock_conn_recovers_from_poison() {
+        // Regression: a panic while holding the connection mutex used to
+        // poison every subsequent .lock().unwrap() caller. lock_conn must
+        // recover the inner guard instead.
+        let db = Database::open_in_memory().unwrap();
+        // Poison the mutex by panicking while holding the guard.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = db.conn.lock().unwrap();
+            panic!("intentional");
+        }));
+        assert!(result.is_err());
+        assert!(db.conn.is_poisoned());
+        // The next normal operation must still succeed despite poisoning.
+        db.insert_events(&[rec(1000, "Allowed", "1.2.3.4")])
+            .unwrap();
     }
 
     #[test]
