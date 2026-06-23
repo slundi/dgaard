@@ -335,16 +335,13 @@ fn format_elasticsearch(timestamp: u64, ip: &str, action: &StatAction, domain: &
             ("alert", "intrusion_detection", "info")
         }
     };
+    let ip = json_escape(ip);
+    let act = json_escape(act);
+    let domain = json_escape(domain);
+    let reason = json_escape(&reason);
     format!(
-        "{index_action}\n{{{doc}}}",
-        index_action = r#"{"index":{}}"#,
-        doc = format!(
-            r#""@timestamp":"{ts}","client_ip":"{ip}","action":"{act}","domain":"{domain}","reason":"{reason}","event":{{"kind":"{kind}","category":["{category}"],"type":["{ev_type}"],"dataset":"dgaard.dns"}}"#,
-            ip = json_escape(ip),
-            act = json_escape(act),
-            domain = json_escape(domain),
-            reason = json_escape(&reason),
-        )
+        r#"{{"index":{{}}}}
+{{"@timestamp":"{ts}","client_ip":"{ip}","action":"{act}","domain":"{domain}","reason":"{reason}","event":{{"kind":"{kind}","category":["{category}"],"type":["{ev_type}"],"dataset":"dgaard.dns"}}}}"#,
     )
 }
 
@@ -402,15 +399,7 @@ async fn open_output(path: Option<&str>) -> std::io::Result<Output> {
 
 // --- Helpers ---
 
-fn action_name(action: &StatAction) -> &'static str {
-    match action {
-        StatAction::Allowed => "Allowed",
-        StatAction::Proxied => "Proxied",
-        StatAction::Blocked(_) => "Blocked",
-        StatAction::Suspicious(_) => "Suspicious",
-        StatAction::HighlySuspicious(_) => "HighlySuspicious",
-    }
-}
+use crate::util::action_name;
 
 /// Returns `true` if `action` should be forwarded given the filter set.
 /// An empty filter means forward all.

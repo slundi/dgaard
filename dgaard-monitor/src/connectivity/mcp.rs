@@ -16,7 +16,7 @@ use tokio::sync::watch;
 use crate::{
     config::ConnectivityConfig,
     connectivity::mcp_token_auth_provider::ConfigTokenAuthProvider,
-    protocol::{StatAction, StatBlockReason},
+    protocol::StatBlockReason,
     state::AppState,
     util::{ip_to_string, parse_filter_ip},
 };
@@ -74,28 +74,9 @@ struct EventRecord {
     flags_labels: Vec<String>,
 }
 
-fn action_name(action: &StatAction) -> &'static str {
-    match action {
-        StatAction::Allowed => "Allowed",
-        StatAction::Proxied => "Proxied",
-        StatAction::Blocked(_) => "Blocked",
-        StatAction::Suspicious(_) => "Suspicious",
-        StatAction::HighlySuspicious(_) => "HighlySuspicious",
-    }
-}
-
-fn flags_of(action: &StatAction) -> Option<StatBlockReason> {
-    match action {
-        StatAction::Blocked(r) | StatAction::Suspicious(r) | StatAction::HighlySuspicious(r) => {
-            Some(*r)
-        }
-        _ => None,
-    }
-}
-
-fn reason_labels(r: StatBlockReason) -> Vec<String> {
-    crate::util::reason_labels(r)
-}
+// action_name, flags_of and reason_labels live in crate::util to avoid
+// drifting copies across the connectivity surfaces.
+use crate::util::{action_name, flags_of, reason_labels};
 
 // ── Handler ────────────────────────────────────────────────────────────────────
 
@@ -144,8 +125,9 @@ async fn handle_events(
         })
         .transpose()?;
 
-    let required_flags: Option<StatBlockReason> =
-        tool.flags.map(StatBlockReason::from_bits_truncate);
+    // from_bits_retain (not _truncate) so user-defined bits 16–31 are
+    // preserved for the filter check; api.rs uses the same form.
+    let required_flags: Option<StatBlockReason> = tool.flags.map(StatBlockReason::from_bits_retain);
 
     // Snapshot events while holding the lock as briefly as possible.
     let events_snapshot: Vec<_> = {
