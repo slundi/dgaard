@@ -35,26 +35,33 @@ impl SocketPool {
         })
     }
 
-    async fn acquire(&self) -> SocketGuard<'_> {
-        let permit = self.available.acquire().await.expect("semaphore closed");
-        let socket = self
+    /// Acquire a pooled socket. Returns `None` if the semaphore has been
+    /// closed (shutdown) or if the internal vec is empty despite holding
+    /// a permit — the latter should be impossible but we degrade gracefully
+    /// to an ephemeral socket rather than panicking the worker.
+    async fn acquire(&self) -> Option<SocketGuard<'_>> {
+        let permit = self.available.acquire().await.ok()?;
+        // Lock recovery: a poisoned mutex still has its inner Vec intact,
+        // so we keep going with the poisoned guard rather than crashing.
+        let mut guard = self
             .sockets
             .lock()
-            .expect("pool mutex poisoned")
-            .pop()
-            .unwrap();
-        SocketGuard {
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let socket = guard.pop()?;
+        drop(guard);
+        Some(SocketGuard {
             socket: Some(socket),
             pool: self,
             _permit: permit,
-        }
+        })
     }
 
     fn release(&self, socket: UdpSocket) {
-        self.sockets
+        let mut guard = self
+            .sockets
             .lock()
-            .expect("pool mutex poisoned")
-            .push(socket);
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.push(socket);
     }
 }
 
@@ -65,8 +72,12 @@ struct SocketGuard<'a> {
 }
 
 impl SocketGuard<'_> {
+    /// Borrow the inner socket. The `Option` is always `Some` between
+    /// construction and `Drop`, so this returns a plain `&UdpSocket`.
     fn get(&self) -> &UdpSocket {
-        self.socket.as_ref().unwrap()
+        self.socket
+            .as_ref()
+            .expect("SocketGuard used after release")
     }
 }
 
@@ -146,15 +157,19 @@ pub(crate) async fn forward_to_upstream(packet: &[u8]) -> std::io::Result<Vec<u8
             "0.0.0.0:0"
         };
 
-        // Acquire a pre-bound socket from the pool, or fall back to an ephemeral
-        // socket if the pool failed to initialise for this address family.
-        let upstream_ref = if let Some(pool) = pool_for(addr.is_ipv6()) {
-            UpstreamRef::Pooled(pool.acquire().await)
-        } else {
-            match UdpSocket::bind(bind_addr).await {
+        // Acquire a pre-bound socket from the pool, falling back to an
+        // ephemeral socket if the pool is unavailable for this address
+        // family or its semaphore has been closed (shutdown).
+        let pooled = match pool_for(addr.is_ipv6()) {
+            Some(pool) => pool.acquire().await,
+            None => None,
+        };
+        let upstream_ref = match pooled {
+            Some(g) => UpstreamRef::Pooled(g),
+            None => match UdpSocket::bind(bind_addr).await {
                 Ok(s) => UpstreamRef::Ephemeral(s),
                 Err(_) => continue,
-            }
+            },
         };
         let upstream_socket = upstream_ref.socket();
 
@@ -701,12 +716,21 @@ mod tests {
         let pool = SocketPool::build("0.0.0.0:0").expect("IPv4 pool init");
         // Acquire and release POOL_SIZE times to verify sockets return to the pool.
         for _ in 0..POOL_SIZE * 2 {
-            let guard = pool.acquire().await;
+            let guard = pool.acquire().await.expect("pool not closed");
             let _ = guard.get().local_addr().expect("socket is live");
             // guard drops here, returning the socket
         }
         // All POOL_SIZE permits must be available again.
         assert_eq!(pool.available.available_permits(), POOL_SIZE);
+    }
+
+    #[tokio::test]
+    async fn pool_acquire_returns_none_when_semaphore_closed() {
+        // Regression: acquire must propagate semaphore closure as None
+        // rather than panicking via .expect("semaphore closed").
+        let pool = SocketPool::build("0.0.0.0:0").expect("IPv4 pool init");
+        pool.available.close();
+        assert!(pool.acquire().await.is_none());
     }
 
     #[tokio::test]
