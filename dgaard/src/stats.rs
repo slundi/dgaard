@@ -136,6 +136,7 @@ pub struct StatsCounters {
     pub queries_allowed: AtomicU64,
     pub queries_proxied: AtomicU64,
     pub queries_cached: AtomicU64,
+    pub queries_upstream_errors: AtomicU64,
     pub stats_events_dropped: AtomicU64,
 }
 
@@ -147,6 +148,7 @@ impl StatsCounters {
             queries_allowed: AtomicU64::new(0),
             queries_proxied: AtomicU64::new(0),
             queries_cached: AtomicU64::new(0),
+            queries_upstream_errors: AtomicU64::new(0),
             stats_events_dropped: AtomicU64::new(0),
         }
     }
@@ -171,6 +173,12 @@ impl StatsCounters {
         self.queries_cached.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Incremented when forwarding a query upstream fails (all upstreams
+    /// timed out or refused). The client receives a SERVFAIL.
+    pub fn increment_upstream_errors(&self) {
+        self.queries_upstream_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn increment_stats_dropped(&self) {
         self.stats_events_dropped.fetch_add(1, Ordering::Relaxed);
     }
@@ -193,6 +201,10 @@ impl StatsCounters {
 
     pub fn get_cached(&self) -> u64 {
         self.queries_cached.load(Ordering::Relaxed)
+    }
+
+    pub fn get_upstream_errors(&self) -> u64 {
+        self.queries_upstream_errors.load(Ordering::Relaxed)
     }
 
     pub fn get_stats_dropped(&self) -> u64 {
@@ -333,6 +345,19 @@ mod tests {
         counters.increment_stats_dropped();
         counters.increment_stats_dropped();
         assert_eq!(counters.get_stats_dropped(), 2);
+    }
+
+    #[test]
+    fn test_stats_counters_upstream_errors() {
+        let counters = StatsCounters::new();
+        assert_eq!(counters.get_upstream_errors(), 0);
+        counters.increment_upstream_errors();
+        counters.increment_upstream_errors();
+        counters.increment_upstream_errors();
+        assert_eq!(counters.get_upstream_errors(), 3);
+        // Other counters must remain unaffected.
+        assert_eq!(counters.get_allowed(), 0);
+        assert_eq!(counters.get_proxied(), 0);
     }
 
     #[tokio::test]

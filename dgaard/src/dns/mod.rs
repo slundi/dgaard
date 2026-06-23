@@ -203,10 +203,13 @@ pub(crate) async fn handle_query(
                     }
                 }
                 Err(_) => {
-                    STATS_COUNTERS.increment_allowed();
+                    // Upstream timed out / refused; we send SERVFAIL to the
+                    // client. This is neither Allowed nor Proxied — record
+                    // it as an error so dashboards reflect reality.
+                    STATS_COUNTERS.increment_upstream_errors();
                     (
                         DnsPacket::build_servfail_response(&dns_packet.message),
-                        Some(StatAction::Allowed),
+                        None,
                     )
                 }
             }
@@ -268,10 +271,10 @@ pub(crate) async fn handle_query(
                     }
                 }
                 Err(_) => {
-                    STATS_COUNTERS.increment_proxied();
+                    STATS_COUNTERS.increment_upstream_errors();
                     (
                         DnsPacket::build_servfail_response(&dns_packet.message),
-                        Some(StatAction::Proxied),
+                        None,
                     )
                 }
             }
