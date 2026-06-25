@@ -4,6 +4,7 @@ mod connectivity;
 mod db;
 mod error;
 mod forwarding;
+mod headless;
 mod io;
 mod protocol;
 mod state;
@@ -180,8 +181,14 @@ async fn main() {
         }));
     }
 
-    // TUI (skipped when --headless).
-    if !opts.headless {
+    // TUI or headless JSON logger — mutually exclusive.
+    if opts.headless {
+        let s = Arc::clone(&state);
+        let rx = shutdown_rx.clone();
+        handles.push(tokio::spawn(async move {
+            headless::run(s, rx).await;
+        }));
+    } else {
         let s = Arc::clone(&state);
         let rx = shutdown_rx.clone();
         handles.push(tokio::spawn(async move {
