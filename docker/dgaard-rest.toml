@@ -1,0 +1,5 @@
+listen_addr = "0.0.0.0:8080"
+config_file = "/etc/dgaard/dgaard.toml"
+log_level = "warn"
+# Return HTTP 200 for all responses so the test script always gets a JSON body.
+blocked_status_code = 200

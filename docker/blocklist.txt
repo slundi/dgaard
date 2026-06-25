@@ -1,0 +1,4 @@
+# Static blocklist — demo entries for Docker integration test
+malware-c2-demo.com
+phishing-bank-login.net
+ransomware-payload.io

@@ -1,0 +1,55 @@
+# demo-domains.txt — exercises every filter stage of the dgaard engine
+#
+# Format:  <domain>  <expected>
+#   expected = "blocked" | "allowed"
+#
+# Run: docker/test.sh
+# Config used: docker/dgaard.toml  (heuristics on, no list downloads)
+
+# ── allowed: clean well-known domains ─────────────────────────────────────────
+google.com              allowed
+cloudflare.com          allowed
+github.com              allowed
+wikipedia.org           allowed
+rust-lang.org           allowed
+debian.org              allowed
+
+# ── allowed: whitelist override ────────────────────────────────────────────────
+# trusted-partner.xyz is in docker/whitelist.txt.
+# The .xyz TLD is excluded globally, but the whitelist takes priority.
+trusted-partner.xyz     allowed
+
+# ── blocked: static blocklist ──────────────────────────────────────────────────
+malware-c2-demo.com          blocked
+phishing-bank-login.net      blocked
+ransomware-payload.io        blocked
+
+# ── blocked: high Shannon entropy — DGA / C2 channel ──────────────────────────
+# threshold = 4.0 bits; labels with 17+ unique characters exceed it.
+# xk9bvpq3zm7nrfta1s → 18 unique chars → H ≈ log₂(18) ≈ 4.17 bits
+xk9bvpq3zm7nrfta1s.com      blocked
+q8zp3vk7nbmxtj4rya.net      blocked
+f3k8zvq2xpbmr9nta1j.org     blocked
+
+# ── blocked: consonant clustering — unpronounceable labels ────────────────────
+# consonant_ratio_threshold = 0.6; these labels are 100% consonants.
+# Their entropy (≈3.6) is below the 4.0 threshold, so only the consonant
+# check triggers — useful to verify each check independently.
+bxtzpkqmnvrf.com             blocked
+kvzxbtqprnmsd.net            blocked
+
+# ── blocked: banned keywords (strict_keyword_matching = false) ────────────────
+online-casino-slots.net      blocked
+porno-movies-online.com      blocked
+drogue-achat.com             blocked
+
+# ── blocked: false positive from non-strict keyword matching ──────────────────
+# "bet" is a substring of "better". This is expected behaviour with
+# strict_keyword_matching = false; set it to true in production to avoid this.
+better-software.com          blocked
+
+# ── blocked: excluded TLDs ─────────────────────────────────────────────────────
+# Domains below have normal labels (no heuristic trigger) — only TLD blocks them.
+automation.top               blocked
+openai-api.xyz               blocked
+win-auction.bid              blocked

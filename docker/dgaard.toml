@@ -1,0 +1,43 @@
+# Minimal engine configuration for the Docker demo / test environment.
+# No external list downloads — everything is local or built-in.
+
+[security.structure]
+max_subdomain_depth = 5
+max_domain_length = 128
+force_lowercase_ascii = true
+block_chaos_class = true
+max_txt_record_length = 128
+max_answers_per_query = 10
+
+[security.lexical]
+enabled = true
+banned_keywords = ["porno", "casino", "drogue", "bet", "sex"]
+# false = substring match (catches "bet" inside "better"); set true in production
+strict_keyword_matching = false
+
+[security.intelligence]
+enabled = true
+entropy_threshold = 4.0
+entropy_fast = true
+min_word_length = 8
+consonant_ratio_threshold = 0.6
+max_consonant_sequence = 5
+# Disable N-gram model for predictable test results
+use_ngram_model = false
+ngram_use_embedded = true
+ngram_embedded_languages = ["english"]
+ngram_probability_threshold = -4.0
+
+[security.idn]
+# Off — IDN homograph testing requires known Punycode samples
+mode = "Off"
+allowed_scripts = ["Latin"]
+
+[tld]
+exclude = [".top", ".xyz", ".bid", ".country", ".stream", ".gdn"]
+
+[sources]
+blacklists = ["/etc/dgaard/blocklist.txt"]
+whitelists = ["/etc/dgaard/whitelist.txt"]
+host_index_path = ""
+browser_rules_path = ""

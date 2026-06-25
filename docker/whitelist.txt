@@ -1,0 +1,4 @@
+# Whitelist — overrides ALL other filters, including TLD exclusions
+# trusted-partner.xyz is blocked by the .xyz TLD rule but passes because
+# it is listed here — tests that the whitelist wins over TLD exclusion.
+trusted-partner.xyz
