@@ -150,6 +150,18 @@ _Focus: Analysing DNS payloads and response records._
 - [x] 8.6. **Low TTL**: if TTL is very low (like less than 10s but configurable) and not a known CDN (like Akamai) it should increase suspicious score.
 - [ ] 8.7. **DNS Rebinding Shield (known hosted malware)**: from a list of IPs or using geoIP or known range for hosted malware.
 - [x] 8.8. **ASN Filtering**: for crypto mining autonomous systems?
+- [ ] 8.9. **Additional Section Inspector**: parse and validate the Additional section of upstream responses. Today only the Answer / Authority sections feed the scoring pipeline; the Additional section is silently echoed (and zeroed in outgoing queries, `dgaard/src/dns/packet.rs:144`). Flag/score anomalies typical of cache-poisoning, lazy-glue injection, or non-compliant middleboxes: unsolicited records (RRs not referenced by the Answer or Authority sections), out-of-bailiwick glue in forwarder mode (already covered in recursive mode via the bailiwick check, see `Roadmap-recursive-DNS.md`), unexpected OPT records beyond the single one allowed by RFC 6891, and glue A/AAAA pointing into RFC 1918 / loopback / link-local ranges (complements the rebinding shield, item 8.4). Suspicion-score driven, not a hard block by default — false positives from misconfigured authoritative servers are common.
+
+  ```toml
+  [security.additional_section]
+  enabled = true
+  # Points added when an unsolicited RR is found in the Additional section
+  unsolicited_rr_score = 4
+  # Points added when glue records reference RFC 1918 / loopback / link-local IPs
+  private_glue_score = 6
+  # Points added when more than one OPT record is present (RFC 6891 violation)
+  multiple_opt_score = 8
+  ```
 
 ## Phase 9: Threat Intelligence & Analytics
 
@@ -243,6 +255,54 @@ _Focus: Closing well-known DNS attack surfaces that do not require heuristics �
   [upstream]
   servers = ["1.1.1.1:53", "9.9.9.9:53"]
   use_0x20_randomization = true # default: true when upstream is plain UDP DNS
+  ```
+
+- [ ] 10.6. **Per-Client LAN Query Rate Limiting**
+
+  The `client_ip` field is already collected and forwarded to `dgaard-monitor` for observability, but no enforcement exists: a compromised LAN device (IoT camera, sideloaded app, malware-infected laptop) can issue thousands of DNS queries per second to exfiltrate data, abuse the resolver as an open recursor toward upstream, or probe internal services. The QType Warden (item 8.5) blocks NULL / HINFO / ANY outright, but does not constrain permitted types (A, AAAA, TXT, MX) by volume.
+
+  Implementation: a token-bucket per `client_ip` evaluated at the gatekeeper stage, before any cache or upstream work. Two buckets per client: a generous bucket for normal types (default 200 qps sustained, burst 400) and a tight bucket for higher-risk-but-permitted types (TXT, SRV, default 20 qps sustained, burst 40). Exceeding either bucket returns `REFUSED` and adds suspicion points; sustained excess flips the client into a hard-block window. Bucket state lives in a `DashMap<IpAddr, ClientBuckets>` with periodic eviction of idle clients. The decision must run before cache lookup so the throttle protects upstream too.
+
+  Out of scope for this item: per-domain or per-qtype quotas — those belong with the threat-intelligence layer in Phase 9.
+
+  ```toml
+  [security.client_rate_limit]
+  enabled = true
+  # Token-bucket for normal qtypes (A, AAAA, MX, ...)
+  normal_qps = 200
+  normal_burst = 400
+  # Tighter bucket for permitted-but-risky qtypes (TXT, SRV, ...)
+  risky_qps = 20
+  risky_burst = 40
+  # Suspicion points added per bucket overflow event
+  overflow_score = 4
+  # Sustained-overflow hard-block window (seconds)
+  hard_block_window_secs = 60
+  # Trusted client IPs/ranges bypass the limit (loopback, infrastructure boxes)
+  trusted_ranges = ["127.0.0.0/8", "::1/128"]
+  ```
+
+- [ ] 10.7. **EDNS0 Client Subnet (ECS) Striping**
+
+  EDNS0 Client Subnet (RFC 7871) lets a recursive resolver attach the client's IP prefix to upstream queries so CDNs can geo-route the answer. For a LAN-scope DNS proxy this is a privacy leak: the LAN client's IP or subnet is exposed to every upstream resolver and every authoritative server in the chain. Modern stub resolvers and some browsers (notably older Chrome builds) may set ECS themselves; dgaard must not pass it through, and must not insert its own.
+
+  The policy is shared between forwarder and recursive modes (always remove the client's prefix from anything dgaard sends upstream), but the execution path differs:
+
+  - **Forwarder mode** (current default): when relaying a client query, walk the OPT RR additional record and drop any `OPT_CODE 8` (ECS) option before serialising the outgoing packet. This is a rewrite step in the same `forward_to_upstream` path that hosts item 10.5 (`0x20`).
+  - **Recursive mode** (planned, see `Roadmap-recursive-DNS.md:78`): the resolver builds outgoing packets from scratch. There is nothing to strip — the rule is simply _never insert ECS_ in the OPT RR sent to roots / TLDs / authoritatives. The same config flag gates the OPT-RR build step in `Roadmap-recursive-DNS.md`'s recursive resolver.
+
+  Optional escape hatch for users who want CDN geo-optimisation without full leakage: a `forward_as_prefix` mode that retains a coarse prefix (default `/24` for IPv4, `/56` for IPv6) instead of stripping outright. Disabled by default — full strip is the privacy-preserving choice.
+
+  ```toml
+  [security.ecs]
+  enabled = true
+  # Strip ECS from outgoing queries entirely (recommended).
+  strip = true
+  # If strip = false, truncate the client prefix to these widths before forwarding.
+  # Ignored when strip = true.
+  forward_as_prefix = false
+  ipv4_prefix_bits = 24
+  ipv6_prefix_bits = 56
   ```
 
 ---

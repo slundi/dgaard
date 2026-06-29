@@ -431,6 +431,7 @@ Added to `STATS_COUNTERS`:
 - [ ] `queries_used: u32` global query counter capped by `max_queries_per_resolution` (default 64)
 - [ ] `max_delegation_depth = 8` hard fallback guard with SERVFAIL
 - [ ] **EDNS0 OPT record** on every outgoing query; advertise `edns0_udp_payload_size`
+- [ ] **ECS striping** in the OPT RR builder — never insert an EDNS0 Client Subnet (RFC 7871) option in outgoing recursive queries. Shared policy with forwarder mode, see Phase 10.7 in `Roadmap.md`. In recursive mode there is nothing to strip from an incoming client packet (the recursive resolver builds outgoing packets from scratch); the rule is simply _do not insert_ unless `[security.ecs] forward_as_prefix = true` is set, in which case insert a truncated `/24` (IPv4) or `/56` (IPv6) prefix derived from the client's address.
 - [ ] **QNAME minimization** (RFC 9156): query only the next label at each delegation hop
 - [ ] UDP truncation → **TCP fallback with pooled TCP connections** (mirror existing UDP `SocketPool` pattern from `dgaard/src/dns/upstream.rs`)
 - [ ] `ns_concurrency` policy: `sequential` | `staggered` | `parallel` with `max_concurrent_queries` and `ns_stagger_ms`; `queries_used` increments per launched query
