@@ -44,7 +44,7 @@ Those types will be included in the changelog because user may want to know.
 ### Unsure
 
 - `docs`: depending if users are complaining or often asking the same thing.
-- `perf`: may be relevent for user with big networks
+- `perf`: may be relevant for user with big networks
 
 The project team will review your Merge Request, may ask for clarifications or modifications, and will merge it once it is approved.
 
@@ -53,3 +53,49 @@ The project team will review your Merge Request, may ask for clarifications or m
 We adhere to the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) specification to maintain a clear and structured commit history. This makes it easier to understand changes and automate certain processes (like generating changelogs).
 
 A commit should be structured as follows:
+
+## Operational: Updating the compiled-in root-server hints
+
+The iterative recursive resolver ships with a snapshot of the 13 IANA
+root-server addresses (`ROOT_HINTS_V4` + `ROOT_HINTS_V6` in
+`dgaard/src/dns/recursive.rs`). Real-world drift is rare — measured in
+years — but happens (e.g. B-root's 2017 address change). A weekly
+Woodpecker cron downloads `https://www.internic.net/domain/named.root`
+and runs `just check-root-hints`; the build fails as soon as the
+upstream file disagrees with the compiled-in arrays.
+
+When that happens:
+
+1. Run the check locally to reproduce:
+
+   ```bash
+   just check-root-hints
+   ```
+
+   The failure output lists each drifted operator and family, e.g.:
+
+   ```
+   AAAA g: drift — compiled=2001:500:12::d upstream=2001:500:12::d0d
+   ```
+
+2. Open `dgaard/src/dns/recursive.rs` and update the affected entry of
+   `ROOT_HINTS_V4` (for `A` drift lines) or `ROOT_HINTS_V6` (for `AAAA`
+   lines). The order of letters inside the arrays does not matter —
+   the resolver picks at random — so keep the alphabetical layout
+   that already exists.
+
+3. Re-run `just check-root-hints` until it passes. Then run the unit
+   tests to confirm nothing else regressed:
+
+   ```bash
+   just test
+   ```
+
+4. Commit with a `chore(roots):` prefix referencing the change in
+   IANA's `named.root`. Include the upstream URL and the date the
+   check started failing in the commit body so future archaeologists
+   can audit the drift trail.
+
+The `fixture_named_root()` helper in the unit tests is the
+_operational shadow_ of the production constants; if you change the
+constants, update the fixture so the round-trip diff stays empty.

@@ -36,5 +36,16 @@ steps:
       - git fetch --depth=1 origin ${CI_REPO_DEFAULT_BRANCH:-master}
       - nix develop --command just coverage-check ${CI_REPO_DEFAULT_BRANCH:-master}
     depends_on: [test]
+  # root-hints: Weekly drift check between the compiled-in IANA root
+  # server addresses and IANA's published `named.root`. Only runs on
+  # the cron event (configured in the Woodpecker repo settings as a
+  # weekly schedule); on push/PR it stays skipped.
+  root_hints:
+    image: nixos/nix:latest
+    commands:
+      - nix develop --command just check-root-hints
+    depends_on: [setup]
+    when:
+      event: cron
 when:
-  event: [push, pull_request]
+  event: [push, pull_request, cron]

@@ -61,6 +61,15 @@ coverage-check BASE="master":
     cargo llvm-cov --lcov --output-path lcov.info
     cargo llvm-cov report --fail-under-lines 80
 
+# --- Operational ---
+
+# Verify the compiled-in root-server hints still match IANA's published
+# `named.root`. Run on a weekly cron; fails CI on drift so the operator
+# regenerates ROOT_HINTS_V4/V6 in dgaard/src/dns/recursive.rs.
+# See CONTRIBUTING.md for the manual regeneration procedure.
+check-root-hints:
+    ./scripts/check-root-hints.sh
+
 # --- Cleanup ---
 
 # Clean build artifacts

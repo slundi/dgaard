@@ -506,6 +506,8 @@ security-sensitive.
 
 ### Operational (rolling) — root-hints drift check
 
-- [ ] `justfile` recipe `check-root-hints` (download `named.root`, parse A+AAAA, diff against const array)
-- [ ] `.woodpecker/` weekly cron job runs `nix develop --command just check-root-hints`; fails CI on drift
-- [ ] CONTRIBUTING.md section documenting the manual constants-update procedure
+- [x] `justfile` recipe `check-root-hints` (wraps `scripts/check-root-hints.sh`: downloads `named.root`, hands it to the env-gated `upstream_root_hints_match_compiled_constants` test via `DGAARD_NAMED_ROOT`)
+- [x] Public `parse_root_hints` + `diff_against_compiled` in `dns/recursive.rs` with unit tests covering operator extraction, missing/extra/drift lines, and a 13-operator fixture
+- [x] `.woodpecker.yml` weekly cron job runs `nix develop --command just check-root-hints` on the `cron` event; fails CI on drift
+- [x] CONTRIBUTING.md section documenting the manual constants-update procedure
+- [x] Bonus: while landing this, the check caught a real drift bug — G-root's IPv6 was `::d` in the compiled constants when it should have been `::d0d`

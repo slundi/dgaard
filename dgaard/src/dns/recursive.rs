@@ -102,7 +102,9 @@ pub const ROOT_HINTS_V6: &[(char, Ipv6Addr)] = &[
     ),
     (
         'g',
-        Ipv6Addr::new(0x2001, 0x0500, 0x0012, 0, 0, 0, 0, 0x000d),
+        // G-root IPv6 is 2001:500:12::d0d, not ::d. Caught by the
+        // operational drift-check landed alongside this constant.
+        Ipv6Addr::new(0x2001, 0x0500, 0x0012, 0, 0, 0, 0, 0x0d0d),
     ),
     (
         'h',
@@ -746,14 +748,67 @@ pub fn default_roots() -> Vec<SocketAddr> {
 /// stray comment shouldn't refuse to start the daemon.
 fn load_root_hints_file(path: &str) -> io::Result<Vec<SocketAddr>> {
     let content = std::fs::read_to_string(path)?;
-    let mut out = Vec::new();
+    Ok(parse_root_hints(&content).into_socket_addrs().collect())
+}
+
+/// Parsed view of a `named.root` file: A and AAAA records keyed by the
+/// single-letter operator label ('a' through 'm'). Used both by the
+/// startup-time root-hint loader and by the drift-check tool.
+#[derive(Debug, Default, PartialEq, Eq, Clone)]
+pub struct RootHintsTable {
+    pub v4: Vec<(char, Ipv4Addr)>,
+    pub v6: Vec<(char, Ipv6Addr)>,
+}
+
+impl RootHintsTable {
+    /// Flatten into the `Vec<SocketAddr>` format the resolver loop
+    /// consumes. IPv4 first, then IPv6 — matches `default_roots()`.
+    pub fn into_socket_addrs(self) -> impl Iterator<Item = SocketAddr> {
+        let v4 = self
+            .v4
+            .into_iter()
+            .map(|(_, ip)| SocketAddr::new(IpAddr::V4(ip), 53));
+        let v6 = self
+            .v6
+            .into_iter()
+            .map(|(_, ip)| SocketAddr::new(IpAddr::V6(ip), 53));
+        v4.chain(v6)
+    }
+}
+
+/// Lower-cased operator letter from a root-server name like
+/// `A.ROOT-SERVERS.NET.`. Returns `None` for any name that doesn't
+/// match the official root-zone convention.
+fn root_operator_letter(name: &str) -> Option<char> {
+    let upper = name.to_ascii_uppercase();
+    let stripped = upper.trim_end_matches('.');
+    let (letter, rest) = stripped.split_once('.')?;
+    if rest != "ROOT-SERVERS.NET" {
+        return None;
+    }
+    let mut chars = letter.chars();
+    let c = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    if !c.is_ascii_alphabetic() {
+        return None;
+    }
+    Some(c.to_ascii_lowercase())
+}
+
+/// Parse a BIND-style `named.root` string into a [`RootHintsTable`].
+/// Order is preserved as encountered in the file so callers can
+/// produce stable diffs.
+pub fn parse_root_hints(content: &str) -> RootHintsTable {
+    let mut table = RootHintsTable::default();
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with(';') {
             continue;
         }
         let mut iter = line.split_whitespace();
-        let _name = iter.next();
+        let owner = iter.next();
         let _ttl = iter.next();
         let rrtype = match iter.next() {
             Some(t) => t.to_ascii_uppercase(),
@@ -763,21 +818,102 @@ fn load_root_hints_file(path: &str) -> io::Result<Vec<SocketAddr>> {
             Some(v) => v,
             None => continue,
         };
+        let Some(letter) = owner.and_then(root_operator_letter) else {
+            continue;
+        };
         match rrtype.as_str() {
             "A" => {
                 if let Ok(ip) = value.parse::<Ipv4Addr>() {
-                    out.push(SocketAddr::new(IpAddr::V4(ip), 53));
+                    table.v4.push((letter, ip));
                 }
             }
             "AAAA" => {
                 if let Ok(ip) = value.parse::<Ipv6Addr>() {
-                    out.push(SocketAddr::new(IpAddr::V6(ip), 53));
+                    table.v6.push((letter, ip));
                 }
             }
-            _ => continue,
+            _ => {}
         }
     }
-    Ok(out)
+    table
+}
+
+/// Compare a freshly-parsed [`RootHintsTable`] against the
+/// compiled-in [`ROOT_HINTS_V4`] / [`ROOT_HINTS_V6`] constants.
+///
+/// Returns one human-readable line per discrepancy: missing operators,
+/// extra operators, and addresses that have drifted. An empty `Vec`
+/// means perfect agreement.
+///
+/// The diff is symmetric — it catches both "the compiled-in
+/// constants are stale" *and* "someone fed us a corrupt
+/// `named.root`". The drift-check tool exits non-zero on any line; a
+/// release-time regenerator uses the missing/extra/drift lines to
+/// hand-patch the consts.
+///
+/// Reachable only from the env-gated drift test; `#[allow(dead_code)]`
+/// keeps the bin target quiet while still exposing the helper for
+/// `cargo test` to consume.
+#[allow(dead_code)]
+pub fn diff_against_compiled(parsed: &RootHintsTable) -> Vec<String> {
+    let mut diffs = Vec::new();
+    diff_one_family(
+        "A",
+        &parsed
+            .v4
+            .iter()
+            .map(|(c, ip)| (*c, ip.to_string()))
+            .collect::<Vec<_>>(),
+        &ROOT_HINTS_V4
+            .iter()
+            .map(|(c, ip)| (*c, ip.to_string()))
+            .collect::<Vec<_>>(),
+        &mut diffs,
+    );
+    diff_one_family(
+        "AAAA",
+        &parsed
+            .v6
+            .iter()
+            .map(|(c, ip)| (*c, ip.to_string()))
+            .collect::<Vec<_>>(),
+        &ROOT_HINTS_V6
+            .iter()
+            .map(|(c, ip)| (*c, ip.to_string()))
+            .collect::<Vec<_>>(),
+        &mut diffs,
+    );
+    diffs
+}
+
+#[allow(dead_code)]
+fn diff_one_family(
+    family: &str,
+    parsed: &[(char, String)],
+    compiled: &[(char, String)],
+    out: &mut Vec<String>,
+) {
+    use std::collections::BTreeMap;
+    let p: BTreeMap<char, &str> = parsed.iter().map(|(c, s)| (*c, s.as_str())).collect();
+    let c: BTreeMap<char, &str> = compiled.iter().map(|(ch, s)| (*ch, s.as_str())).collect();
+    for (op, pip) in &p {
+        match c.get(op) {
+            None => out.push(format!(
+                "{family} {op}: missing in compiled (upstream={pip})"
+            )),
+            Some(cip) if cip != pip => out.push(format!(
+                "{family} {op}: drift — compiled={cip} upstream={pip}"
+            )),
+            _ => {}
+        }
+    }
+    for op in c.keys() {
+        if !p.contains_key(op) {
+            out.push(format!(
+                "{family} {op}: missing in upstream (compiled-in but absent from named.root)"
+            ));
+        }
+    }
 }
 
 /// Pick three NS addresses at random from `roots`, falling back to the
@@ -860,6 +996,181 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), picked.len());
+    }
+
+    // ---- Operational: root-hints drift check ----
+
+    /// A minimal but realistic `named.root` fixture covering all 13
+    /// operators in both address families. Used to anchor the
+    /// parser/diff unit tests without reaching the network.
+    fn fixture_named_root() -> String {
+        // Built from the IANA-published values current at the time
+        // session-1 root hints were compiled in; if the unit tests
+        // below ever flag drift it is because BOTH the file and the
+        // compiled-in constants moved.
+        let lines = [
+            ".                        3600000      NS    A.ROOT-SERVERS.NET.",
+            "A.ROOT-SERVERS.NET.      3600000      A     198.41.0.4",
+            "A.ROOT-SERVERS.NET.      3600000      AAAA  2001:503:ba3e::2:30",
+            "B.ROOT-SERVERS.NET.      3600000      A     170.247.170.2",
+            "B.ROOT-SERVERS.NET.      3600000      AAAA  2801:1b8:10::b",
+            "C.ROOT-SERVERS.NET.      3600000      A     192.33.4.12",
+            "C.ROOT-SERVERS.NET.      3600000      AAAA  2001:500:2::c",
+            "D.ROOT-SERVERS.NET.      3600000      A     199.7.91.13",
+            "D.ROOT-SERVERS.NET.      3600000      AAAA  2001:500:2d::d",
+            "E.ROOT-SERVERS.NET.      3600000      A     192.203.230.10",
+            "E.ROOT-SERVERS.NET.      3600000      AAAA  2001:500:a8::e",
+            "F.ROOT-SERVERS.NET.      3600000      A     192.5.5.241",
+            "F.ROOT-SERVERS.NET.      3600000      AAAA  2001:500:2f::f",
+            "G.ROOT-SERVERS.NET.      3600000      A     192.112.36.4",
+            "G.ROOT-SERVERS.NET.      3600000      AAAA  2001:500:12::d0d",
+            "H.ROOT-SERVERS.NET.      3600000      A     198.97.190.53",
+            "H.ROOT-SERVERS.NET.      3600000      AAAA  2001:500:1::53",
+            "I.ROOT-SERVERS.NET.      3600000      A     192.36.148.17",
+            "I.ROOT-SERVERS.NET.      3600000      AAAA  2001:7fe::53",
+            "J.ROOT-SERVERS.NET.      3600000      A     192.58.128.30",
+            "J.ROOT-SERVERS.NET.      3600000      AAAA  2001:503:c27::2:30",
+            "K.ROOT-SERVERS.NET.      3600000      A     193.0.14.129",
+            "K.ROOT-SERVERS.NET.      3600000      AAAA  2001:7fd::1",
+            "L.ROOT-SERVERS.NET.      3600000      A     199.7.83.42",
+            "L.ROOT-SERVERS.NET.      3600000      AAAA  2001:500:9f::42",
+            "M.ROOT-SERVERS.NET.      3600000      A     202.12.27.33",
+            "M.ROOT-SERVERS.NET.      3600000      AAAA  2001:dc3::35",
+        ];
+        lines.join("\n")
+    }
+
+    #[test]
+    fn root_operator_letter_extracts_single_letter_from_root_servers_name() {
+        assert_eq!(root_operator_letter("A.ROOT-SERVERS.NET."), Some('a'));
+        assert_eq!(root_operator_letter("m.root-servers.net."), Some('m'));
+        // Missing trailing dot still parses — operators occasionally
+        // ship non-canonical files.
+        assert_eq!(root_operator_letter("J.ROOT-SERVERS.NET"), Some('j'));
+        // Anything not under ROOT-SERVERS.NET is rejected: this is the
+        // crucial anti-poisoning check.
+        assert_eq!(root_operator_letter("A.EVIL.NET."), None);
+        assert_eq!(root_operator_letter("AA.ROOT-SERVERS.NET."), None);
+        assert_eq!(root_operator_letter("1.ROOT-SERVERS.NET."), None);
+    }
+
+    #[test]
+    fn parse_root_hints_extracts_all_operators_from_fixture() {
+        let parsed = parse_root_hints(&fixture_named_root());
+        assert_eq!(parsed.v4.len(), 13, "must find 13 IPv4 operators");
+        assert_eq!(parsed.v6.len(), 13, "must find 13 IPv6 operators");
+        // All 13 letters present.
+        let letters_v4: std::collections::BTreeSet<char> =
+            parsed.v4.iter().map(|(c, _)| *c).collect();
+        let letters_v6: std::collections::BTreeSet<char> =
+            parsed.v6.iter().map(|(c, _)| *c).collect();
+        let expected: std::collections::BTreeSet<char> = ('a'..='m').collect();
+        assert_eq!(letters_v4, expected);
+        assert_eq!(letters_v6, expected);
+    }
+
+    #[test]
+    fn parse_root_hints_ignores_unrelated_lines() {
+        // Real `named.root` files have an NS line, comments, and the
+        // glue. Only A/AAAA glue records owned by *.ROOT-SERVERS.NET.
+        // must enter the table.
+        let content = "\
+            ; comment\n\
+            .                        3600000      NS    A.ROOT-SERVERS.NET.\n\
+            A.ROOT-SERVERS.NET.      3600000      A     198.41.0.4\n\
+            evil.com.                3600000      A     203.0.113.1\n";
+        let parsed = parse_root_hints(content);
+        assert_eq!(parsed.v4.len(), 1);
+        assert_eq!(parsed.v4[0], ('a', "198.41.0.4".parse().unwrap()));
+        assert!(parsed.v6.is_empty());
+    }
+
+    #[test]
+    fn diff_against_compiled_is_empty_for_in_sync_fixture() {
+        // The fixture above was hand-derived from the same source as
+        // the compiled-in const arrays. The diff must come back empty
+        // — if it doesn't, EITHER the fixture is wrong (test bug) OR
+        // the compiled-in arrays drifted (production bug).
+        let parsed = parse_root_hints(&fixture_named_root());
+        let diffs = diff_against_compiled(&parsed);
+        assert!(
+            diffs.is_empty(),
+            "unexpected drift:\n  {}",
+            diffs.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn diff_against_compiled_reports_address_drift() {
+        let mut parsed = parse_root_hints(&fixture_named_root());
+        // Forge a drift: change A-root's IPv4 to something nonsensical.
+        for (c, ip) in parsed.v4.iter_mut() {
+            if *c == 'a' {
+                *ip = "1.2.3.4".parse().unwrap();
+            }
+        }
+        let diffs = diff_against_compiled(&parsed);
+        assert!(
+            diffs
+                .iter()
+                .any(|d| d.contains("A a:") && d.contains("drift")),
+            "drift line missing from diff: {diffs:?}"
+        );
+    }
+
+    #[test]
+    fn diff_against_compiled_reports_missing_operator() {
+        // Drop B-root's IPv4 record entirely.
+        let mut parsed = parse_root_hints(&fixture_named_root());
+        parsed.v4.retain(|(c, _)| *c != 'b');
+        let diffs = diff_against_compiled(&parsed);
+        assert!(
+            diffs
+                .iter()
+                .any(|d| d.contains("A b:") && d.contains("missing in upstream")),
+            "expected missing-in-upstream line: {diffs:?}"
+        );
+    }
+
+    #[test]
+    fn diff_against_compiled_reports_extra_operator() {
+        let mut parsed = parse_root_hints(&fixture_named_root());
+        // Insert a bogus 'n' operator that doesn't exist in the consts.
+        parsed.v4.push(('n', "203.0.113.99".parse().unwrap()));
+        let diffs = diff_against_compiled(&parsed);
+        assert!(
+            diffs
+                .iter()
+                .any(|d| d.contains("A n:") && d.contains("missing in compiled")),
+            "expected missing-in-compiled line: {diffs:?}"
+        );
+    }
+
+    /// Operational drift gate. Skipped by default so `cargo test`
+    /// stays offline-friendly; CI (and the `just check-root-hints`
+    /// recipe) set `DGAARD_NAMED_ROOT` to a path containing a
+    /// freshly-downloaded `named.root`.
+    ///
+    /// The recipe lives in `justfile`; the weekly cron lives in
+    /// `.woodpecker.yml`. See `CONTRIBUTING.md` for the manual
+    /// regeneration procedure when this test fails.
+    #[test]
+    fn upstream_root_hints_match_compiled_constants() {
+        let Ok(path) = std::env::var("DGAARD_NAMED_ROOT") else {
+            // Skip silently — keeps the offline test run green.
+            return;
+        };
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read DGAARD_NAMED_ROOT={path}: {e}"));
+        let parsed = parse_root_hints(&content);
+        let diffs = diff_against_compiled(&parsed);
+        assert!(
+            diffs.is_empty(),
+            "ROOT-HINTS DRIFT — regenerate ROOT_HINTS_V4/V6 in \
+             dgaard/src/dns/recursive.rs (see CONTRIBUTING.md). \
+             Differences:\n  {}",
+            diffs.join("\n  ")
+        );
     }
 
     #[test]
