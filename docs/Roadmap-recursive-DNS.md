@@ -423,20 +423,20 @@ Added to `STATS_COUNTERS`:
 
 ### Phase 2 — Iterative recursive resolver
 
-- [ ] Implement `RecursiveResolver` in `dgaard/src/dns/recursive.rs`
-- [ ] Compile-in root hint constants (IPv4 + IPv6, all 13 operators)
-- [ ] Implement `root_hints_path` override at startup
-- [ ] Iterative delegation loop: referral extraction, **in-bailiwick glue check**, configurable bailiwick policy (`strict_bailiwick`)
-- [ ] Two threaded visited sets: `visited_zones: Vec<u64>` and `visited_cnames: Vec<u64>` — passed into CNAME-follow recursion and out-of-zone NS resolution so cycles spanning sub-resolves are detected
-- [ ] `queries_used: u32` global query counter capped by `max_queries_per_resolution` (default 64)
-- [ ] `max_delegation_depth = 8` hard fallback guard with SERVFAIL
-- [ ] **EDNS0 OPT record** on every outgoing query; advertise `edns0_udp_payload_size`
-- [ ] **ECS striping** in the OPT RR builder — never insert an EDNS0 Client Subnet (RFC 7871) option in outgoing recursive queries. Shared policy with forwarder mode, see Phase 10.7 in `Roadmap.md`. In recursive mode there is nothing to strip from an incoming client packet (the recursive resolver builds outgoing packets from scratch); the rule is simply _do not insert_ unless `[security.ecs] forward_as_prefix = true` is set, in which case insert a truncated `/24` (IPv4) or `/56` (IPv6) prefix derived from the client's address.
-- [ ] **QNAME minimization** (RFC 9156): query only the next label at each delegation hop
-- [ ] UDP truncation → **TCP fallback with pooled TCP connections** (mirror existing UDP `SocketPool` pattern from `dgaard/src/dns/upstream.rs`)
-- [ ] `ns_concurrency` policy: `sequential` | `staggered` | `parallel` with `max_concurrent_queries` and `ns_stagger_ms`; `queries_used` increments per launched query
-- [ ] Resolver metrics counters in `STATS_COUNTERS`
-- [ ] Integration tests:
+- [x] Implement `RecursiveResolver` in `dgaard/src/dns/recursive.rs`
+- [x] Compile-in root hint constants (IPv4 + IPv6, all 13 operators)
+- [x] Implement `root_hints_path` override at startup
+- [x] Iterative delegation loop: referral extraction, **in-bailiwick glue check**, configurable bailiwick policy (`strict_bailiwick`)
+- [x] Two threaded visited sets: `visited_zones: Vec<u64>` and `visited_cnames: Vec<u64>` — passed into CNAME-follow recursion and out-of-zone NS resolution so cycles spanning sub-resolves are detected
+- [x] `queries_used: u32` global query counter capped by `max_queries_per_resolution` (default 64)
+- [x] `max_delegation_depth = 8` hard fallback guard with SERVFAIL
+- [x] **EDNS0 OPT record** on every outgoing query; advertise `edns0_udp_payload_size`
+- [x] **ECS striping** in the OPT RR builder — never insert an EDNS0 Client Subnet (RFC 7871) option in outgoing recursive queries. Shared policy with forwarder mode, see Phase 10.7 in `Roadmap.md`. In recursive mode there is nothing to strip from an incoming client packet (the recursive resolver builds outgoing packets from scratch); the rule is simply _do not insert_ unless `[security.ecs] forward_as_prefix = true` is set, in which case insert a truncated `/24` (IPv4) or `/56` (IPv6) prefix derived from the client's address.
+- [x] **QNAME minimization** (RFC 9156): query only the next label at each delegation hop
+- [x] UDP truncation → **TCP fallback with pooled TCP connections** (mirror existing UDP `SocketPool` pattern from `dgaard/src/dns/upstream.rs`)
+- [x] `ns_concurrency` policy: `sequential` | `staggered` | `parallel` with `max_concurrent_queries` and `ns_stagger_ms`; `queries_used` increments per launched query
+- [x] Resolver metrics counters in `STATS_COUNTERS`
+- [x] Integration tests:
   - `example.com`, NXDOMAIN, deep delegation, CNAME chain, delegation cycle, CNAME cycle across sub-resolves
   - Out-of-bailiwick referral (strict mode → SERVFAIL; lenient mode → next NS)
   - Bad / out-of-bailiwick glue discarded

@@ -57,20 +57,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // sockets means an invalid config never reaches port 53.
     config.validate()?;
 
-    // Install the resolver matching the configured mode. Phase 1 has only
-    // one implementation; the `match` is the seam Phase 2 will plug
-    // `RecursiveResolver` into without changing handle_query.
+    // Install the resolver matching the configured mode. The `match`
+    // is the seam handle_query never has to know about — its single
+    // call site goes through UPSTREAM_RESOLVER.
     let resolver: std::sync::Arc<dyn dns::resolver::UpstreamResolver> = match config.server.mode {
         config::ResolutionMode::Forwarder => {
             std::sync::Arc::new(dns::resolver::ForwardingResolver::new())
         }
         config::ResolutionMode::Recursive => {
-            return Err(
-                "Recursive resolution mode is reserved for Phase 2 of the recursive-DNS \
-                 roadmap and is not yet implemented. Set [server] mode = \"forwarder\" \
-                 or check back after Phase 2 ships."
-                    .into(),
-            );
+            let cfg = config.recursive.clone();
+            std::sync::Arc::new(dns::recursive::RecursiveResolver::from_config(cfg)?)
         }
     };
     dns::resolver::install(resolver).map_err(|e| e.to_string())?;

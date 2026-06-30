@@ -192,6 +192,54 @@ forbidden_qtypes = ["NULL"]
 # now rejects [upstream] outright with a pointer back here.)
 # Using DNS-over-HTTPS (DoH) or standard UDP
 servers = ["1.1.1.1:53", "9.9.9.9:53"]
+
+# -----------------------------------------------------------------------------
+# [recursive] — iterative resolver tuning (used when [server] mode = "recursive")
+# -----------------------------------------------------------------------------
+[recursive]
+# Optional BIND-style root hints file. When unset, the compiled-in IANA root
+# server set is used. The compiled set is diffed against named.root weekly.
+# root_hints_path = "/etc/dgaard/root.hints"
+
+# Hard ceiling on delegation hops; fallback for non-repeating deep chains.
+max_delegation_depth = 8
+
+# Cap on the total number of upstream queries per top-level client
+# resolution (CNAME chase + out-of-zone NS lookup are amortised against
+# the same budget so an amplifying chain can't escape).
+max_queries_per_resolution = 64
+
+# Maximum CNAME chain length before returning SERVFAIL.
+max_cname_depth = 10
+
+# Per-nameserver UDP query timeout (ms).
+query_timeout_ms = 3000
+
+# RFC 9156 QNAME minimization. Accepted today; the loop currently sends
+# the full QNAME (this will tighten in the follow-up Phase 2 commit).
+qname_minimization = true
+
+# Strict (true, default) refuses out-of-bailiwick referrals up-front;
+# lenient (false) is more tolerant of misconfigured zones.
+strict_bailiwick = true
+
+# "sequential" (default), "staggered", or "parallel".
+# Today only "sequential" is implemented in the loop; the others are
+# accepted by the parser for forward compatibility.
+ns_concurrency = "sequential"
+max_concurrent_queries = 2
+ns_stagger_ms = 200
+
+# Advertise an EDNS0 OPT record on outgoing queries (RFC 6891). 1232 is
+# the DNS Flag Day 2020 fragmentation-safe payload size.
+edns0_enabled = true
+edns0_udp_payload_size = 1232
+
+# Phase 3/4 popularity persistence (no effect yet).
+save_top_domains = 2048
+save_path = "/var/dgaard/top-domains.bin"
+save_interval_secs = 600
+decay_half_life_secs = 86400
 timeout_ms = 2000
 # DNS0x20 case randomization (Dagon et al., 2008).
 # Randomly flips the case of ASCII letters in the outgoing QNAME. A compliant

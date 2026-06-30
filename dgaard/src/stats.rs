@@ -138,6 +138,20 @@ pub struct StatsCounters {
     pub queries_cached: AtomicU64,
     pub queries_upstream_errors: AtomicU64,
     pub stats_events_dropped: AtomicU64,
+
+    // Phase 2 — iterative recursive resolver visibility.
+    // Each one increments at most a handful of times per top-level
+    // client query, so plain Relaxed atomics are cheap enough that the
+    // hot path doesn't notice them.
+    pub recursive_queries: AtomicU64,
+    pub recursive_referrals: AtomicU64,
+    pub recursive_glue_hit: AtomicU64,
+    pub recursive_glue_miss: AtomicU64,
+    pub recursive_tcp_fallback: AtomicU64,
+    pub recursive_cycle_detected: AtomicU64,
+    pub recursive_depth_cap_hit: AtomicU64,
+    pub recursive_query_cap_hit: AtomicU64,
+    pub recursive_bailiwick_reject: AtomicU64,
 }
 
 impl StatsCounters {
@@ -150,7 +164,75 @@ impl StatsCounters {
             queries_cached: AtomicU64::new(0),
             queries_upstream_errors: AtomicU64::new(0),
             stats_events_dropped: AtomicU64::new(0),
+
+            recursive_queries: AtomicU64::new(0),
+            recursive_referrals: AtomicU64::new(0),
+            recursive_glue_hit: AtomicU64::new(0),
+            recursive_glue_miss: AtomicU64::new(0),
+            recursive_tcp_fallback: AtomicU64::new(0),
+            recursive_cycle_detected: AtomicU64::new(0),
+            recursive_depth_cap_hit: AtomicU64::new(0),
+            recursive_query_cap_hit: AtomicU64::new(0),
+            recursive_bailiwick_reject: AtomicU64::new(0),
         }
+    }
+
+    pub fn increment_recursive_queries(&self) {
+        self.recursive_queries.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn increment_recursive_referrals(&self) {
+        self.recursive_referrals.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn increment_recursive_glue_hit(&self) {
+        self.recursive_glue_hit.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn increment_recursive_glue_miss(&self) {
+        self.recursive_glue_miss.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn increment_recursive_tcp_fallback(&self) {
+        self.recursive_tcp_fallback.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn increment_recursive_cycle_detected(&self) {
+        self.recursive_cycle_detected
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn increment_recursive_depth_cap_hit(&self) {
+        self.recursive_depth_cap_hit.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn increment_recursive_query_cap_hit(&self) {
+        self.recursive_query_cap_hit.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn increment_recursive_bailiwick_reject(&self) {
+        self.recursive_bailiwick_reject
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn get_recursive_queries(&self) -> u64 {
+        self.recursive_queries.load(Ordering::Relaxed)
+    }
+    pub fn get_recursive_referrals(&self) -> u64 {
+        self.recursive_referrals.load(Ordering::Relaxed)
+    }
+    pub fn get_recursive_glue_hit(&self) -> u64 {
+        self.recursive_glue_hit.load(Ordering::Relaxed)
+    }
+    pub fn get_recursive_glue_miss(&self) -> u64 {
+        self.recursive_glue_miss.load(Ordering::Relaxed)
+    }
+    pub fn get_recursive_tcp_fallback(&self) -> u64 {
+        self.recursive_tcp_fallback.load(Ordering::Relaxed)
+    }
+    pub fn get_recursive_cycle_detected(&self) -> u64 {
+        self.recursive_cycle_detected.load(Ordering::Relaxed)
+    }
+    pub fn get_recursive_depth_cap_hit(&self) -> u64 {
+        self.recursive_depth_cap_hit.load(Ordering::Relaxed)
+    }
+    pub fn get_recursive_query_cap_hit(&self) -> u64 {
+        self.recursive_query_cap_hit.load(Ordering::Relaxed)
+    }
+    pub fn get_recursive_bailiwick_reject(&self) -> u64 {
+        self.recursive_bailiwick_reject.load(Ordering::Relaxed)
     }
 
     pub fn increment_total(&self) {

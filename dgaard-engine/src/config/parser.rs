@@ -844,6 +844,79 @@ fn parse_forwarder(table: &toml_span::value::Table<'_>) -> Result<ForwarderConfi
     Ok(cfg)
 }
 
+/// Parse `[recursive]` section.
+fn parse_recursive(table: &toml_span::value::Table<'_>) -> Result<RecursiveConfig, ConfigError> {
+    let mut cfg = RecursiveConfig::default();
+
+    if let Some(s) = get_str(table, "root_hints_path")? {
+        cfg.root_hints_path = Some(s.to_string());
+    }
+    if let Some(n) = get_typed_integer::<u8>(table, "max_delegation_depth")? {
+        cfg.max_delegation_depth = n;
+    }
+    if let Some(n) = get_typed_integer::<u32>(table, "max_queries_per_resolution")? {
+        cfg.max_queries_per_resolution = n;
+    }
+    if let Some(n) = get_typed_integer::<u8>(table, "max_cname_depth")? {
+        cfg.max_cname_depth = n;
+    }
+    if let Some(n) = get_typed_integer::<u64>(table, "query_timeout_ms")? {
+        cfg.query_timeout_ms = n;
+    }
+    if let Some(b) = get_bool(table, "qname_minimization")? {
+        cfg.qname_minimization = b;
+    }
+    if let Some(b) = get_bool(table, "strict_bailiwick")? {
+        cfg.bailiwick_policy = if b {
+            BailiwickPolicy::Strict
+        } else {
+            BailiwickPolicy::Lenient
+        };
+    }
+    if let Some(s) = get_str(table, "ns_concurrency")? {
+        cfg.ns_concurrency = match s {
+            "sequential" => NsConcurrency::Sequential,
+            "staggered" => NsConcurrency::Staggered,
+            "parallel" => NsConcurrency::Parallel,
+            other => {
+                return Err(ConfigError::InvalidValue {
+                    key: "recursive.ns_concurrency".to_string(),
+                    message: format!(
+                        "\"{other}\" is not a valid policy (expected \"sequential\", \"staggered\", or \"parallel\")"
+                    ),
+                    span: table.get("ns_concurrency").unwrap().span,
+                });
+            }
+        };
+    }
+    if let Some(n) = get_typed_integer::<u8>(table, "max_concurrent_queries")? {
+        cfg.max_concurrent_queries = n;
+    }
+    if let Some(n) = get_typed_integer::<u64>(table, "ns_stagger_ms")? {
+        cfg.ns_stagger_ms = n;
+    }
+    if let Some(b) = get_bool(table, "edns0_enabled")? {
+        cfg.edns0_enabled = b;
+    }
+    if let Some(n) = get_typed_integer::<u16>(table, "edns0_udp_payload_size")? {
+        cfg.edns0_udp_payload_size = n;
+    }
+    if let Some(n) = get_typed_integer::<u32>(table, "save_top_domains")? {
+        cfg.save_top_domains = n;
+    }
+    if let Some(s) = get_str(table, "save_path")? {
+        cfg.save_path = s.to_string();
+    }
+    if let Some(n) = get_typed_integer::<u64>(table, "save_interval_secs")? {
+        cfg.save_interval_secs = n;
+    }
+    if let Some(n) = get_typed_integer::<u64>(table, "decay_half_life_secs")? {
+        cfg.decay_half_life_secs = n;
+    }
+
+    Ok(cfg)
+}
+
 /// Parse `[tld]` section.
 fn parse_tld(table: &toml_span::value::Table<'_>) -> Result<TldConfig, ConfigError> {
     let mut cfg = TldConfig::default();
@@ -1037,6 +1110,9 @@ impl Config {
         }
         if let Some(t) = get_table(root, "forwarder")? {
             cfg.forwarder = parse_forwarder(t)?;
+        }
+        if let Some(t) = get_table(root, "recursive")? {
+            cfg.recursive = parse_recursive(t)?;
         }
         if let Some(t) = get_table(root, "tld")? {
             cfg.tld = parse_tld(t)?;
@@ -1877,6 +1953,59 @@ mod tests {
         "#;
         let cfg = Config::parse(toml).unwrap();
         assert_eq!(cfg.server.mode, ResolutionMode::Recursive);
+    }
+
+    #[test]
+    fn parse_recursive_section_round_trip() {
+        let toml = r#"
+            [recursive]
+            root_hints_path = "/etc/dgaard/root.hints"
+            max_delegation_depth = 6
+            max_queries_per_resolution = 32
+            max_cname_depth = 4
+            query_timeout_ms = 1500
+            qname_minimization = false
+            strict_bailiwick = false
+            ns_concurrency = "staggered"
+            max_concurrent_queries = 3
+            ns_stagger_ms = 150
+            edns0_enabled = false
+            edns0_udp_payload_size = 4096
+            save_top_domains = 512
+            save_path = "/tmp/dg-top.bin"
+            save_interval_secs = 90
+            decay_half_life_secs = 3600
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        let r = cfg.recursive;
+        assert_eq!(r.root_hints_path.as_deref(), Some("/etc/dgaard/root.hints"));
+        assert_eq!(r.max_delegation_depth, 6);
+        assert_eq!(r.max_queries_per_resolution, 32);
+        assert_eq!(r.max_cname_depth, 4);
+        assert_eq!(r.query_timeout_ms, 1500);
+        assert!(!r.qname_minimization);
+        assert_eq!(r.bailiwick_policy, BailiwickPolicy::Lenient);
+        assert_eq!(r.ns_concurrency, NsConcurrency::Staggered);
+        assert_eq!(r.max_concurrent_queries, 3);
+        assert_eq!(r.ns_stagger_ms, 150);
+        assert!(!r.edns0_enabled);
+        assert_eq!(r.edns0_udp_payload_size, 4096);
+        assert_eq!(r.save_top_domains, 512);
+        assert_eq!(r.save_path, "/tmp/dg-top.bin");
+        assert_eq!(r.save_interval_secs, 90);
+        assert_eq!(r.decay_half_life_secs, 3600);
+    }
+
+    #[test]
+    fn parse_recursive_ns_concurrency_invalid_returns_error() {
+        let toml = r#"
+            [recursive]
+            ns_concurrency = "magic"
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
     }
 
     #[test]

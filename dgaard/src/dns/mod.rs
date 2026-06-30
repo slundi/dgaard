@@ -1,4 +1,5 @@
 pub mod packet;
+pub mod recursive;
 pub mod resolver;
 pub(crate) mod upstream;
 

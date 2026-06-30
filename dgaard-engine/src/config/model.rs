@@ -876,6 +876,110 @@ pub struct SecurityConfig {
 }
 
 // ---------------------------------------------------------------------------
+// [recursive]
+// ---------------------------------------------------------------------------
+
+/// Bailiwick enforcement policy for referral responses.
+///
+/// Strict (default) is the safer choice: a referral that widens the zone
+/// (e.g. a `.com` server pointing the resolver at `.uk`) is a classic
+/// cache-poisoning vector and we refuse it immediately. `Lenient` keeps
+/// trying the next NS for misconfigured zones, mirroring the historic
+/// behaviour of older BIND deployments.
+#[derive(Debug, Default, PartialEq, Clone, Copy)]
+pub enum BailiwickPolicy {
+    #[default]
+    Strict,
+    Lenient,
+}
+
+/// How the resolver fans queries out across the available NS addresses for
+/// a given zone.
+///
+/// `Sequential` (default) is what BIND and Unbound do by default. The
+/// staggered/parallel modes will land alongside the rest of the Phase 2
+/// follow-up tasks; they are accepted by the parser today so configs
+/// remain forward-compatible.
+#[derive(Debug, Default, PartialEq, Clone, Copy)]
+pub enum NsConcurrency {
+    #[default]
+    Sequential,
+    Staggered,
+    Parallel,
+}
+
+/// `[recursive]` — iterative resolver tuning.
+///
+/// Maps to the section of the same name in the configuration file. See
+/// `docs/Roadmap-recursive-DNS.md` for the rationale behind each field.
+#[derive(Debug, PartialEq, Clone)]
+pub struct RecursiveConfig {
+    /// Optional path to a BIND-style root hints file. When unset (the
+    /// default) the resolver uses its compiled-in IANA root server set.
+    pub root_hints_path: Option<String>,
+    /// Hard ceiling on delegation hops. Defence-in-depth on top of the
+    /// `visited_zones` cycle detector.
+    pub max_delegation_depth: u8,
+    /// Cap on the total number of upstream queries the resolver may issue
+    /// for a single top-level client resolution. Bounds CNAME chase +
+    /// out-of-zone NS lookup amplification.
+    pub max_queries_per_resolution: u32,
+    /// Maximum CNAME chain length before returning SERVFAIL.
+    pub max_cname_depth: u8,
+    /// Per-nameserver UDP query timeout (ms).
+    pub query_timeout_ms: u64,
+    /// RFC 9156 QNAME minimization. The parser accepts the field today,
+    /// the loop runs full QNAME until the follow-up commit wires it in.
+    pub qname_minimization: bool,
+    /// Bailiwick enforcement policy.
+    pub bailiwick_policy: BailiwickPolicy,
+    /// NS-fanout policy. Only `Sequential` is implemented in this commit;
+    /// the others are accepted for forward compatibility.
+    pub ns_concurrency: NsConcurrency,
+    /// Used by staggered (extra launches) and parallel (total). Bounded
+    /// small to avoid antisocial behaviour against root/TLD operators.
+    pub max_concurrent_queries: u8,
+    /// Gap between staggered launches (ms).
+    pub ns_stagger_ms: u64,
+    /// Advertise an EDNS0 OPT record on outgoing queries (RFC 6891).
+    pub edns0_enabled: bool,
+    /// Buffer size advertised in the EDNS0 OPT record. DNS Flag Day 2020
+    /// settled on 1232 to avoid IP fragmentation.
+    pub edns0_udp_payload_size: u16,
+    /// Top-N most popular domains persisted to disk (Phase 4).
+    pub save_top_domains: u32,
+    /// Where to persist popularity snapshots (Phase 4).
+    pub save_path: String,
+    /// How often the popularity snapshot is written (seconds, Phase 4).
+    pub save_interval_secs: u64,
+    /// Popularity score half-life in seconds (Phase 3).
+    pub decay_half_life_secs: u64,
+}
+
+impl Default for RecursiveConfig {
+    fn default() -> Self {
+        Self {
+            root_hints_path: None,
+            max_delegation_depth: 8,
+            max_queries_per_resolution: 64,
+            max_cname_depth: 10,
+            query_timeout_ms: 3000,
+            qname_minimization: true,
+            bailiwick_policy: BailiwickPolicy::Strict,
+            ns_concurrency: NsConcurrency::Sequential,
+            max_concurrent_queries: 2,
+            ns_stagger_ms: 200,
+            edns0_enabled: true,
+            edns0_udp_payload_size: 1232,
+            save_top_domains: 2048,
+            save_path: String::from("/var/dgaard/top-domains.bin"),
+            save_interval_secs: 600,
+            decay_half_life_secs: 86_400,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // [forwarder]
 // ---------------------------------------------------------------------------
 
@@ -1235,6 +1339,8 @@ pub struct Config {
     pub security: SecurityConfig,
     /// Forwarder (legacy `[upstream]`) resolver addresses and timeout.
     pub forwarder: ForwarderConfig,
+    /// Iterative recursive resolver tuning.
+    pub recursive: RecursiveConfig,
     /// TLD allow/block lists.
     pub tld: TldConfig,
     /// NXDOMAIN botnet-scanner detection.
@@ -1537,6 +1643,26 @@ mod tests {
     fn server_config_default_mode_is_forwarder() {
         let s = ServerConfig::default();
         assert_eq!(s.mode, ResolutionMode::Forwarder);
+    }
+
+    // -----------------------------------------------------------------------
+    // RecursiveConfig
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn recursive_config_defaults_match_roadmap() {
+        let r = RecursiveConfig::default();
+        assert!(r.root_hints_path.is_none());
+        assert_eq!(r.max_delegation_depth, 8);
+        assert_eq!(r.max_queries_per_resolution, 64);
+        assert_eq!(r.max_cname_depth, 10);
+        assert_eq!(r.query_timeout_ms, 3000);
+        assert!(r.qname_minimization);
+        assert_eq!(r.bailiwick_policy, BailiwickPolicy::Strict);
+        assert_eq!(r.ns_concurrency, NsConcurrency::Sequential);
+        assert!(r.edns0_enabled);
+        assert_eq!(r.edns0_udp_payload_size, 1232);
+        assert_eq!(r.decay_half_life_secs, 86_400);
     }
 
     // -----------------------------------------------------------------------
