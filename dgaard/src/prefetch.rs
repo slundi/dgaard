@@ -258,11 +258,16 @@ mod tests {
 
     #[tokio::test]
     async fn process_one_records_completion_and_popularity() {
-        // Smoke test: resolver invoked, tracker bumped, counter
+        // Smoke test: resolver invoked, tracker bumped, completed counter
         // incremented. No reliance on the cache being initialised — the
         // worker treats "no cache" as "skip insert, still record hit".
+        //
+        // We deliberately do not assert on `prefetch_failed` here: sibling
+        // tests in this module exercise the failure branches in parallel
+        // and bump the same global counter, which would make any equality
+        // check racy. The popularity score (only this test writes
+        // "hot.example") proves the success branch actually ran.
         let baseline_completed = crate::STATS_COUNTERS.get_prefetch_completed();
-        let baseline_failed = crate::STATS_COUNTERS.get_prefetch_failed();
 
         let resolver: Arc<dyn UpstreamResolver> = Arc::new(FakeResolver {
             ttl: 60,
@@ -276,11 +281,6 @@ mod tests {
         assert!(
             crate::STATS_COUNTERS.get_prefetch_completed() > baseline_completed,
             "completed counter must increment on success"
-        );
-        assert_eq!(
-            crate::STATS_COUNTERS.get_prefetch_failed(),
-            baseline_failed,
-            "failed counter must not move on success"
         );
         assert_eq!(crate::POPULARITY_TRACKER.score("hot.example", 86_400), 1);
     }

@@ -377,7 +377,13 @@ impl Output {
     async fn write_line(&mut self, line: &str) -> std::io::Result<()> {
         let bytes = format!("{line}\n");
         match self {
-            Output::File(f) => f.write_all(bytes.as_bytes()).await,
+            Output::File(f) => {
+                f.write_all(bytes.as_bytes()).await?;
+                // tokio::fs::File buffers writes internally and `Drop` does
+                // not wait for the close to complete, so without an explicit
+                // flush we can lose the last events on shutdown.
+                f.flush().await
+            }
             Output::Stdout => tokio::io::stdout().write_all(bytes.as_bytes()).await,
         }
     }
