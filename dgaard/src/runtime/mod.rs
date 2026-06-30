@@ -200,6 +200,8 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
             );
         }
 
+        spawn_popularity_persistence(shutdown_rx.clone());
+
         let tokio_socket = get_socket(&CONFIG.load().server.listen_addr)?;
 
         let semaphore = Arc::new(Semaphore::new(
@@ -259,6 +261,8 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
             let _ = crate::RESPONSE_CACHE.set(crate::cache::ResponseCache::new(cache_cfg.max_entries));
             println!("Response cache enabled ({} max entries)", cache_cfg.max_entries);
         }
+
+        spawn_popularity_persistence(shutdown_rx.clone());
 
         let semaphore = Arc::new(Semaphore::new(
             CONFIG.load().server.runtime.max_concurrent_queries,
@@ -540,6 +544,52 @@ async fn reload_config_from_path(config_path: &std::path::Path) -> Result<(), St
         }
         Err(e) => Err(format!("Failed to reload config: {}", e)),
     }
+}
+
+/// Phase 4 wiring: restore the popularity snapshot from disk (if any)
+/// and spawn the background save task. Tied to `shutdown_rx` so the
+/// task flushes one final write before the runtime exits.
+///
+/// Disabled at runtime by `save_interval_secs = 0` or an empty
+/// `save_path`. Either condition is treated as "operator opted out" —
+/// no surprise file writes.
+fn spawn_popularity_persistence(shutdown_rx: watch::Receiver<bool>) {
+    let cfg = CONFIG.load();
+    let rec = &cfg.recursive;
+
+    if rec.save_path.is_empty() {
+        return;
+    }
+    if rec.save_interval_secs == 0 {
+        return;
+    }
+
+    let path = std::path::PathBuf::from(rec.save_path.clone());
+    let task_cfg = crate::popularity::SnapshotTaskCfg {
+        interval: std::time::Duration::from_secs(rec.save_interval_secs),
+        top_n: rec.save_top_domains,
+        half_life_secs: rec.decay_half_life_secs,
+    };
+
+    match crate::popularity::restore_into(&crate::POPULARITY_TRACKER, &path) {
+        Ok(0) => println!(
+            "Popularity: no snapshot at {} (fresh start)",
+            path.display()
+        ),
+        Ok(n) => println!("Popularity: restored {n} entries from {}", path.display()),
+        Err(e) => eprintln!(
+            "Popularity: ignoring corrupt snapshot at {}: {e}",
+            path.display()
+        ),
+    }
+
+    let tracker = Arc::clone(&crate::POPULARITY_TRACKER);
+    tokio::spawn(crate::popularity::run_snapshot_task(
+        tracker,
+        path,
+        task_cfg,
+        shutdown_rx,
+    ));
 }
 
 pub(crate) fn init_global_seed() {

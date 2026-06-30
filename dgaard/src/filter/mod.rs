@@ -238,6 +238,14 @@ async fn reload_lists_inner() {
 
     CURRENT_ENGINE.store(Arc::new(new_engine));
 
+    // Phase 4: a fresh filter engine may now block a domain that was
+    // previously allowed and therefore cached + tracked. Drop both
+    // mirrors so the next client query re-evaluates the policy.
+    if let Some(cache) = crate::RESPONSE_CACHE.get() {
+        cache.clear();
+    }
+    crate::POPULARITY_TRACKER.clear();
+
     if !cfg.sources.host_index_path.is_empty()
         && let Err(e) = host_index::write_host_index(&cfg.sources.host_index_path, &host_index)
     {

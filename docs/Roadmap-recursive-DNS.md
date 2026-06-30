@@ -453,12 +453,12 @@ Added to `STATS_COUNTERS`:
 
 ### Phase 4 — Disk persistence
 
-- [ ] Background task: every `save_interval_secs`, compute top-`save_top_domains` by **effective score at save time**, serialize as `Vec<(u64, u8)>` via **rkyv**, write to `save_path`
-- [ ] Delta-based writes: skip if top-N fingerprint is unchanged since last save
-- [ ] Flush on clean shutdown (SIGTERM handler)
-- [ ] Startup: load file if present, populate in-memory tracker (copy `effective_score` into `hit_count`, set `last_hit_at = Instant::now()`); warn and continue if corrupt or version-mismatched
-- [ ] Blocklist reload also invalidates `PopularityTracker` and `ResponseCache`
-- [ ] Integration test: write → restart → verify decayed score restored on first query
+- [x] Background task: every `save_interval_secs`, compute top-`save_top_domains` by **effective score at save time**, serialize as `Vec<(u64, u8)>` via **rkyv**, write to `save_path`
+- [x] Delta-based writes: skip if top-N fingerprint is unchanged since last save
+- [x] Flush on clean shutdown (SIGTERM handler)
+- [x] Startup: load file if present, populate in-memory tracker (copy `effective_score` into `hit_count`, set `last_hit_at = Instant::now()`); warn and continue if corrupt or version-mismatched
+- [x] Blocklist reload also invalidates `PopularityTracker` and `ResponseCache`
+- [x] Integration test: write → restart → verify decayed score restored on first query
 
 ### Phase 5 — Prefetch worker
 

@@ -85,6 +85,13 @@ impl ResponseCache {
     pub fn len(&self) -> usize {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
+
+    /// Wipe every cached response. Called on blocklist reload so a
+    /// freshly-blocked domain cannot continue to serve its previously
+    /// cached "allowed" answer until the TTL expires.
+    pub fn clear(&self) {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
 }
 
 #[cfg(test)]

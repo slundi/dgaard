@@ -235,7 +235,12 @@ ns_stagger_ms = 200
 edns0_enabled = true
 edns0_udp_payload_size = 1232
 
-# Phase 3/4 popularity persistence (no effect yet).
+# Popularity persistence (Phase 3 + 4). The tracker counts cache hits
+# and decays them with a half-life of `decay_half_life_secs`. Every
+# `save_interval_secs` the top `save_top_domains` are written to
+# `save_path` (rkyv binary, framed with a 8-byte header); identical
+# writes are skipped to spare flash on idle home routers. Set
+# `save_interval_secs = 0` or empty `save_path` to disable persistence.
 save_top_domains = 2048
 save_path = "/var/dgaard/top-domains.bin"
 save_interval_secs = 600
