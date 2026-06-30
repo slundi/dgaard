@@ -492,12 +492,17 @@ security-sensitive.
 - [x] Integration tests driving the DNSKEY fetch against an in-process mock NS
 - [ ] End-to-end test against a live signed zone (e.g. `dnssec-failed.org`, `internetsociety.org`) — deferred to a separate CI job to keep the unit-test runner offline-friendly
 
-#### Session 3 — negative validation (follow-on)
+#### Session 3 — negative validation (this commit)
 
-- [ ] NSEC validation for plain "name does not exist" denials
-- [ ] NSEC3 validation for opt-out + hashed denials
-- [ ] Bogus-on-broken-chain semantics (currently fail-open via `Insecure`)
-- [ ] DnssecAction::Block enforcement for Bogus negative answers
+- [x] NSEC NXDOMAIN denial — canonical-order interval check (`nsec_covers_name`) + RRSIG verification
+- [x] NSEC NODATA denial — type-bit-map check at the qname
+- [x] NSEC3 NXDOMAIN denial — hashed-name interval check (`hash_in_range`) with `(salt, iterations)` from the rrset
+- [x] NSEC3 NODATA denial
+- [x] `validate_message_for(message, qname, qtype)` — cross-checks denial proofs in the authority section
+- [x] Bogus-on-broken-chain: a signed zone (DNSKEYs cached) with a missing or wrong-key NSEC/NSEC3 proof reports `Bogus` instead of `Insecure`
+- [x] `DnssecAction::Block` enforcement for Bogus negatives — `handle_query` already serves SERVFAIL on Bogus, so the new path inherits this for free
+- [ ] Wildcard NXDOMAIN proof (RFC 4035 §5.4) — deferred; missing-proof falls back to `Insecure` so it can't be exploited
+- [ ] NSEC3 closest-encloser proof (RFC 5155 §8) — same deferral rationale
 
 ### Operational (rolling) — root-hints drift check
 

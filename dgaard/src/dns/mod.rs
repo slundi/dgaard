@@ -55,6 +55,8 @@ fn recursive_dnssec_status(
     mode: ResolutionMode,
     enabled: bool,
     response_bytes: &[u8],
+    qname: &hickory_resolver::proto::rr::Name,
+    qtype: hickory_resolver::proto::rr::RecordType,
 ) -> DnssecStatus {
     if !enabled || !matches!(mode, ResolutionMode::Recursive) {
         return DnssecStatus::Ok;
@@ -62,12 +64,15 @@ fn recursive_dnssec_status(
     let Ok(msg) = hickory_resolver::proto::op::Message::from_vec(response_bytes) else {
         return DnssecStatus::Ok;
     };
-    match crate::RECURSIVE_DNSSEC.validate_message(&msg) {
+    // Session 3: validate_message_for cross-checks NSEC/NSEC3 denials
+    // on NXDOMAIN/NODATA responses, so a signed zone that fails to
+    // prove its own negative answer now reports Bogus instead of the
+    // session-1 fail-open Insecure.
+    match crate::RECURSIVE_DNSSEC.validate_message_for(&msg, qname, qtype) {
         DnssecVerdict::Bogus => DnssecStatus::Bogus,
-        // Insecure → Ok is fail-open: this is the correct semantic
-        // when the chain isn't yet built (session 1) and the
-        // canonical "absence of proof is not proof of absence" stance
-        // for unsigned zones.
+        // Insecure → Ok is fail-open: the canonical "absence of proof
+        // is not proof of absence" stance for unsigned zones, and the
+        // correct posture before the resolver has built a chain.
         DnssecVerdict::Secure | DnssecVerdict::Insecure => DnssecStatus::Ok,
     }
 }
@@ -254,8 +259,22 @@ pub(crate) async fn handle_query(
                     // just received; the chain primitives short-circuit
                     // to Ok when no DNSKEY for the zone is cached yet
                     // (Insecure → fail-open).
-                    if recursive_dnssec_status(server_mode, dnssec_cfg.enabled, &upstream_bytes)
-                        == DnssecStatus::Bogus
+                    let (q_name, q_type) = dns_packet
+                        .message
+                        .queries
+                        .first()
+                        .map(|q| (q.name().clone(), q.query_type()))
+                        .unwrap_or((
+                            hickory_resolver::proto::rr::Name::root(),
+                            hickory_resolver::proto::rr::RecordType::A,
+                        ));
+                    if recursive_dnssec_status(
+                        server_mode,
+                        dnssec_cfg.enabled,
+                        &upstream_bytes,
+                        &q_name,
+                        q_type,
+                    ) == DnssecStatus::Bogus
                     {
                         if dnssec_cfg.action == DnssecAction::Block {
                             STATS_COUNTERS.increment_blocked();
@@ -339,8 +358,22 @@ pub(crate) async fn handle_query(
                 Ok(upstream_bytes) => {
                     // Recursive-mode chain validation, mirrored from
                     // the Allow branch — see notes there.
-                    if recursive_dnssec_status(server_mode, dnssec_cfg.enabled, &upstream_bytes)
-                        == DnssecStatus::Bogus
+                    let (q_name, q_type) = dns_packet
+                        .message
+                        .queries
+                        .first()
+                        .map(|q| (q.name().clone(), q.query_type()))
+                        .unwrap_or((
+                            hickory_resolver::proto::rr::Name::root(),
+                            hickory_resolver::proto::rr::RecordType::A,
+                        ));
+                    if recursive_dnssec_status(
+                        server_mode,
+                        dnssec_cfg.enabled,
+                        &upstream_bytes,
+                        &q_name,
+                        q_type,
+                    ) == DnssecStatus::Bogus
                     {
                         if dnssec_cfg.action == DnssecAction::Block {
                             STATS_COUNTERS.increment_blocked();
