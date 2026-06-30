@@ -128,3 +128,20 @@ jobs:
           files: |
             dgaard-v*.tar.gz
             dgaard-v*.zip
+  mirror-to-codeberg:
+    needs: [check-version, release]
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dgaard-*
+          merge-multiple: true
+      - name: Publish to Codeberg
+        env:
+          CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+          TAG: dgaard-v${{ needs.check-version.outputs.version }}
+          NAME: "dgaard v${{ needs.check-version.outputs.version }}"
+        run: ./scripts/codeberg-publish.sh

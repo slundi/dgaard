@@ -90,3 +90,20 @@ jobs:
           name: "dgaard-monitor v${{ needs.check-version.outputs.version }}"
           generate_release_notes: true
           files: dgaard-monitor-v*.tar.gz
+  mirror-to-codeberg:
+    needs: [check-version, release]
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dgaard-monitor-*
+          merge-multiple: true
+      - name: Publish to Codeberg
+        env:
+          CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+          TAG: dgaard-monitor-v${{ needs.check-version.outputs.version }}
+          NAME: "dgaard-monitor v${{ needs.check-version.outputs.version }}"
+        run: ./scripts/codeberg-publish.sh
