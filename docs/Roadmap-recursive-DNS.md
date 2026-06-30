@@ -483,12 +483,14 @@ security-sensitive.
 - [x] Preserve `action = "block" | "log"` semantics in `handle_query` for the recursive verdict
 - [x] Tests round-tripping synthetic ECDSA keys + tamper-detection
 
-#### Session 2 — iterative DNSKEY/DS fetch (follow-on)
+#### Session 2 — iterative DNSKEY/DS fetch (this commit)
 
-- [ ] At every delegation hop inside `RecursiveResolver`, dispatch parallel DNSKEY (against the new zone) and DS (against the parent) queries
-- [ ] Feed both into `RecursiveDnssecValidator::record_dnskey_rrset` / `record_ds_for_child` before continuing the descent
-- [ ] Surface chain-build failures via the existing `recursive_*` metrics
-- [ ] End-to-end test against a live signed zone (e.g. `dnssec-failed.org`, `internetsociety.org`)
+- [x] At every delegation hop inside `RecursiveResolver::build_chain_step`, harvest the DS rrset from the parent's referral authority section _and_ issue a fresh DNSKEY query against the child's NS addresses
+- [x] Feed both into `RecursiveDnssecValidator::record_dnskey_rrset` / `record_ds_for_child` before continuing the descent
+- [x] `recursive_dnssec_chain_built` / `recursive_dnssec_chain_broken` metrics
+- [x] DO bit set on every outgoing query when a validator is installed (otherwise authoritatives strip RRSIGs)
+- [x] Integration tests driving the DNSKEY fetch against an in-process mock NS
+- [ ] End-to-end test against a live signed zone (e.g. `dnssec-failed.org`, `internetsociety.org`) — deferred to a separate CI job to keep the unit-test runner offline-friendly
 
 #### Session 3 — negative validation (follow-on)
 

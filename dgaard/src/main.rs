@@ -82,7 +82,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         config::ResolutionMode::Recursive => {
             let cfg = config.recursive.clone();
-            std::sync::Arc::new(dns::recursive::RecursiveResolver::from_config(cfg)?)
+            let mut r = dns::recursive::RecursiveResolver::from_config(cfg)?;
+            // Phase 6 session 2: hook the chain-of-trust validator into
+            // the iterative loop when DNSSEC is enabled at startup.
+            // We share the same global instance that `handle_query`
+            // consults so both ends of the pipeline see the same
+            // DNSKEY/DS cache.
+            if config.security.dnssec.enabled {
+                r = r.with_validator(std::sync::Arc::new(RECURSIVE_DNSSEC.clone()));
+            }
+            std::sync::Arc::new(r)
         }
     };
     dns::resolver::install(resolver).map_err(|e| e.to_string())?;

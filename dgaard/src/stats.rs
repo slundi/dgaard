@@ -153,6 +153,14 @@ pub struct StatsCounters {
     pub recursive_query_cap_hit: AtomicU64,
     pub recursive_bailiwick_reject: AtomicU64,
 
+    // Phase 6 session 2 — chain-of-trust construction outcomes from the
+    // iterative resolver. `chain_built` is the success path (DNSKEY +
+    // DS verified all the way to root); `chain_broken` is any Bogus
+    // verdict from the validator. Both are intended as health
+    // indicators on dashboards, not per-query stats.
+    pub recursive_dnssec_chain_built: AtomicU64,
+    pub recursive_dnssec_chain_broken: AtomicU64,
+
     // Phase 5 — prefetch worker observability.
     pub prefetch_dropped: AtomicU64,
     pub prefetch_completed: AtomicU64,
@@ -179,6 +187,9 @@ impl StatsCounters {
             recursive_depth_cap_hit: AtomicU64::new(0),
             recursive_query_cap_hit: AtomicU64::new(0),
             recursive_bailiwick_reject: AtomicU64::new(0),
+
+            recursive_dnssec_chain_built: AtomicU64::new(0),
+            recursive_dnssec_chain_broken: AtomicU64::new(0),
 
             prefetch_dropped: AtomicU64::new(0),
             prefetch_completed: AtomicU64::new(0),
@@ -233,6 +244,20 @@ impl StatsCounters {
     pub fn increment_recursive_bailiwick_reject(&self) {
         self.recursive_bailiwick_reject
             .fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn increment_recursive_dnssec_chain_built(&self) {
+        self.recursive_dnssec_chain_built
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn increment_recursive_dnssec_chain_broken(&self) {
+        self.recursive_dnssec_chain_broken
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn get_recursive_dnssec_chain_built(&self) -> u64 {
+        self.recursive_dnssec_chain_built.load(Ordering::Relaxed)
+    }
+    pub fn get_recursive_dnssec_chain_broken(&self) -> u64 {
+        self.recursive_dnssec_chain_broken.load(Ordering::Relaxed)
     }
 
     pub fn get_recursive_queries(&self) -> u64 {

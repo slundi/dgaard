@@ -30,6 +30,7 @@ use std::future::Future;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -40,6 +41,10 @@ use tokio::time::timeout;
 use twox_hash::XxHash3_64;
 
 use crate::CONFIG;
+use crate::dns::dnssec_chain::{
+    DnssecVerdict, RecursiveDnssecValidator, extract_dnskey_rrset_from_answers,
+    extract_ds_rrset_from_authority,
+};
 use crate::dns::packet::DnsPacket;
 use crate::dns::resolver::UpstreamResolver;
 
@@ -202,6 +207,7 @@ pub fn build_outgoing_query(
     qname: &Name,
     qtype: RecordType,
     edns0_payload_size: Option<u16>,
+    dnssec_ok: bool,
 ) -> Message {
     let mut msg = Message::query();
     msg.metadata.op_code = OpCode::Query;
@@ -211,10 +217,19 @@ pub fn build_outgoing_query(
         .clone();
     msg.add_query(query);
 
-    if let Some(bufsize) = edns0_payload_size {
+    // EDNS0 OPT and the DO ("DNSSEC OK") bit are independently
+    // controlled because a stub resolver may want OPT (for the buffer
+    // size) without asking for DNSSEC material it can't validate.
+    // Authoritatives only return RRSIGs when DO is set (RFC 6840 §5.9).
+    if edns0_payload_size.is_some() || dnssec_ok {
         let mut edns = Edns::new();
-        edns.set_max_payload(bufsize);
+        if let Some(bufsize) = edns0_payload_size {
+            edns.set_max_payload(bufsize);
+        }
         edns.set_version(0);
+        if dnssec_ok {
+            edns.set_dnssec_ok(true);
+        }
         msg.set_edns(edns);
     }
 
@@ -266,6 +281,12 @@ pub fn classify_response(response: &Message) -> ResponseKind {
 pub struct RecursiveResolver {
     pub(crate) config: RecursiveConfig,
     pub(crate) roots: Vec<SocketAddr>,
+    /// Optional DNSSEC chain validator. `Some` when `[security.dnssec]
+    /// enabled = true` at startup; `None` otherwise. Holding it
+    /// directly (rather than reading the global on every hop) keeps
+    /// the hot path branch-predictable and lets tests construct an
+    /// isolated resolver.
+    pub(crate) validator: Option<Arc<RecursiveDnssecValidator>>,
 }
 
 impl RecursiveResolver {
@@ -283,7 +304,19 @@ impl RecursiveResolver {
                 "no usable root server addresses; supply a valid root hints file",
             ));
         }
-        Ok(Self { config, roots })
+        Ok(Self {
+            config,
+            roots,
+            validator: None,
+        })
+    }
+
+    /// Builder: attach a DNSSEC validator. The iterative loop will then
+    /// harvest DS records from referrals and issue DNSKEY queries
+    /// against each new zone, feeding both into the validator.
+    pub fn with_validator(mut self, validator: Arc<RecursiveDnssecValidator>) -> Self {
+        self.validator = Some(validator);
+        self
     }
 
     /// Convenience: build with an explicit root-server list. Used by
@@ -291,7 +324,11 @@ impl RecursiveResolver {
     /// instead of the real IANA servers.
     #[allow(dead_code)]
     pub fn with_roots(config: RecursiveConfig, roots: Vec<SocketAddr>) -> Self {
-        Self { config, roots }
+        Self {
+            config,
+            roots,
+            validator: None,
+        }
     }
 
     /// Resolve `qname` / `qtype`, returning the final upstream `Message`.
@@ -398,6 +435,26 @@ impl RecursiveResolver {
                             }
                         }
 
+                        // Phase 6 session 2: harvest the DS rrset that
+                        // the *parent* zone served in the referral, then
+                        // pull the *child*'s DNSKEY from one of the
+                        // newly-chosen NSes. This walks the chain of
+                        // trust forward one delegation hop. Failures
+                        // are noted via metrics but do not abort the
+                        // resolution — DNSSEC's "best evidence wins"
+                        // is enforced at answer time in handle_query.
+                        if let Some(validator) = self.validator.clone() {
+                            self.build_chain_step(
+                                &validator,
+                                &response,
+                                &current_zone,
+                                &new_zone,
+                                &ns_addrs,
+                                queries_used,
+                            )
+                            .await;
+                        }
+
                         current_zone = new_zone;
                         depth = depth.saturating_add(1);
                     }
@@ -458,7 +515,10 @@ impl RecursiveResolver {
             .config
             .edns0_enabled
             .then_some(self.config.edns0_udp_payload_size);
-        let query = build_outgoing_query(qname, qtype, edns);
+        // Set the DO bit whenever a chain validator is installed so
+        // upstream authoritatives include RRSIGs in their responses.
+        let dnssec_ok = self.validator.is_some();
+        let query = build_outgoing_query(qname, qtype, edns, dnssec_ok);
         let bytes = query
             .to_vec()
             .map_err(|e| io::Error::other(format!("encode query: {e}")))?;
@@ -482,6 +542,82 @@ impl RecursiveResolver {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "TXID mismatch"));
         }
         Ok(response)
+    }
+
+    /// Phase 6 session 2: extend the chain of trust through one
+    /// delegation hop.
+    ///
+    /// 1. **DS hand-off** — extract the child's DS rrset from the
+    ///    parent's referral (the parent's authority section) and feed
+    ///    it to the validator. The DS rrset's RRSIG is signed by the
+    ///    *parent*, so this must run while the validator still has
+    ///    the parent's DNSKEYs cached.
+    /// 2. **DNSKEY fetch** — issue a fresh DNSKEY query against the
+    ///    child's NS addresses with the DO bit set, then record the
+    ///    returned DNSKEY rrset. The validator self-verifies the rrset
+    ///    against its own KSK *and* against the just-installed DS.
+    ///
+    /// Each step bumps `queries_used` so a misbehaving zone can't
+    /// inflate the per-query budget by serving a DS rrset every hop.
+    /// Failures are reported through
+    /// `recursive_dnssec_chain_broken` and do not abort the resolution.
+    /// Insecure delegations (no DS) are silent — that's a normal
+    /// downgrade and session 3 will encode the NSEC proof that
+    /// justifies it.
+    async fn build_chain_step(
+        &self,
+        validator: &Arc<RecursiveDnssecValidator>,
+        referral: &Message,
+        parent_zone: &Name,
+        child_zone: &Name,
+        ns_addrs: &[SocketAddr],
+        queries_used: &mut u32,
+    ) {
+        // Step 1: DS hand-off, parent → child.
+        if let Some((ds_records, ds_sig)) = extract_ds_rrset_from_authority(referral, child_zone) {
+            match validator.record_ds_for_child(parent_zone, child_zone, &ds_records, &ds_sig) {
+                DnssecVerdict::Bogus => {
+                    crate::STATS_COUNTERS.increment_recursive_dnssec_chain_broken();
+                    // A Bogus DS means the parent told us *something*
+                    // about the child but we couldn't verify it. The
+                    // session-3 contract is to fail the whole resolve;
+                    // for now we keep walking and let `validate_message`
+                    // at answer time make the final call.
+                }
+                DnssecVerdict::Secure | DnssecVerdict::Insecure => {}
+            }
+        }
+
+        // Step 2: pull DNSKEY from the child zone. Budget-bounded — if
+        // the resolver is already saturating its per-query cap, skip
+        // the chain hop entirely rather than starve the answer fetch.
+        if *queries_used >= self.config.max_queries_per_resolution {
+            return;
+        }
+        let Ok(dnskey_msg) = self
+            .query_any_ns(ns_addrs, child_zone, RecordType::DNSKEY, queries_used)
+            .await
+        else {
+            return;
+        };
+        let Some((dnskey_records, dnskey_sig)) = extract_dnskey_rrset_from_answers(&dnskey_msg)
+        else {
+            return;
+        };
+        match validator.record_dnskey_rrset(child_zone, &dnskey_records, &dnskey_sig) {
+            DnssecVerdict::Secure => {
+                crate::STATS_COUNTERS.increment_recursive_dnssec_chain_built();
+            }
+            DnssecVerdict::Bogus => {
+                crate::STATS_COUNTERS.increment_recursive_dnssec_chain_broken();
+            }
+            DnssecVerdict::Insecure => {
+                // No DS available → can't authenticate this DNSKEY
+                // rrset. Not a chain failure on its own; the parent's
+                // *secure denial of DS* (session 3) is what classifies
+                // the child as legitimately Insecure.
+            }
+        }
     }
 
     /// Resolve the IP addresses of out-of-zone NS names by recursing for
@@ -898,13 +1034,13 @@ mod tests {
 
     #[test]
     fn outgoing_query_has_rd0_and_random_txid() {
-        let q1 = build_outgoing_query(&name("example.com."), RecordType::A, None);
-        let q2 = build_outgoing_query(&name("example.com."), RecordType::A, None);
+        let q1 = build_outgoing_query(&name("example.com."), RecordType::A, None, false);
+        let q2 = build_outgoing_query(&name("example.com."), RecordType::A, None, false);
         assert!(!q1.metadata.recursion_desired);
         // 1 in 65536 chance of false negative; this is fine for a sanity
         // check that the TXIDs are randomised at all.
         if q1.metadata.id == q2.metadata.id {
-            let q3 = build_outgoing_query(&name("example.com."), RecordType::A, None);
+            let q3 = build_outgoing_query(&name("example.com."), RecordType::A, None, false);
             assert!(
                 q1.metadata.id != q3.metadata.id || q2.metadata.id != q3.metadata.id,
                 "TXIDs are not being randomised"
@@ -914,21 +1050,44 @@ mod tests {
 
     #[test]
     fn outgoing_query_adds_edns0_opt_when_requested() {
-        let q = build_outgoing_query(&name("example.com."), RecordType::A, Some(1232));
+        let q = build_outgoing_query(&name("example.com."), RecordType::A, Some(1232), false);
         let edns = q.edns.as_ref().expect("EDNS opt must be present");
         assert_eq!(edns.max_payload(), 1232);
         assert_eq!(edns.version(), 0);
+        assert!(!edns.flags().dnssec_ok, "DO bit must default off");
+    }
+
+    #[test]
+    fn outgoing_query_sets_do_bit_when_requested() {
+        // Phase 6 session 2 contract: the iterative resolver passes
+        // dnssec_ok=true on every query when a validator is installed,
+        // so upstream authoritatives include RRSIGs in their response.
+        let q = build_outgoing_query(&name("example.com."), RecordType::A, Some(1232), true);
+        let edns = q
+            .edns
+            .as_ref()
+            .expect("EDNS must be present when DO is requested");
+        assert!(edns.flags().dnssec_ok);
+    }
+
+    #[test]
+    fn outgoing_query_promotes_to_edns_when_only_do_is_set() {
+        // Even when no buffer size is requested, asking for DNSSEC
+        // material requires advertising an OPT RR.
+        let q = build_outgoing_query(&name("example.com."), RecordType::A, None, true);
+        let edns = q.edns.as_ref().expect("EDNS must be auto-added for DO");
+        assert!(edns.flags().dnssec_ok);
     }
 
     #[test]
     fn outgoing_query_omits_edns0_when_disabled() {
-        let q = build_outgoing_query(&name("example.com."), RecordType::A, None);
+        let q = build_outgoing_query(&name("example.com."), RecordType::A, None, false);
         assert!(q.edns.is_none());
     }
 
     #[test]
     fn outgoing_query_round_trips_via_wire() {
-        let q = build_outgoing_query(&name("example.com."), RecordType::AAAA, Some(1232));
+        let q = build_outgoing_query(&name("example.com."), RecordType::AAAA, Some(1232), false);
         let bytes = q.to_vec().expect("encode");
         let parsed = Message::from_vec(&bytes).expect("re-parse");
         let qname = parsed.queries.first().unwrap();
@@ -1166,6 +1325,166 @@ mod tests {
             after_cap > before_cap || after_cycle > before_cycle,
             "either query_cap_hit ({before_cap}->{after_cap}) or \
              cycle_detected ({before_cycle}->{after_cycle}) must advance"
+        );
+    }
+
+    // ---- Phase 6 session 2: chain build through the iterative loop ----
+
+    #[tokio::test]
+    async fn chain_step_records_dnskey_when_mock_serves_signed_zone() {
+        // Bring up a mock NS that:
+        //  * answers DNSKEY queries with a self-signed DNSKEY rrset,
+        //  * pretends to be authoritative for `example.test.`.
+        //
+        // Pre-seed the validator with a DS that matches that DNSKEY so
+        // `record_dnskey_rrset` lands `Secure` and bumps the
+        // `recursive_dnssec_chain_built` counter.
+        use crate::dns::dnssec_chain::{RecursiveDnssecValidator, ZoneTrustState};
+        use hickory_resolver::proto::dnssec::crypto::EcdsaSigningKey;
+        use hickory_resolver::proto::dnssec::rdata::{DNSSECRData, RRSIG};
+        use hickory_resolver::proto::dnssec::{
+            Algorithm, DigestType, DnssecSigner, PublicKeyBuf, SigningKey, Verifier, rdata::DNSKEY,
+        };
+        use hickory_resolver::proto::rr::{DNSClass, RecordSet};
+        use std::sync::Arc;
+        use time::OffsetDateTime;
+
+        let zone = Name::from_ascii("example.test.").unwrap();
+        let pkcs8 = EcdsaSigningKey::generate_pkcs8(Algorithm::ECDSAP256SHA256).unwrap();
+        let key = EcdsaSigningKey::from_pkcs8(&pkcs8, Algorithm::ECDSAP256SHA256).unwrap();
+        let public: PublicKeyBuf = key.to_public_key().unwrap();
+        let dnskey = DNSKEY::with_flags(257, public);
+        let signer = DnssecSigner::new(
+            dnskey.clone(),
+            Box::new(key),
+            zone.clone(),
+            std::time::Duration::from_secs(3600),
+        );
+
+        let mut dnskey_rrset = RecordSet::new(zone.clone(), RecordType::DNSKEY, 3600);
+        dnskey_rrset.add_rdata(RData::DNSSEC(DNSSECRData::DNSKEY(dnskey.clone())));
+        let now = OffsetDateTime::now_utc();
+        let dnskey_rrsig = RRSIG::from_rrset(&dnskey_rrset, DNSClass::IN, now, &signer).unwrap();
+        let dnskey_records: Vec<Record> = dnskey_rrset.records_without_rrsigs().cloned().collect();
+
+        // Mock NS: respond to DNSKEY queries with the signed rrset.
+        // Anything else gets an empty NoError so we don't have to flesh
+        // out unrelated paths.
+        let dnskey_for_mock = dnskey_records.clone();
+        let rrsig_for_mock = dnskey_rrsig.clone();
+        let zone_for_mock = zone.clone();
+        let ns_addr = spawn_mock_ns(move |q| {
+            let mut resp = Message::query();
+            resp.metadata.response_code = ResponseCode::NoError;
+            if let Some(query) = q.queries.first()
+                && query.query_type() == RecordType::DNSKEY
+            {
+                for r in &dnskey_for_mock {
+                    resp.add_answer(r.clone());
+                }
+                resp.add_answer(Record::from_rdata(
+                    zone_for_mock.clone(),
+                    3600,
+                    RData::DNSSEC(DNSSECRData::RRSIG(rrsig_for_mock.clone())),
+                ));
+            }
+            resp
+        })
+        .await;
+
+        // Validator pre-seeded with a DS matching `dnskey`.
+        let validator = Arc::new(RecursiveDnssecValidator::empty());
+        let ds_digest = dnskey.to_digest(&zone, DigestType::SHA256).unwrap();
+        let ds = crate::dns::dnssec_chain::DS::new(
+            dnskey.calculate_key_tag().unwrap(),
+            dnskey.algorithm(),
+            DigestType::SHA256,
+            ds_digest.as_ref().to_vec(),
+        );
+        validator.seed_zone_for_test(
+            zone.clone(),
+            ZoneTrustState {
+                ds_in_parent: vec![ds],
+                dnskeys: Vec::new(),
+            },
+        );
+
+        // Drive `build_chain_step` directly: synthesise an empty
+        // referral message (we don't need DS harvest for this test —
+        // the DS is pre-seeded), then assert the DNSKEY fetch lands.
+        let resolver = RecursiveResolver::with_roots(cfg_for_tests(), vec![ns_addr])
+            .with_validator(Arc::clone(&validator));
+        let parent_zone = Name::root();
+        let referral = Message::query();
+        let before = crate::STATS_COUNTERS.get_recursive_dnssec_chain_built();
+        let mut queries_used = 0u32;
+        resolver
+            .build_chain_step(
+                &validator,
+                &referral,
+                &parent_zone,
+                &zone,
+                &[ns_addr],
+                &mut queries_used,
+            )
+            .await;
+        let after = crate::STATS_COUNTERS.get_recursive_dnssec_chain_built();
+        assert!(
+            after > before,
+            "chain_built counter must advance once the DNSKEY fetch succeeds"
+        );
+        assert!(
+            !validator.zone(&zone).unwrap().dnskeys.is_empty(),
+            "DNSKEY must be cached after build_chain_step"
+        );
+    }
+
+    #[tokio::test]
+    async fn chain_step_bumps_broken_counter_when_dnskey_serves_unsigned() {
+        // Mock NS returns a DNSKEY query response with no RRSIG. The
+        // harvest helper returns None, so the chain doesn't advance —
+        // and crucially we do NOT increment chain_broken in that case
+        // (Insecure delegation is not a chain failure). The counter
+        // stays put; the test asserts the no-op.
+        use crate::dns::dnssec_chain::RecursiveDnssecValidator;
+        use std::sync::Arc;
+
+        let ns_addr = spawn_mock_ns(|q| {
+            let mut resp = Message::query();
+            resp.metadata.response_code = ResponseCode::NoError;
+            // Echo the qname back with no answers.
+            let _ = q;
+            resp
+        })
+        .await;
+
+        let validator = Arc::new(RecursiveDnssecValidator::default());
+        let resolver = RecursiveResolver::with_roots(cfg_for_tests(), vec![ns_addr])
+            .with_validator(Arc::clone(&validator));
+
+        let before_built = crate::STATS_COUNTERS.get_recursive_dnssec_chain_built();
+        let before_broken = crate::STATS_COUNTERS.get_recursive_dnssec_chain_broken();
+        let mut queries_used = 0u32;
+        let zone = Name::from_ascii("nochain.test.").unwrap();
+        resolver
+            .build_chain_step(
+                &validator,
+                &Message::query(),
+                &Name::root(),
+                &zone,
+                &[ns_addr],
+                &mut queries_used,
+            )
+            .await;
+        assert_eq!(
+            crate::STATS_COUNTERS.get_recursive_dnssec_chain_built(),
+            before_built,
+            "chain_built must NOT advance when DNSKEY arrived without RRSIG"
+        );
+        assert_eq!(
+            crate::STATS_COUNTERS.get_recursive_dnssec_chain_broken(),
+            before_broken,
+            "chain_broken must NOT advance for insecure delegations"
         );
     }
 

@@ -33,13 +33,25 @@
 //! because we do not yet query DS/DNSKEY upstream during the walk.
 //! That's session 2.
 //!
-//! ## What lands in **session 2**
+//! ## What lands in **session 2** (now)
 //!
 //! Iterative DNSKEY/DS query plumbing inside
-//! [`crate::dns::recursive::RecursiveResolver`]: at every delegation
-//! hop, dispatch a parallel DNSKEY query against the new zone and a DS
-//! query against the parent; feed both into this validator before
-//! continuing the descent.
+//! [`crate::dns::recursive::RecursiveResolver::build_chain_step`]: at
+//! every delegation hop the resolver
+//!
+//! * harvests the DS rrset for the child from the parent's referral
+//!   (authority section) via [`extract_ds_rrset_from_authority`] and
+//!   feeds it to [`RecursiveDnssecValidator::record_ds_for_child`];
+//! * issues a fresh DNSKEY query against the child's NS addresses with
+//!   the DO bit set, then feeds the result through
+//!   [`extract_dnskey_rrset_from_answers`] and
+//!   [`RecursiveDnssecValidator::record_dnskey_rrset`].
+//!
+//! Chain-build outcomes surface through
+//! `STATS_COUNTERS::recursive_dnssec_chain_built` and
+//! `recursive_dnssec_chain_broken`. Insecure delegations (no DS) are
+//! deliberately silent — session 3 will encode the NSEC proof that
+//! justifies the downgrade.
 //!
 //! ## What lands in **session 3**
 //!
@@ -49,10 +61,14 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use hickory_resolver::proto::dnssec::rdata::{DNSKEY, DS, RRSIG};
+use hickory_resolver::proto::dnssec::rdata::DNSSECRData;
+// Re-export so callers (e.g. the iterative resolver's tests) can
+// construct trust-anchor DS records without a second hickory import.
+pub use hickory_resolver::proto::dnssec::rdata::DS;
+use hickory_resolver::proto::dnssec::rdata::{DNSKEY, RRSIG};
 use hickory_resolver::proto::dnssec::{Algorithm, DigestType, Verifier};
 use hickory_resolver::proto::op::Message;
-use hickory_resolver::proto::rr::{DNSClass, Name, RData, Record};
+use hickory_resolver::proto::rr::{DNSClass, Name, RData, Record, RecordType};
 
 /// Outcome of validating a single resource-record set against the
 /// in-memory trust state.
@@ -210,6 +226,15 @@ impl RecursiveDnssecValidator {
     /// go through the higher-level `validate_*` methods.
     pub fn zone(&self, zone: &Name) -> Option<ZoneTrustState> {
         self.zones.get(zone).map(|e| e.clone())
+    }
+
+    /// Test-only seam: insert a zone's trust state without going
+    /// through the verification primitives. Used by tests that pre-
+    /// populate DS/DNSKEY chains so they can exercise downstream
+    /// behaviour in isolation.
+    #[cfg(test)]
+    pub fn seed_zone_for_test(&self, zone: Name, state: ZoneTrustState) {
+        self.zones.insert(zone, state);
     }
 
     /// Wipe every cached zone. Phase 4 calls `clear()` on the popularity
@@ -414,6 +439,68 @@ impl RecursiveDnssecValidator {
         }
         best
     }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 session 2: harvest helpers
+// ---------------------------------------------------------------------------
+
+/// Pull the DS rrset for `child_zone` out of a referral's authority
+/// section, paired with the RRSIG covering it. Returns `None` if no DS
+/// records appear for the child (insecure delegation) or if there is
+/// no covering RRSIG (parent zone not signed).
+///
+/// The iterative resolver calls this on every referral; the validator
+/// then verifies the rrset against the parent's DNSKEY before stashing
+/// it. An *unsigned* DS rrset is silently ignored — that's a zone
+/// configuration error that DNSSEC explicitly classifies as Bogus, but
+/// at the resolver-loop level we treat it as "no chain progress" to
+/// stay fail-open until session 3 lands the negative-validation path.
+pub fn extract_ds_rrset_from_authority(
+    message: &Message,
+    child_zone: &Name,
+) -> Option<(Vec<Record>, RRSIG)> {
+    let mut ds: Vec<Record> = Vec::new();
+    let mut rrsig: Option<RRSIG> = None;
+    for r in &message.authorities {
+        if r.name != *child_zone {
+            continue;
+        }
+        match &r.data {
+            RData::DNSSEC(DNSSECRData::DS(_)) => ds.push(r.clone()),
+            RData::DNSSEC(DNSSECRData::RRSIG(sig))
+                if sig.input().type_covered == RecordType::DS =>
+            {
+                rrsig = Some(sig.clone());
+            }
+            _ => {}
+        }
+    }
+    rrsig.map(|sig| (ds, sig)).filter(|(d, _)| !d.is_empty())
+}
+
+/// Pull the DNSKEY rrset out of the answer section of a DNSKEY query
+/// response, paired with its covering RRSIG. Returns `None` if either
+/// is missing — caller should treat that as "no chain progress" rather
+/// than Bogus, because a non-DNSSEC-aware authoritative may simply have
+/// nothing to return.
+pub fn extract_dnskey_rrset_from_answers(message: &Message) -> Option<(Vec<Record>, RRSIG)> {
+    let mut dnskeys: Vec<Record> = Vec::new();
+    let mut rrsig: Option<RRSIG> = None;
+    for r in &message.answers {
+        match &r.data {
+            RData::DNSSEC(DNSSECRData::DNSKEY(_)) => dnskeys.push(r.clone()),
+            RData::DNSSEC(DNSSECRData::RRSIG(sig))
+                if sig.input().type_covered == RecordType::DNSKEY =>
+            {
+                rrsig = Some(sig.clone());
+            }
+            _ => {}
+        }
+    }
+    rrsig
+        .map(|sig| (dnskeys, sig))
+        .filter(|(d, _)| !d.is_empty())
 }
 
 // ---------------------------------------------------------------------------
@@ -694,6 +781,167 @@ mod tests {
         assert_eq!(root.ds_in_parent[0].key_tag(), 20326);
         let other = Name::parse("example.com.", None).unwrap();
         assert!(v.zone(&other).is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 6 session 2: harvest helpers
+    // -----------------------------------------------------------------
+
+    /// Sign a DS rrset for `child_zone` with the parent's signer so we
+    /// can exercise the harvest path without touching the network.
+    fn build_signed_ds_authority(
+        parent_zone: &Name,
+        child_zone: &Name,
+        ds_records: &[DS],
+        signer: &DnssecSigner,
+    ) -> (Vec<Record>, RRSIG) {
+        let _ = parent_zone;
+        let mut rrset = RecordSet::new(child_zone.clone(), RecordType::DS, 3600);
+        for d in ds_records {
+            rrset.add_rdata(RData::DNSSEC(DNSSECRData::DS(d.clone())));
+        }
+        let now = OffsetDateTime::now_utc();
+        let rrsig = RRSIG::from_rrset(&rrset, DNSClass::IN, now, signer).unwrap();
+        let records: Vec<Record> = rrset.records_without_rrsigs().cloned().collect();
+        (records, rrsig)
+    }
+
+    #[test]
+    fn extract_ds_returns_none_when_no_ds_present() {
+        // A plain referral (no DNSSEC material) must return None
+        // rather than empty, so the caller can distinguish "no chain
+        // progress" from "got an empty rrset".
+        let mut msg = Message::query();
+        let child = Name::parse("example.com.", None).unwrap();
+        msg.add_authority(Record::from_rdata(
+            child.clone(),
+            300,
+            RData::NS(hickory_resolver::proto::rr::rdata::NS(
+                Name::parse("ns1.example.com.", None).unwrap(),
+            )),
+        ));
+        assert!(extract_ds_rrset_from_authority(&msg, &child).is_none());
+    }
+
+    #[test]
+    fn extract_ds_returns_records_and_signature_for_signed_referral() {
+        // Build a real signed DS rrset and confirm the helper picks it
+        // out of the authority section.
+        let (zone, _, _, _, _, signer) = build_test_zone("example.com", "example.com");
+        let child = Name::parse("sub.example.com.", None).unwrap();
+        let ds = DS::new(
+            1234,
+            Algorithm::ECDSAP256SHA256,
+            DigestType::SHA256,
+            vec![0u8; 32],
+        );
+        let (records, rrsig) =
+            build_signed_ds_authority(&zone, &child, std::slice::from_ref(&ds), &signer);
+
+        let mut msg = Message::query();
+        for r in records {
+            msg.add_authority(r);
+        }
+        msg.add_authority(Record::from_rdata(
+            child.clone(),
+            3600,
+            RData::DNSSEC(DNSSECRData::RRSIG(rrsig)),
+        ));
+
+        let extracted = extract_ds_rrset_from_authority(&msg, &child);
+        assert!(extracted.is_some(), "DS extraction must succeed");
+        let (ds_records, _) = extracted.unwrap();
+        assert_eq!(ds_records.len(), 1);
+    }
+
+    #[test]
+    fn extract_ds_ignores_records_with_wrong_owner() {
+        // A malicious or buggy authoritative might serve DS records
+        // for a *different* zone hoping we'll pick them up. The owner
+        // filter must reject them.
+        let (zone, _, _, _, _, signer) = build_test_zone("example.com", "example.com");
+        let expected_child = Name::parse("sub.example.com.", None).unwrap();
+        let wrong_child = Name::parse("other.example.com.", None).unwrap();
+        let ds = DS::new(
+            1234,
+            Algorithm::ECDSAP256SHA256,
+            DigestType::SHA256,
+            vec![0u8; 32],
+        );
+        let (records, rrsig) =
+            build_signed_ds_authority(&zone, &wrong_child, std::slice::from_ref(&ds), &signer);
+        let mut msg = Message::query();
+        for r in records {
+            msg.add_authority(r);
+        }
+        msg.add_authority(Record::from_rdata(
+            wrong_child,
+            3600,
+            RData::DNSSEC(DNSSECRData::RRSIG(rrsig)),
+        ));
+
+        assert!(
+            extract_ds_rrset_from_authority(&msg, &expected_child).is_none(),
+            "DS with wrong owner must not be harvested"
+        );
+    }
+
+    #[test]
+    fn extract_dnskey_returns_some_for_signed_response() {
+        // DNSKEY query response from a signed zone always contains
+        // DNSKEY + an RRSIG covering RecordType::DNSKEY. The helper
+        // must pick both out.
+        let (_, dnskey_records, dnskey_rrsig, _, _, _) =
+            build_test_zone("example.com", "example.com");
+        let mut msg = Message::query();
+        for r in dnskey_records {
+            msg.add_answer(r);
+        }
+        msg.add_answer(Record::from_rdata(
+            Name::parse("example.com.", None).unwrap(),
+            3600,
+            RData::DNSSEC(DNSSECRData::RRSIG(dnskey_rrsig)),
+        ));
+
+        let extracted = extract_dnskey_rrset_from_answers(&msg);
+        assert!(extracted.is_some());
+        assert!(!extracted.unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn extract_dnskey_returns_none_when_rrsig_missing() {
+        // DNSKEY without an RRSIG is meaningless — must fail rather
+        // than letting an unsigned DNSKEY into the cache.
+        let (zone, dnskey_records, _, _, _, _) = build_test_zone("example.com", "example.com");
+        let mut msg = Message::query();
+        for r in dnskey_records {
+            msg.add_answer(r);
+        }
+        let _ = zone;
+        assert!(extract_dnskey_rrset_from_answers(&msg).is_none());
+    }
+
+    #[test]
+    fn extract_dnskey_returns_none_when_rrsig_covers_wrong_type() {
+        // An RRSIG covering, say, A records must not be mistaken for
+        // a DNSKEY signature. Otherwise an attacker could trick the
+        // resolver into accepting an unauthenticated DNSKEY rrset.
+        let (zone, dnskey_records, _, a_records, a_rrsig, _) =
+            build_test_zone("example.com", "example.com");
+        let _ = zone;
+        let mut msg = Message::query();
+        for r in dnskey_records {
+            msg.add_answer(r);
+        }
+        // A rrsig covers A, not DNSKEY.
+        msg.add_answer(Record::from_rdata(
+            Name::parse("example.com.", None).unwrap(),
+            3600,
+            RData::DNSSEC(DNSSECRData::RRSIG(a_rrsig)),
+        ));
+        // Drop unused a_records out of warnings.
+        let _ = a_records;
+        assert!(extract_dnskey_rrset_from_answers(&msg).is_none());
     }
 
     #[test]
