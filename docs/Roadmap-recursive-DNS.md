@@ -468,13 +468,34 @@ Added to `STATS_COUNTERS`:
 - [x] `prefetch_dropped_total`, `prefetch_completed_total`, `prefetch_failed_total` metrics
 - [x] Integration test: high-hit-count domain gets prefetched before TTL expires
 
-### Phase 6 — DNSSEC in recursive mode (follow-on)
+### Phase 6 — DNSSEC in recursive mode (multi-session)
 
-- [ ] Integrate `hickory-proto` DNSSEC primitives into the iterative loop
-- [ ] Validate RRSIG at each delegation step
-- [ ] Skip `dnssec::init()` (side-channel) when `mode = "recursive"`
-- [ ] Lift the Phase 1 "refuse to start" guard once recursive DNSSEC is validated
-- [ ] Preserve `action = "block" | "log"` semantics
+Split into three sessions because the surface is wide and the code is
+security-sensitive.
+
+#### Session 1 — primitives + integration points (this commit)
+
+- [x] Integrate `hickory-proto` DNSSEC primitives (`Verifier::verify_rrsig`) into a new `dgaard/src/dns/dnssec_chain.rs` module
+- [x] Embed the IANA root KSK-2017 trust anchor as a `const` (KSK-2024 lands once we ship the `root-anchors.xml` verification step)
+- [x] Per-zone DNSKEY/DS cache (`DashMap<Name, ZoneTrustState>`) with parent → child trust hand-off
+- [x] Skip `dnssec::init()` (side-channel) when `mode = "recursive"`
+- [x] Lift the Phase 1 "refuse to start" guard
+- [x] Preserve `action = "block" | "log"` semantics in `handle_query` for the recursive verdict
+- [x] Tests round-tripping synthetic ECDSA keys + tamper-detection
+
+#### Session 2 — iterative DNSKEY/DS fetch (follow-on)
+
+- [ ] At every delegation hop inside `RecursiveResolver`, dispatch parallel DNSKEY (against the new zone) and DS (against the parent) queries
+- [ ] Feed both into `RecursiveDnssecValidator::record_dnskey_rrset` / `record_ds_for_child` before continuing the descent
+- [ ] Surface chain-build failures via the existing `recursive_*` metrics
+- [ ] End-to-end test against a live signed zone (e.g. `dnssec-failed.org`, `internetsociety.org`)
+
+#### Session 3 — negative validation (follow-on)
+
+- [ ] NSEC validation for plain "name does not exist" denials
+- [ ] NSEC3 validation for opt-out + hashed denials
+- [ ] Bogus-on-broken-chain semantics (currently fail-open via `Insecure`)
+- [ ] DnssecAction::Block enforcement for Bogus negative answers
 
 ### Operational (rolling) — root-hints drift check
 

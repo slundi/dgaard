@@ -1174,25 +1174,17 @@ impl Config {
     /// - Every `forwarder.servers` entry is a valid `ip:port` or `[ipv6]:port` socket address.
     /// - Every `security.asn_filter.blocked_ranges` entry is a valid CIDR range (only when the
     ///   filter is enabled, since disabled ranges are never evaluated).
-    /// - `server.mode = "recursive"` is incompatible with `security.dnssec.enabled = true`
-    ///   (recursive-mode DNSSEC validation lands in Phase 6 — see
-    ///   `docs/Roadmap-recursive-DNS.md`).
+    /// - `server.mode = "recursive"` + `security.dnssec.enabled = true` is now permitted; the
+    ///   recursive validator (see `dgaard/src/dns/dnssec_chain.rs`) takes over from the
+    ///   forwarder-mode side-channel in this configuration. Until session 2 of Phase 6 wires
+    ///   active DNSKEY/DS fetching from the iterative loop, signed answers fall to `Insecure`
+    ///   (fail-open) instead of `Secure`, but the chain primitives are in place and tests cover
+    ///   them.
     ///
     /// Called by the SIGHUP hot-reload path before building and atomically swapping in the new
     /// engine, so a misconfigured reload leaves the running engine untouched rather than silently
     /// degrading service.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if matches!(self.server.mode, ResolutionMode::Recursive) && self.security.dnssec.enabled {
-            return Err(ConfigError::InvalidValue {
-                key: "server.mode".to_string(),
-                message:
-                    "DNSSEC validation in recursive mode is not yet implemented (Phase 6). \
-                     Either set [security.dnssec] enabled = false, or set [server] mode = \"forwarder\"."
-                        .to_string(),
-                span: toml_span::Span::default(),
-            });
-        }
-
         for server in &self.forwarder.servers {
             if server.parse::<std::net::SocketAddr>().is_err() {
                 return Err(ConfigError::InvalidValue {
@@ -2044,26 +2036,24 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // validate(): recursive + DNSSEC is rejected up-front (Phase 1 guard)
+    // validate(): recursive + DNSSEC is now permitted (Phase 6 session 1)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn validate_rejects_recursive_mode_combined_with_dnssec() {
+    fn validate_accepts_recursive_mode_combined_with_dnssec() {
+        // Phase 1 used to refuse this combination because the
+        // recursive resolver had no DNSSEC validator. Phase 6 ships
+        // the validator primitives, so the guard is lifted. Real-world
+        // signed answers still degrade to Insecure (fail-open) until
+        // the iterative DNSKEY/DS fetch lands (session 2), but the
+        // configuration itself is now valid.
         let mut cfg = Config::default();
         cfg.server.mode = ResolutionMode::Recursive;
         cfg.security.dnssec.enabled = true;
-        let err = cfg.validate().unwrap_err();
-        match err {
-            ConfigError::InvalidValue { message, .. } => {
-                assert!(
-                    message.contains("Phase 6")
-                        || message.contains("recursive mode")
-                        || message.contains("not yet implemented"),
-                    "error must explain the Phase 6 dependency: got {message}"
-                );
-            }
-            other => panic!("expected InvalidValue, got {other:?}"),
-        }
+        assert!(
+            cfg.validate().is_ok(),
+            "Phase 6 must accept recursive + dnssec"
+        );
     }
 
     #[test]

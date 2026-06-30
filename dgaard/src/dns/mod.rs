@@ -1,3 +1,4 @@
+pub mod dnssec_chain;
 pub mod packet;
 pub mod recursive;
 pub mod resolver;
@@ -10,8 +11,10 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 
 use crate::config::DnssecAction;
+use crate::config::ResolutionMode;
 use crate::config::ScoringConfig;
 use crate::debug::debug_print;
+use crate::dns::dnssec_chain::DnssecVerdict;
 use crate::dns::packet::DnsPacket;
 use crate::dns::resolver::UPSTREAM_RESOLVER;
 use crate::dnssec::DnssecStatus;
@@ -38,6 +41,34 @@ async fn resolve_via_upstream(packet: &DnsPacket) -> std::io::Result<Vec<u8>> {
                 .map_err(|e| std::io::Error::other(format!("encode query: {e}")))?;
             crate::dns::upstream::forward_to_upstream(&bytes).await
         }
+    }
+}
+
+/// Translate the recursive validator's verdict on an upstream answer
+/// into the `DnssecStatus` the surrounding code already understands.
+///
+/// Returns `Ok` when the validator is not applicable (not recursive
+/// mode, DNSSEC disabled, or the response bytes don't parse), so the
+/// caller can always treat this as a refinement of the forwarder-mode
+/// side-channel result rather than a replacement.
+fn recursive_dnssec_status(
+    mode: ResolutionMode,
+    enabled: bool,
+    response_bytes: &[u8],
+) -> DnssecStatus {
+    if !enabled || !matches!(mode, ResolutionMode::Recursive) {
+        return DnssecStatus::Ok;
+    }
+    let Ok(msg) = hickory_resolver::proto::op::Message::from_vec(response_bytes) else {
+        return DnssecStatus::Ok;
+    };
+    match crate::RECURSIVE_DNSSEC.validate_message(&msg) {
+        DnssecVerdict::Bogus => DnssecStatus::Bogus,
+        // Insecure → Ok is fail-open: this is the correct semantic
+        // when the chain isn't yet built (session 1) and the
+        // canonical "absence of proof is not proof of absence" stance
+        // for unsigned zones.
+        DnssecVerdict::Secure | DnssecVerdict::Insecure => DnssecStatus::Ok,
     }
 }
 
@@ -185,6 +216,7 @@ pub(crate) async fn handle_query(
     let cfg_snap = CONFIG.load();
     let scoring = &cfg_snap.security.scoring;
     let dnssec_cfg = cfg_snap.security.dnssec.clone();
+    let server_mode = cfg_snap.server.mode;
     let cache_ttl_override = cfg_snap.cache.ttl_override;
     let low_ttl_floor = cfg_snap.security.low_ttl.min_ttl_floor_secs;
     let (response, stat_action) = match &action {
@@ -197,6 +229,11 @@ pub(crate) async fn handle_query(
             } else {
                 (resolve_via_upstream(&dns_packet).await, DnssecStatus::Ok)
             };
+            // Phase 6 (session 1): in recursive mode the side-channel
+            // validator is skipped at startup, so `dnssec_status` is
+            // always Ok above. The recursive chain validator inspects
+            // the answer bytes once they arrive (see the
+            // `Ok(upstream_bytes)` arm).
             if dnssec_status == DnssecStatus::Bogus {
                 if dnssec_cfg.action == DnssecAction::Block {
                     STATS_COUNTERS.increment_blocked();
@@ -213,6 +250,25 @@ pub(crate) async fn handle_query(
             }
             match upstream_result {
                 Ok(upstream_bytes) => {
+                    // Recursive-mode validation runs on the bytes we
+                    // just received; the chain primitives short-circuit
+                    // to Ok when no DNSKEY for the zone is cached yet
+                    // (Insecure → fail-open).
+                    if recursive_dnssec_status(server_mode, dnssec_cfg.enabled, &upstream_bytes)
+                        == DnssecStatus::Bogus
+                    {
+                        if dnssec_cfg.action == DnssecAction::Block {
+                            STATS_COUNTERS.increment_blocked();
+                            socket
+                                .send_to(
+                                    &DnsPacket::build_servfail_response(&dns_packet.message),
+                                    peer,
+                                )
+                                .await?;
+                            return Ok(());
+                        }
+                        log::warn!("DNSSEC BOGUS (recursive, log-only): {}", dns_packet.domain);
+                    }
                     // DPI: score the upstream answer; block if it crosses the configured threshold
                     let inspected = InspectedAnswer::from_response(&upstream_bytes);
                     if let Some(answer) = &inspected {
@@ -281,6 +337,23 @@ pub(crate) async fn handle_query(
             }
             match upstream_result {
                 Ok(upstream_bytes) => {
+                    // Recursive-mode chain validation, mirrored from
+                    // the Allow branch — see notes there.
+                    if recursive_dnssec_status(server_mode, dnssec_cfg.enabled, &upstream_bytes)
+                        == DnssecStatus::Bogus
+                    {
+                        if dnssec_cfg.action == DnssecAction::Block {
+                            STATS_COUNTERS.increment_blocked();
+                            socket
+                                .send_to(
+                                    &DnsPacket::build_servfail_response(&dns_packet.message),
+                                    peer,
+                                )
+                                .await?;
+                            return Ok(());
+                        }
+                        log::warn!("DNSSEC BOGUS (recursive, log-only): {}", dns_packet.domain);
+                    }
                     // DPI: score the upstream answer; block if it crosses the configured threshold
                     let inspected = InspectedAnswer::from_response(&upstream_bytes);
                     if let Some(answer) = &inspected {
