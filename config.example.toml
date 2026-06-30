@@ -5,6 +5,16 @@
 [server]
 # The address and port your proxy listens on (usually port 53 for DNS)
 listen_addr = "192.168.1.1:53"
+
+# Resolution backend for "clean" queries that survive the filter pipeline:
+#   "forwarder" (default) — delegate to the servers in [forwarder] below.
+#   "recursive"           — iterative resolution from the root hints.
+#
+# Recursive mode is incompatible with DNSSEC validation until Phase 6 ships
+# (see docs/Roadmap-recursive-DNS.md). dgaard refuses to start if both
+# mode = "recursive" and [security.dnssec] enabled = true.
+mode = "forwarder"
+
 # Networks allowed to use this proxy (Access Control List)
 allowed_networks = ["127.0.0.1/32", "192.168.1.0/24"]
 # Port for the Unix Socket stats stream
@@ -176,8 +186,10 @@ block_private_ip_in_public_res = true
 # e.g., ["NULL", "ANY", "HINFO"]
 forbidden_qtypes = ["NULL"]
 
-[upstream]
-# Where the proxy forwards "clean" queries
+[forwarder]
+# Servers used when [server] mode = "forwarder".
+# (Renamed from [upstream] in the Phase 1 recursive-DNS work — the parser
+# now rejects [upstream] outright with a pointer back here.)
 # Using DNS-over-HTTPS (DoH) or standard UDP
 servers = ["1.1.1.1:53", "9.9.9.9:53"]
 timeout_ms = 2000

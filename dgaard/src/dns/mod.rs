@@ -1,5 +1,6 @@
-mod packet;
-mod upstream;
+pub mod packet;
+pub mod resolver;
+pub(crate) mod upstream;
 
 pub(crate) use dgaard_engine::model::InspectedAnswer;
 
@@ -11,11 +12,33 @@ use crate::config::DnssecAction;
 use crate::config::ScoringConfig;
 use crate::debug::debug_print;
 use crate::dns::packet::DnsPacket;
-use crate::dns::upstream::forward_to_upstream;
+use crate::dns::resolver::UPSTREAM_RESOLVER;
 use crate::dnssec::DnssecStatus;
 use crate::model::{Action, StatAction, StatBlockReason, SuspicionScore};
 use crate::resolve::{check_qclass, check_qtype, resolve_with_score, score_answer};
 use crate::{CONFIG, STATS_COUNTERS, STATS_SENDER};
+
+/// Resolve a clean query via the configured backend.
+///
+/// In Phase 1 the only backend is the legacy UDP forwarder, wrapped behind
+/// [`crate::dns::resolver::UpstreamResolver`]. The fallback path keeps
+/// existing tests that never call `install()` working: they exercise the
+/// forwarder directly without setting up the global resolver.
+async fn resolve_via_upstream(packet: &DnsPacket) -> std::io::Result<Vec<u8>> {
+    match UPSTREAM_RESOLVER.get() {
+        Some(resolver) => resolver.resolve(packet).await,
+        None => {
+            // The resolver is installed during runtime startup. If it has
+            // not been installed (smoke tests, library re-use), fall back
+            // to the direct call — preserves identical wire behaviour.
+            let bytes = packet
+                .message
+                .to_vec()
+                .map_err(|e| std::io::Error::other(format!("encode query: {e}")))?;
+            crate::dns::upstream::forward_to_upstream(&bytes).await
+        }
+    }
+}
 
 /// Map a suspicion score to a stat action using the configured thresholds.
 ///
@@ -149,11 +172,11 @@ pub(crate) async fn handle_query(
         Action::Allow => {
             let (upstream_result, dnssec_status) = if dnssec_cfg.enabled {
                 tokio::join!(
-                    forward_to_upstream(&packet),
+                    resolve_via_upstream(&dns_packet),
                     crate::dnssec::validate(&dns_packet.domain, dns_packet.qtype),
                 )
             } else {
-                (forward_to_upstream(&packet).await, DnssecStatus::Ok)
+                (resolve_via_upstream(&dns_packet).await, DnssecStatus::Ok)
             };
             if dnssec_status == DnssecStatus::Bogus {
                 if dnssec_cfg.action == DnssecAction::Block {
@@ -217,11 +240,11 @@ pub(crate) async fn handle_query(
         Action::ProxyToUpstream => {
             let (upstream_result, dnssec_status) = if dnssec_cfg.enabled {
                 tokio::join!(
-                    forward_to_upstream(&packet),
+                    resolve_via_upstream(&dns_packet),
                     crate::dnssec::validate(&dns_packet.domain, dns_packet.qtype),
                 )
             } else {
-                (forward_to_upstream(&packet).await, DnssecStatus::Ok)
+                (resolve_via_upstream(&dns_packet).await, DnssecStatus::Ok)
             };
             if dnssec_status == DnssecStatus::Bogus {
                 if dnssec_cfg.action == DnssecAction::Block {

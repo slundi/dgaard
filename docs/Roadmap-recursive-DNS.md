@@ -414,12 +414,12 @@ Added to `STATS_COUNTERS`:
 
 ### Phase 1 — Resolver abstraction & forwarder migration
 
-- [ ] Define `UpstreamResolver` trait in `dgaard/src/dns/resolver.rs` taking `&DnsPacket` (parsed, not raw bytes)
-- [ ] Wrap existing `forward_to_upstream` logic into `ForwardingResolver`
-- [ ] Add `OnceLock<Arc<dyn UpstreamResolver>>` global; initialise from config in `main.rs`
-- [ ] **Hard rename** `[upstream]` → `[forwarder]` in config model, parser, example file, and tests. Parser rejects `[upstream]` with a clear error message + CHANGELOG reference
-- [ ] Remove `if mode` branching from `handle_query`; it now calls `UPSTREAM_RESOLVER.get().resolve(&dns_packet)`
-- [ ] Refuse-to-start guard: if `mode = "recursive"` and `security.dnssec.enabled = true`, error out before binding sockets
+- [x] Define `UpstreamResolver` trait in `dgaard/src/dns/resolver.rs` taking `&DnsPacket` (parsed, not raw bytes)
+- [x] Wrap existing `forward_to_upstream` logic into `ForwardingResolver`
+- [x] Add `OnceLock<Arc<dyn UpstreamResolver>>` global; initialise from config in `main.rs`
+- [x] **Hard rename** `[upstream]` → `[forwarder]` in config model, parser, example file, and tests. Parser rejects `[upstream]` with a clear error message + CHANGELOG reference
+- [x] Remove `if mode` branching from `handle_query`; it now calls `UPSTREAM_RESOLVER.get().resolve(&dns_packet)`
+- [x] Refuse-to-start guard: if `mode = "recursive"` and `security.dnssec.enabled = true`, error out before binding sockets
 
 ### Phase 2 — Iterative recursive resolver
 

@@ -282,7 +282,7 @@ pipeline = ["Whitelist", "HotCache", "StaticBlock", "SuffixMatch", "Heuristics",
 [server.runtime]
 worker_threads = 1
 
-[upstream]
+[forwarder]
 servers = ["1.1.1.1:53"]
 timeout_ms = 3000
 

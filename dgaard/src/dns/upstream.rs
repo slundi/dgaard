@@ -132,8 +132,8 @@ pub(crate) async fn forward_to_upstream(packet: &[u8]) -> std::io::Result<Vec<u8
     }
 
     let config = CONFIG.load();
-    let timeout_duration = Duration::from_millis(config.upstream.timeout_ms);
-    let use_0x20 = config.upstream.use_0x20_randomization;
+    let timeout_duration = Duration::from_millis(config.forwarder.timeout_ms);
+    let use_0x20 = config.forwarder.use_0x20_randomization;
 
     // Save the client's original TXID so we can echo it back in the response.
     let original_txid = [packet[0], packet[1]];
@@ -145,7 +145,7 @@ pub(crate) async fn forward_to_upstream(packet: &[u8]) -> std::io::Result<Vec<u8
     let applied_0x20 = use_0x20 && apply_0x20(&mut outgoing);
 
     // Try each upstream server in order.
-    for server_addr in &config.upstream.servers {
+    for server_addr in &config.forwarder.servers {
         let addr: SocketAddr = match server_addr.parse() {
             Ok(a) => a,
             Err(_) => continue,

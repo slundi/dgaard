@@ -51,6 +51,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = config::discover_path(opts.config.as_deref()).ok_or("Configuration file not found. Please provide one via --config or place it in /etc/dgaard/config.toml")?;
 
     let config = config::Config::load(&config_path)?;
+    // Reject combinations that the current code base cannot serve safely
+    // (notably mode = "recursive" + DNSSEC = true, which lands in Phase 6 —
+    // see docs/Roadmap-recursive-DNS.md). Validating before opening any
+    // sockets means an invalid config never reaches port 53.
+    config.validate()?;
+
+    // Install the resolver matching the configured mode. Phase 1 has only
+    // one implementation; the `match` is the seam Phase 2 will plug
+    // `RecursiveResolver` into without changing handle_query.
+    let resolver: std::sync::Arc<dyn dns::resolver::UpstreamResolver> = match config.server.mode {
+        config::ResolutionMode::Forwarder => {
+            std::sync::Arc::new(dns::resolver::ForwardingResolver::new())
+        }
+        config::ResolutionMode::Recursive => {
+            return Err(
+                "Recursive resolution mode is reserved for Phase 2 of the recursive-DNS \
+                 roadmap and is not yet implemented. Set [server] mode = \"forwarder\" \
+                 or check back after Phase 2 ships."
+                    .into(),
+            );
+        }
+    };
+    dns::resolver::install(resolver).map_err(|e| e.to_string())?;
+
     // Store config path for hot-reload (SIGHUP)
     CONFIG_PATH
         .set(config_path.clone())

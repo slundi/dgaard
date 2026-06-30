@@ -83,6 +83,20 @@ pub enum PipelineStep {
     Upstream,
 }
 
+/// Which backend resolves "clean" queries that survive the filter pipeline.
+///
+/// `Forwarder` (default) delegates to the upstream resolvers configured in
+/// [`ForwarderConfig`].  `Recursive` performs iterative delegation starting
+/// from the root hints (see Phase 2 of `docs/Roadmap-recursive-DNS.md`).
+#[derive(Debug, Default, PartialEq, Clone, Copy)]
+pub enum ResolutionMode {
+    /// Forward to one of the resolvers listed in `[forwarder]`.
+    #[default]
+    Forwarder,
+    /// Iteratively resolve the delegation chain ourselves (Phase 2+).
+    Recursive,
+}
+
 /// Top-level server configuration.
 ///
 /// Maps to `[server]` in the configuration file.
@@ -91,6 +105,13 @@ pub struct ServerConfig {
     /// Socket address (`ip:port`) on which the DNS proxy listens.
     /// Use port 53 for production; an unprivileged port for development.
     pub listen_addr: String,
+
+    /// Resolution backend: `"forwarder"` (default) or `"recursive"`.
+    ///
+    /// When set to `Recursive`, dgaard refuses to start if DNSSEC validation
+    /// is also enabled (the recursive DNSSEC path lands in Phase 6 — see
+    /// `docs/Roadmap-recursive-DNS.md`).
+    pub mode: ResolutionMode,
 
     /// CIDR ranges whose queries are accepted.
     /// Queries from addresses outside this list are silently dropped.
@@ -122,6 +143,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen_addr: String::from("127.0.0.1:53"),
+            mode: ResolutionMode::default(),
             allowed_networks: vec![String::from("127.0.0.1/32"), String::from("192.168.1.0/24")],
             stats_socket_path: String::from("/tmp/dgaard_stats.sock"),
             block_idn: true,
@@ -854,15 +876,18 @@ pub struct SecurityConfig {
 }
 
 // ---------------------------------------------------------------------------
-// [upstream]
+// [forwarder]
 // ---------------------------------------------------------------------------
 
-/// Upstream resolver configuration.
+/// Forwarder resolver configuration.
 ///
-/// Clean queries that pass all filters are forwarded to one of these servers.
-/// Maps to `[upstream]` in the configuration file.
+/// Clean queries that pass all filters and that are not handled by the
+/// recursive resolver are forwarded to one of these servers.
+///
+/// Maps to `[forwarder]` in the configuration file (renamed from the
+/// pre-Phase-1 `[upstream]` block — see `docs/Roadmap-recursive-DNS.md`).
 #[derive(Debug, PartialEq, Clone)]
-pub struct UpstreamConfig {
+pub struct ForwarderConfig {
     /// Ordered list of resolver addresses in `ip:port` format.
     /// Supports both plain UDP (`:53`) and DNS-over-HTTPS addresses.
     pub servers: Vec<String>,
@@ -889,7 +914,7 @@ pub struct UpstreamConfig {
     pub use_0x20_randomization: bool,
 }
 
-impl Default for UpstreamConfig {
+impl Default for ForwarderConfig {
     fn default() -> Self {
         Self {
             servers: vec![String::from("1.1.1.1:53"), String::from("9.9.9.9:53")],
@@ -1208,8 +1233,8 @@ pub struct Config {
     pub server: ServerConfig,
     /// The full security pipeline configuration.
     pub security: SecurityConfig,
-    /// Upstream resolver addresses and timeout.
-    pub upstream: UpstreamConfig,
+    /// Forwarder (legacy `[upstream]`) resolver addresses and timeout.
+    pub forwarder: ForwarderConfig,
     /// TLD allow/block lists.
     pub tld: TldConfig,
     /// NXDOMAIN botnet-scanner detection.
@@ -1488,15 +1513,30 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // UpstreamConfig
+    // ForwarderConfig
     // -----------------------------------------------------------------------
 
     #[test]
-    fn upstream_config_defaults_match_example_toml() {
-        let u = UpstreamConfig::default();
+    fn forwarder_config_defaults_match_example_toml() {
+        let u = ForwarderConfig::default();
         assert_eq!(u.servers, vec!["1.1.1.1:53", "9.9.9.9:53"]);
         assert_eq!(u.timeout_ms, 2000);
         assert!(u.use_0x20_randomization);
+    }
+
+    // -----------------------------------------------------------------------
+    // ResolutionMode + ServerConfig.mode
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolution_mode_default_is_forwarder() {
+        assert_eq!(ResolutionMode::default(), ResolutionMode::Forwarder);
+    }
+
+    #[test]
+    fn server_config_default_mode_is_forwarder() {
+        let s = ServerConfig::default();
+        assert_eq!(s.mode, ResolutionMode::Forwarder);
     }
 
     // -----------------------------------------------------------------------

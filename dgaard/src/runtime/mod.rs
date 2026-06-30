@@ -187,7 +187,7 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
         }
 
         if CONFIG.load().security.dnssec.enabled {
-            crate::dnssec::init(&CONFIG.load().upstream.servers.clone());
+            crate::dnssec::init(&CONFIG.load().forwarder.servers.clone());
         }
 
         let cache_cfg = CONFIG.load().cache.clone();
@@ -251,7 +251,7 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
         }
 
         if CONFIG.load().security.dnssec.enabled {
-            crate::dnssec::init(&CONFIG.load().upstream.servers.clone());
+            crate::dnssec::init(&CONFIG.load().forwarder.servers.clone());
         }
 
         let cache_cfg = CONFIG.load().cache.clone();
@@ -514,6 +514,22 @@ async fn reload_config_from_path(config_path: &std::path::Path) -> Result<(), St
 
     match crate::config::Config::load(config_path) {
         Ok(new_config) => {
+            // Keep the currently-installed resolver running rather than swap
+            // it in under load. Reject reloads whose `[server] mode` differs
+            // from the boot-time mode — the resolver type is decided once at
+            // startup (see main.rs) because changing it would require
+            // reinitialising socket pools and root hints.
+            let current_mode = CONFIG.load().server.mode;
+            if new_config.server.mode != current_mode {
+                return Err(format!(
+                    "Refusing reload: [server] mode changed from {:?} to {:?}. \
+                     Resolution mode is fixed at startup; restart dgaard to switch.",
+                    current_mode, new_config.server.mode
+                ));
+            }
+            if let Err(e) = new_config.validate() {
+                return Err(format!("Failed to reload config: {}", e));
+            }
             CONFIG.store(Arc::new(new_config));
             reload_lists().await;
             println!(
@@ -777,7 +793,7 @@ mod tests {
             [server]
             listen_addr = "127.0.0.1:5454"
 
-            [upstream]
+            [forwarder]
             servers = ["8.8.8.8:53"]
             timeout_ms = 3000
         "#;
@@ -789,7 +805,7 @@ mod tests {
         // Verify config was updated
         let loaded_config = CONFIG.load();
         assert_eq!(loaded_config.server.listen_addr, "127.0.0.1:5454");
-        assert_eq!(loaded_config.upstream.timeout_ms, 3000);
+        assert_eq!(loaded_config.forwarder.timeout_ms, 3000);
 
         // Cleanup
         let _ = fs::remove_dir_all(&temp_dir);
@@ -831,20 +847,20 @@ mod tests {
         fs::write(
             &config_path,
             r#"
-            [upstream]
+            [forwarder]
             timeout_ms = 1000
         "#,
         )
         .expect("Failed to write config");
 
         let _ = reload_config_from_path(&config_path).await;
-        assert_eq!(CONFIG.load().upstream.timeout_ms, 1000);
+        assert_eq!(CONFIG.load().forwarder.timeout_ms, 1000);
 
         // Update the config file
         fs::write(
             &config_path,
             r#"
-            [upstream]
+            [forwarder]
             timeout_ms = 5000
         "#,
         )
@@ -853,7 +869,7 @@ mod tests {
         // Reload and verify update
         let result = reload_config_from_path(&config_path).await;
         assert!(result.is_ok());
-        assert_eq!(CONFIG.load().upstream.timeout_ms, 5000);
+        assert_eq!(CONFIG.load().forwarder.timeout_ms, 5000);
 
         // Cleanup
         let _ = fs::remove_dir_all(&temp_dir);

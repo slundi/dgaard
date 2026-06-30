@@ -65,6 +65,7 @@ rkyv.workspace = true
 lru.workspace = true
 
 arc-swap.workspace = true
+async-trait.workspace = true
 bitflags.workspace = true
 dashmap.workspace = true
 

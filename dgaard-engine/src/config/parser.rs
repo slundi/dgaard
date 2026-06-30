@@ -332,6 +332,21 @@ fn parse_server(table: &toml_span::value::Table<'_>) -> Result<ServerConfig, Con
     if let Some(s) = get_str(table, "listen_addr")? {
         cfg.listen_addr = s.to_string();
     }
+    if let Some(s) = get_str(table, "mode")? {
+        cfg.mode = match s {
+            "forwarder" => ResolutionMode::Forwarder,
+            "recursive" => ResolutionMode::Recursive,
+            other => {
+                return Err(ConfigError::InvalidValue {
+                    key: "server.mode".to_string(),
+                    message: format!(
+                        "\"{other}\" is not a valid resolution mode (expected \"forwarder\" or \"recursive\")"
+                    ),
+                    span: table.get("mode").unwrap().span,
+                });
+            }
+        };
+    }
     if let Some(arr) = get_string_array(table, "allowed_networks")? {
         cfg.allowed_networks = arr;
     }
@@ -812,9 +827,9 @@ fn parse_security(table: &toml_span::value::Table<'_>) -> Result<SecurityConfig,
     Ok(cfg)
 }
 
-/// Parse `[upstream]` section.
-fn parse_upstream(table: &toml_span::value::Table<'_>) -> Result<UpstreamConfig, ConfigError> {
-    let mut cfg = UpstreamConfig::default();
+/// Parse `[forwarder]` section.
+fn parse_forwarder(table: &toml_span::value::Table<'_>) -> Result<ForwarderConfig, ConfigError> {
+    let mut cfg = ForwarderConfig::default();
 
     if let Some(arr) = get_string_array(table, "servers")? {
         cfg.servers = arr;
@@ -1008,8 +1023,20 @@ impl Config {
         if let Some(t) = get_table(root, "security")? {
             cfg.security = parse_security(t)?;
         }
-        if let Some(t) = get_table(root, "upstream")? {
-            cfg.upstream = parse_upstream(t)?;
+        if let Some(v) = root.get("upstream") {
+            return Err(ConfigError::InvalidValue {
+                key: "upstream".to_string(),
+                message: "[upstream] has been renamed to [forwarder] (see \
+                          docs/Roadmap-recursive-DNS.md — Phase 1). Rename the \
+                          section header in your configuration; the keys inside \
+                          (servers, timeout_ms, use_0x20_randomization) are \
+                          unchanged."
+                    .to_string(),
+                span: v.span,
+            });
+        }
+        if let Some(t) = get_table(root, "forwarder")? {
+            cfg.forwarder = parse_forwarder(t)?;
         }
         if let Some(t) = get_table(root, "tld")? {
             cfg.tld = parse_tld(t)?;
@@ -1045,18 +1072,32 @@ impl Config {
     /// Validate semantic constraints that cannot be checked from TOML structure alone.
     ///
     /// Checks:
-    /// - Every `upstream.servers` entry is a valid `ip:port` or `[ipv6]:port` socket address.
+    /// - Every `forwarder.servers` entry is a valid `ip:port` or `[ipv6]:port` socket address.
     /// - Every `security.asn_filter.blocked_ranges` entry is a valid CIDR range (only when the
     ///   filter is enabled, since disabled ranges are never evaluated).
+    /// - `server.mode = "recursive"` is incompatible with `security.dnssec.enabled = true`
+    ///   (recursive-mode DNSSEC validation lands in Phase 6 — see
+    ///   `docs/Roadmap-recursive-DNS.md`).
     ///
     /// Called by the SIGHUP hot-reload path before building and atomically swapping in the new
     /// engine, so a misconfigured reload leaves the running engine untouched rather than silently
     /// degrading service.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        for server in &self.upstream.servers {
+        if matches!(self.server.mode, ResolutionMode::Recursive) && self.security.dnssec.enabled {
+            return Err(ConfigError::InvalidValue {
+                key: "server.mode".to_string(),
+                message:
+                    "DNSSEC validation in recursive mode is not yet implemented (Phase 6). \
+                     Either set [security.dnssec] enabled = false, or set [server] mode = \"forwarder\"."
+                        .to_string(),
+                span: toml_span::Span::default(),
+            });
+        }
+
+        for server in &self.forwarder.servers {
             if server.parse::<std::net::SocketAddr>().is_err() {
                 return Err(ConfigError::InvalidValue {
-                    key: "upstream.servers".to_string(),
+                    key: "forwarder.servers".to_string(),
                     message: format!(
                         "\"{server}\" is not a valid socket address (expected ip:port or [ipv6]:port)"
                     ),
@@ -1132,7 +1173,7 @@ mod tests {
     fn parse_empty_config_returns_defaults() {
         let cfg = Config::parse("").unwrap();
         assert_eq!(cfg.server.listen_addr, "127.0.0.1:53");
-        assert_eq!(cfg.upstream.servers, vec!["1.1.1.1:53", "9.9.9.9:53"]);
+        assert_eq!(cfg.forwarder.servers, vec!["1.1.1.1:53", "9.9.9.9:53"]);
     }
 
     #[test]
@@ -1352,7 +1393,7 @@ mod tests {
     #[test]
     fn parse_negative_timeout_ms_returns_error() {
         let toml = r#"
-            [upstream]
+            [forwarder]
             timeout_ms = -500
         "#;
         assert!(matches!(
@@ -1762,27 +1803,131 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Upstream section
+    // Forwarder section (renamed from [upstream] in Phase 1)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn parse_upstream() {
+    fn parse_forwarder() {
         let toml = r#"
-            [upstream]
+            [forwarder]
             servers = ["8.8.8.8:53", "8.8.4.4:53"]
             timeout_ms = 5000
             use_0x20_randomization = false
         "#;
         let cfg = Config::parse(toml).unwrap();
-        assert_eq!(cfg.upstream.servers, vec!["8.8.8.8:53", "8.8.4.4:53"]);
-        assert_eq!(cfg.upstream.timeout_ms, 5000);
-        assert!(!cfg.upstream.use_0x20_randomization);
+        assert_eq!(cfg.forwarder.servers, vec!["8.8.8.8:53", "8.8.4.4:53"]);
+        assert_eq!(cfg.forwarder.timeout_ms, 5000);
+        assert!(!cfg.forwarder.use_0x20_randomization);
     }
 
     #[test]
-    fn parse_upstream_0x20_defaults_true() {
+    fn parse_forwarder_0x20_defaults_true() {
         let cfg = Config::parse("").unwrap();
-        assert!(cfg.upstream.use_0x20_randomization);
+        assert!(cfg.forwarder.use_0x20_randomization);
+    }
+
+    /// The Phase 1 hard rename: a configuration that still uses `[upstream]`
+    /// must fail with a clear, actionable error rather than being silently
+    /// ignored (which would leave the forwarder running on the built-in
+    /// defaults — surprising and dangerous on a production box).
+    #[test]
+    fn parse_legacy_upstream_section_is_rejected_with_pointer_to_forwarder() {
+        let toml = r#"
+            [upstream]
+            servers = ["1.1.1.1:53"]
+        "#;
+        let err = Config::parse(toml).unwrap_err();
+        match err {
+            ConfigError::InvalidValue { key, message, .. } => {
+                assert_eq!(key, "upstream");
+                assert!(
+                    message.contains("[forwarder]"),
+                    "error message must point to the new section name: got {message}"
+                );
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // [server] mode
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_server_mode_default_is_forwarder() {
+        let cfg = Config::parse("").unwrap();
+        assert_eq!(cfg.server.mode, ResolutionMode::Forwarder);
+    }
+
+    #[test]
+    fn parse_server_mode_forwarder() {
+        let toml = r#"
+            [server]
+            mode = "forwarder"
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert_eq!(cfg.server.mode, ResolutionMode::Forwarder);
+    }
+
+    #[test]
+    fn parse_server_mode_recursive() {
+        let toml = r#"
+            [server]
+            mode = "recursive"
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert_eq!(cfg.server.mode, ResolutionMode::Recursive);
+    }
+
+    #[test]
+    fn parse_server_mode_invalid_returns_error() {
+        let toml = r#"
+            [server]
+            mode = "magic"
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // validate(): recursive + DNSSEC is rejected up-front (Phase 1 guard)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_rejects_recursive_mode_combined_with_dnssec() {
+        let mut cfg = Config::default();
+        cfg.server.mode = ResolutionMode::Recursive;
+        cfg.security.dnssec.enabled = true;
+        let err = cfg.validate().unwrap_err();
+        match err {
+            ConfigError::InvalidValue { message, .. } => {
+                assert!(
+                    message.contains("Phase 6")
+                        || message.contains("recursive mode")
+                        || message.contains("not yet implemented"),
+                    "error must explain the Phase 6 dependency: got {message}"
+                );
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_forwarder_mode_with_dnssec() {
+        let mut cfg = Config::default();
+        cfg.server.mode = ResolutionMode::Forwarder;
+        cfg.security.dnssec.enabled = true;
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_recursive_mode_without_dnssec() {
+        let mut cfg = Config::default();
+        cfg.server.mode = ResolutionMode::Recursive;
+        cfg.security.dnssec.enabled = false;
+        assert!(cfg.validate().is_ok());
     }
 
     // -----------------------------------------------------------------------
@@ -2030,7 +2175,7 @@ mod tests {
             max_subdomains_per_minute = 50
             max_label_length = 60
 
-            [upstream]
+            [forwarder]
             servers = ["1.1.1.1:53", "9.9.9.9:53"]
             timeout_ms = 2000
 
@@ -2085,7 +2230,7 @@ mod tests {
         assert_eq!(cfg.security.idn.mode, IdnMode::Smart);
         assert_eq!(cfg.security.behavior.nxdomain_threshold, 15);
 
-        assert_eq!(cfg.upstream.servers, vec!["1.1.1.1:53", "9.9.9.9:53"]);
+        assert_eq!(cfg.forwarder.servers, vec!["1.1.1.1:53", "9.9.9.9:53"]);
         assert_eq!(cfg.tld.exclude, vec![".top", ".xyz", ".bid"]);
 
         assert!(cfg.nxdomain_hunting.enabled);
@@ -2145,7 +2290,7 @@ mod tests {
     #[test]
     fn parse_wrong_type_for_integer() {
         let toml = r#"
-            [upstream]
+            [forwarder]
             timeout_ms = "fast"
         "#;
         let result = Config::parse(toml);
@@ -2159,7 +2304,7 @@ mod tests {
     #[test]
     fn parse_wrong_type_for_array() {
         let toml = r#"
-            [upstream]
+            [forwarder]
             servers = "1.1.1.1:53"
         "#;
         let result = Config::parse(toml);
@@ -2609,33 +2754,33 @@ list_path = []
     // -----------------------------------------------------------------------
 
     #[test]
-    fn validate_accepts_valid_ipv4_upstream_servers() {
+    fn validate_accepts_valid_ipv4_forwarder_servers() {
         let mut cfg = Config::default();
-        cfg.upstream.servers = vec!["1.1.1.1:53".into(), "9.9.9.9:53".into()];
+        cfg.forwarder.servers = vec!["1.1.1.1:53".into(), "9.9.9.9:53".into()];
         assert!(cfg.validate().is_ok());
     }
 
     #[test]
-    fn validate_accepts_valid_ipv6_upstream_server() {
+    fn validate_accepts_valid_ipv6_forwarder_server() {
         let mut cfg = Config::default();
-        cfg.upstream.servers = vec!["[::1]:53".into()];
+        cfg.forwarder.servers = vec!["[::1]:53".into()];
         assert!(cfg.validate().is_ok());
     }
 
     #[test]
-    fn validate_accepts_empty_upstream_servers() {
+    fn validate_accepts_empty_forwarder_servers() {
         let mut cfg = Config::default();
-        cfg.upstream.servers = vec![];
+        cfg.forwarder.servers = vec![];
         assert!(cfg.validate().is_ok());
     }
 
     #[test]
     fn validate_rejects_server_without_port() {
         let mut cfg = Config::default();
-        cfg.upstream.servers = vec!["1.1.1.1".into()];
+        cfg.forwarder.servers = vec!["1.1.1.1".into()];
         let err = cfg.validate().unwrap_err();
         assert!(
-            matches!(&err, ConfigError::InvalidValue { key, .. } if key == "upstream.servers"),
+            matches!(&err, ConfigError::InvalidValue { key, .. } if key == "forwarder.servers"),
             "unexpected error: {err}"
         );
         assert!(err.to_string().contains("1.1.1.1"));
@@ -2644,10 +2789,10 @@ list_path = []
     #[test]
     fn validate_rejects_garbage_server_address() {
         let mut cfg = Config::default();
-        cfg.upstream.servers = vec!["not-an-address".into()];
+        cfg.forwarder.servers = vec!["not-an-address".into()];
         let err = cfg.validate().unwrap_err();
         assert!(
-            matches!(&err, ConfigError::InvalidValue { key, .. } if key == "upstream.servers"),
+            matches!(&err, ConfigError::InvalidValue { key, .. } if key == "forwarder.servers"),
             "unexpected error: {err}"
         );
     }
@@ -2655,7 +2800,7 @@ list_path = []
     #[test]
     fn validate_rejects_first_bad_server_in_mixed_list() {
         let mut cfg = Config::default();
-        cfg.upstream.servers = vec!["1.1.1.1:53".into(), "bad".into(), "9.9.9.9:53".into()];
+        cfg.forwarder.servers = vec!["1.1.1.1:53".into(), "bad".into(), "9.9.9.9:53".into()];
         assert!(cfg.validate().is_err());
     }
 

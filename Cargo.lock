@@ -754,6 +754,7 @@ version = "0.2.0"
 dependencies = [
  "aho-corasick",
  "arc-swap",
+ "async-trait",
  "bitflags 2.13.0",
  "bloom",
  "dashmap",
