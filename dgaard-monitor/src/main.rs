@@ -1,25 +1,20 @@
 mod cli;
 mod config;
-mod connectivity;
-mod db;
-mod error;
-mod forwarding;
 mod headless;
-mod io;
-mod protocol;
-mod state;
-mod tui;
-mod util;
-mod web;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::watch;
 
-use state::AppState;
+use dgaard_monitor_core::{db, error, forwarding, io, protocol, state::AppState};
 
-use crate::connectivity::{api, mcp, nats, websocket};
+#[cfg(feature = "nats")]
+use dgaard_monitor_nats as nats;
+#[cfg(feature = "rest")]
+use dgaard_monitor_rest as rest;
+#[cfg(feature = "tui")]
+use dgaard_monitor_tui as tui;
 
 #[tokio::main]
 async fn main() {
@@ -71,6 +66,12 @@ async fn main() {
         web: web_cfg,
         nats: nats_cfg,
     } = cfg;
+    #[cfg(not(feature = "tui"))]
+    let _ = tui_cfg;
+    #[cfg(not(feature = "rest"))]
+    let _ = (api_cfg, ws_cfg, mcp_cfg, web_cfg);
+    #[cfg(not(feature = "nats"))]
+    let _ = nats_cfg;
 
     // Warm-up: load host index.
     let domain_map = match io::index::read_host_index(&index_path) {
@@ -189,11 +190,22 @@ async fn main() {
             headless::run(s, rx).await;
         }));
     } else {
-        let s = Arc::clone(&state);
-        let rx = shutdown_rx.clone();
-        handles.push(tokio::spawn(async move {
-            tui::run(tui_cfg, s, rx).await;
-        }));
+        #[cfg(feature = "tui")]
+        {
+            let s = Arc::clone(&state);
+            let rx = shutdown_rx.clone();
+            handles.push(tokio::spawn(async move {
+                tui::run(tui_cfg, s, rx).await;
+            }));
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            let s = Arc::clone(&state);
+            let rx = shutdown_rx.clone();
+            handles.push(tokio::spawn(async move {
+                headless::run(s, rx).await;
+            }));
+        }
     }
 
     // Forwarding sink (always running).
@@ -205,31 +217,18 @@ async fn main() {
         }));
     }
 
-    // Optional connectivity services.
-    if api_cfg.enabled {
+    // Optional connectivity services (REST API, WebSocket, MCP, Web UI).
+    #[cfg(feature = "rest")]
+    {
         let s = Arc::clone(&state);
+        let db_clone = db.clone();
         let rx = shutdown_rx.clone();
         handles.push(tokio::spawn(async move {
-            api::run(api_cfg, s, rx).await;
+            rest::serve(api_cfg, ws_cfg, mcp_cfg, web_cfg, db_clone, s, rx).await;
         }));
     }
 
-    if ws_cfg.enabled {
-        let s = Arc::clone(&state);
-        let rx = shutdown_rx.clone();
-        handles.push(tokio::spawn(async move {
-            websocket::run(ws_cfg, s, rx).await;
-        }));
-    }
-
-    if mcp_cfg.enabled {
-        let s = Arc::clone(&state);
-        let rx = shutdown_rx.clone();
-        handles.push(tokio::spawn(async move {
-            mcp::run(mcp_cfg, s, rx).await;
-        }));
-    }
-
+    #[cfg(feature = "nats")]
     if nats_cfg.enabled {
         let s = Arc::clone(&state);
         let rx = shutdown_rx.clone();
@@ -245,25 +244,6 @@ async fn main() {
         let rx = shutdown_rx.clone();
         handles.push(tokio::spawn(async move {
             db::run_writer(s, d, rx).await;
-        }));
-    }
-
-    if web_cfg.enabled {
-        let s = Arc::clone(&state);
-        let web_state = {
-            let ws = web::WebState::new(Arc::clone(&s), web_cfg.history_size).with_beaconing(
-                web_cfg.beaconing_min_observations,
-                web_cfg.beaconing_cov_threshold,
-            );
-            match &db {
-                Some(d) => ws.with_db(std::sync::Arc::clone(d)),
-                None => ws,
-            }
-        };
-        let web_state = std::sync::Arc::new(web_state);
-        let rx = shutdown_rx.clone();
-        handles.push(tokio::spawn(async move {
-            web::start(s, web_state, web_cfg, rx).await;
         }));
     }
 

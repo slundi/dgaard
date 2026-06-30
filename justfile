@@ -78,8 +78,16 @@ clean:
 
 # --- CI ---
 
+# Check dgaard-monitor compiles for all feature combinations
+check-features:
+    cargo check -p dgaard-monitor
+    cargo check -p dgaard-monitor --no-default-features
+    cargo check -p dgaard-monitor --features nats
+    cargo check -p dgaard-monitor --all-features
+    @echo "All feature combinations OK"
+
 # Run the complete CI pipeline (use this when already inside `nix develop`)
-ci-all: fmt lint test health-check scan-secrets
+ci-all: fmt lint test check-features health-check scan-secrets
 
 # Run the complete CI pipeline via Nix devshell — no docker/podman needed
 # Equivalent to what Woodpecker and Forgejo Actions run in containers

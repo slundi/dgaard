@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use tokio::sync::{broadcast, watch};
 
-use crate::state::AppState;
-use crate::util::event_to_record;
+use dgaard_monitor_core::state::AppState;
+use dgaard_monitor_core::util::event_to_record;
 
 /// Runs when `--headless` is set: emits one JSON line per event to stdout.
 /// The format is identical to the REST API's `/api/v1/queries` payload so

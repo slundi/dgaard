@@ -1,0 +1,34 @@
+[package]
+name = "dgaard-monitor-rest"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "dgaard_monitor_rest"
+path = "src/lib.rs"
+
+[dependencies]
+dgaard-monitor-core.workspace = true
+
+async-trait.workspace = true
+axum.workspace = true
+constant_time_eq.workspace = true
+dashmap.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+hickory-resolver.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-rustls.workspace = true
+hyper-util.workspace = true
+rust-embed.workspace = true
+rust-mcp-sdk.workspace = true
+rustls = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "sync", "time"] }
+tokio-tungstenite.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tower.workspace = true

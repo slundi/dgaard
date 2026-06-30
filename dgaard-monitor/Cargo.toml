@@ -3,45 +3,23 @@ name = "dgaard-monitor"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["tui", "rest"]
+tui  = ["dep:dgaard-monitor-tui"]
+rest = ["dep:dgaard-monitor-rest"]
+nats = ["dep:dgaard-monitor-nats"]
+
 [dependencies]
-bitflags.workspace = true
+dgaard-monitor-core.workspace = true
+dgaard-monitor-nats  = { workspace = true, optional = true }
+dgaard-monitor-rest  = { workspace = true, optional = true }
+dgaard-monitor-tui   = { workspace = true, optional = true }
+
 gumdrop.workspace = true
-inotify.workspace = true
-serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "time", "signal", "fs"] }
 toml-span.workspace = true
 
-# to have an HTTP client availble to download lists
-http-body-util.workspace = true
-hyper.workspace = true
-hyper-rustls.workspace = true
-hyper-util.workspace = true
-rustls.workspace = true
-
-async-nats.workspace = true
-async-trait.workspace = true
-rust-mcp-sdk.workspace = true
-serde_json.workspace = true
-
-axum.workspace = true
-constant_time_eq.workspace = true
-dashmap.workspace = true
-futures-util.workspace = true
-getrandom.workspace = true
-rust-embed.workspace = true
-tokio-tungstenite.workspace = true
-
-# Reverse-DNS resolution for the Talkers tab (PTR lookups)
-hickory-resolver.workspace = true
-
-# SQLite persistence
-rusqlite.workspace = true
-
-# Terminal UI rendering
-crossterm.workspace = true
-ratatui.workspace = true
-
 [dev-dependencies]
 tempfile.workspace = true
-tower.workspace = true

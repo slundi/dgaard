@@ -1,0 +1,17 @@
+[package]
+name = "dgaard-monitor-nats"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "dgaard_monitor_nats"
+path = "src/lib.rs"
+
+[dependencies]
+dgaard-monitor-core.workspace = true
+
+async-nats.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync"] }

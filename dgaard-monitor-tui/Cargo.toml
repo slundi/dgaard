@@ -1,0 +1,16 @@
+[package]
+name = "dgaard-monitor-tui"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "dgaard_monitor_tui"
+path = "src/lib.rs"
+
+[dependencies]
+dgaard-monitor-core.workspace = true
+
+crossterm.workspace = true
+hickory-resolver.workspace = true
+ratatui.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }

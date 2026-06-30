@@ -5,6 +5,29 @@ use toml_span::{Span, value::ValueInner};
 
 use thiserror::Error;
 
+pub use dgaard_monitor_core::config::{ForwardFormat, ForwardingConfig};
+
+#[cfg(feature = "tui")]
+pub use dgaard_monitor_tui::config::TuiConfig;
+#[cfg(not(feature = "tui"))]
+#[derive(Debug, Default)]
+pub struct TuiConfig;
+
+#[cfg(feature = "rest")]
+pub use dgaard_monitor_rest::config::{ConnectivityConfig, WebConfig};
+#[cfg(not(feature = "rest"))]
+#[derive(Debug, Default)]
+pub struct ConnectivityConfig;
+#[cfg(not(feature = "rest"))]
+#[derive(Debug, Default)]
+pub struct WebConfig;
+
+#[cfg(feature = "nats")]
+pub use dgaard_monitor_nats::config::NatsConfig;
+#[cfg(not(feature = "nats"))]
+#[derive(Debug, Default)]
+pub struct NatsConfig;
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("failed to read config file: {0}")]
@@ -86,233 +109,6 @@ impl Default for PersistenceConfig {
             db: default_db(),
             events_retention_hours: default_events_retention_hours(),
             aggregates_retention_days: default_aggregates_retention_days(),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct TuiConfig {
-    /// Terminal refresh interval in milliseconds.
-    pub tick_ms: u64,
-    pub key_quit: String,
-    pub key_pause: String,
-    pub key_scroll_up: String,
-    pub key_scroll_down: String,
-}
-
-fn default_tick_ms() -> u64 {
-    250
-}
-fn default_key_quit() -> String {
-    "q".to_string()
-}
-fn default_key_pause() -> String {
-    "space".to_string()
-}
-fn default_key_scroll_up() -> String {
-    "up".to_string()
-}
-fn default_key_scroll_down() -> String {
-    "down".to_string()
-}
-
-impl Default for TuiConfig {
-    fn default() -> Self {
-        Self {
-            tick_ms: default_tick_ms(),
-            key_quit: default_key_quit(),
-            key_pause: default_key_pause(),
-            key_scroll_up: default_key_scroll_up(),
-            key_scroll_down: default_key_scroll_down(),
-        }
-    }
-}
-
-/// Wire format for forwarded events (file/stdout and HTTP POST).
-#[derive(Debug, Default, PartialEq, Clone)]
-pub enum ForwardFormat {
-    /// Template string with `{timestamp}`, `{client_ip}`, `{action}`, `{domain}` placeholders.
-    #[default]
-    Template,
-    /// Compact JSON object.
-    Json,
-    /// RFC 5424 syslog line with structured-data block (SD-ID `dgaard@32473`).
-    Syslog,
-    /// ArcSight Common Event Format v0 (`CEF:0|…`).
-    Cef,
-    /// Elasticsearch Bulk API NDJSON: `{"index":{}}\n{document}`.
-    Elasticsearch,
-}
-
-impl ForwardFormat {
-    /// HTTP `Content-Type` to use when POSTing events in this format.
-    pub fn content_type(&self) -> &'static str {
-        match self {
-            ForwardFormat::Template | ForwardFormat::Syslog | ForwardFormat::Cef => {
-                "text/plain; charset=utf-8"
-            }
-            ForwardFormat::Json => "application/json",
-            ForwardFormat::Elasticsearch => "application/x-ndjson",
-        }
-    }
-}
-
-/// Controls where enriched events are forwarded.
-///
-/// When `file` is set events are appended to that path; otherwise they go to
-/// stdout (if any forwarding option is active).  `template` is a
-/// [strftime-like] format string where the following placeholders are
-/// replaced: `{timestamp}`, `{client_ip}`, `{action}`, `{domain}`.
-/// `forward_url` sends each matching event as an HTTP POST.
-/// `filter` lists the action variants to forward; an empty list means *all*.
-#[derive(Debug)]
-pub struct ForwardingConfig {
-    /// Append formatted lines to this file instead of stdout.
-    pub file: Option<String>,
-    /// Template string used when `format = "template"`.
-    pub template: String,
-    /// HTTP(S) endpoint to POST events to (SOAR, Slack incoming webhook, …).
-    pub forward_url: Option<String>,
-    /// Action variants to forward. Empty list = forward everything.
-    /// Valid values: "Allowed", "Proxied", "Blocked", "Suspicious", "HighlySuspicious".
-    pub filter: Vec<String>,
-    /// Wire format for both file/stdout and HTTP POST output.
-    /// Valid values: "template" (default), "json", "syslog", "cef", "elasticsearch".
-    pub format: ForwardFormat,
-}
-
-fn default_template() -> String {
-    "{timestamp} {client_ip} {action} {domain}".to_string()
-}
-
-impl Default for ForwardingConfig {
-    fn default() -> Self {
-        Self {
-            file: None,
-            template: default_template(),
-            forward_url: None,
-            filter: Vec::new(),
-            format: ForwardFormat::default(),
-        }
-    }
-}
-
-/// Shared connectivity config used for the REST API, WebSocket, and MCP endpoints.
-#[derive(Debug)]
-pub struct ConnectivityConfig {
-    pub enabled: bool,
-    pub listen: String,
-    pub port: u16,
-    /// Static bearer token required on every request.
-    pub token: String,
-    pub root_path: String,
-}
-
-fn default_listen() -> String {
-    "127.0.0.1".to_string()
-}
-
-fn default_token() -> String {
-    "changeme".to_string()
-}
-
-fn default_root_path() -> String {
-    "/".to_string()
-}
-
-impl Default for ConnectivityConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            listen: default_listen(),
-            port: 0,
-            token: default_token(),
-            root_path: default_root_path(),
-        }
-    }
-}
-
-/// Configuration for the embedded web UI server.
-#[derive(Debug)]
-pub struct WebConfig {
-    pub enabled: bool,
-    pub listen: String,
-    pub port: u16,
-    pub token: String,
-    pub history_size: usize,
-    /// Minimum number of queries from a single client to the same domain
-    /// before the pair is eligible for beaconing analysis.
-    pub beaconing_min_observations: usize,
-    /// Coefficient of Variation threshold (std_dev / mean of inter-arrival
-    /// times).  Pairs with CoV below this value are flagged as potential
-    /// beacons.  Lower = stricter.
-    pub beaconing_cov_threshold: f64,
-}
-
-fn default_web_port() -> u16 {
-    8083
-}
-
-fn default_history_size() -> usize {
-    1000
-}
-
-fn default_beaconing_min_obs() -> usize {
-    5
-}
-
-fn default_beaconing_cov() -> f64 {
-    0.15
-}
-
-impl Default for WebConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            listen: default_listen(),
-            port: default_web_port(),
-            token: default_token(),
-            history_size: default_history_size(),
-            beaconing_min_observations: default_beaconing_min_obs(),
-            beaconing_cov_threshold: default_beaconing_cov(),
-        }
-    }
-}
-
-/// Optional NATS publisher + subscriber configuration. Disabled by default.
-///
-/// When `enabled`, the monitor publishes every enriched event on
-/// `publish_subject` and (if `subscribe_subject` is non-empty) subscribes to
-/// that subject and feeds incoming events into the local stats/broadcast.
-/// This lets monitors federate or relay events from another dgaard daemon
-/// without sharing a Unix socket.
-#[derive(Debug, Clone, PartialEq)]
-pub struct NatsConfig {
-    pub enabled: bool,
-    pub url: String,
-    /// Subject the monitor publishes enriched events on.
-    /// Empty string disables publishing.
-    pub publish_subject: String,
-    /// Subject the monitor subscribes to (e.g. `dgaard.events` or `dgaard.scores`).
-    /// Empty string disables subscription.
-    pub subscribe_subject: String,
-}
-
-fn default_nats_url() -> String {
-    "nats://127.0.0.1:4222".to_string()
-}
-
-fn default_nats_publish_subject() -> String {
-    "dgaard.events".to_string()
-}
-
-impl Default for NatsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            url: default_nats_url(),
-            publish_subject: default_nats_publish_subject(),
-            subscribe_subject: String::new(),
         }
     }
 }
@@ -480,6 +276,7 @@ fn clamp_non_negative_u32(n: i64, key: &str) -> u32 {
     n as u32
 }
 
+#[cfg(feature = "tui")]
 fn parse_tui(table: &toml_span::value::Table<'_>) -> Result<TuiConfig, ConfigError> {
     let mut cfg = TuiConfig::default();
     if let Some(n) = get_integer(table, "tick_ms")? {
@@ -532,6 +329,7 @@ fn parse_forwarding(table: &toml_span::value::Table<'_>) -> Result<ForwardingCon
     Ok(cfg)
 }
 
+#[cfg(feature = "rest")]
 fn parse_connectivity(
     table: &toml_span::value::Table<'_>,
 ) -> Result<ConnectivityConfig, ConfigError> {
@@ -554,6 +352,7 @@ fn parse_connectivity(
     Ok(cfg)
 }
 
+#[cfg(feature = "nats")]
 fn parse_nats(table: &toml_span::value::Table<'_>) -> Result<NatsConfig, ConfigError> {
     let mut cfg = NatsConfig::default();
     if let Some(b) = get_bool(table, "enabled")? {
@@ -571,6 +370,7 @@ fn parse_nats(table: &toml_span::value::Table<'_>) -> Result<NatsConfig, ConfigE
     Ok(cfg)
 }
 
+#[cfg(feature = "rest")]
 fn parse_web(table: &toml_span::value::Table<'_>) -> Result<WebConfig, ConfigError> {
     let mut cfg = WebConfig::default();
     if let Some(b) = get_bool(table, "enabled")? {
@@ -624,24 +424,30 @@ impl Config {
         if let Some(t) = get_table(root, "persistence")? {
             cfg.persistence = parse_persistence(t)?;
         }
+        #[cfg(feature = "tui")]
         if let Some(t) = get_table(root, "tui")? {
             cfg.tui = parse_tui(t)?;
         }
         if let Some(t) = get_table(root, "forwarding")? {
             cfg.forwarding = parse_forwarding(t)?;
         }
+        #[cfg(feature = "rest")]
         if let Some(t) = get_table(root, "api")? {
             cfg.api = parse_connectivity(t)?;
         }
+        #[cfg(feature = "rest")]
         if let Some(t) = get_table(root, "websocket")? {
             cfg.websocket = parse_connectivity(t)?;
         }
+        #[cfg(feature = "rest")]
         if let Some(t) = get_table(root, "mcp")? {
             cfg.mcp = parse_connectivity(t)?;
         }
+        #[cfg(feature = "rest")]
         if let Some(t) = get_table(root, "web")? {
             cfg.web = parse_web(t)?;
         }
+        #[cfg(feature = "nats")]
         if let Some(t) = get_table(root, "nats")? {
             cfg.nats = parse_nats(t)?;
         }
@@ -970,6 +776,7 @@ history_size = 5000
 
     // --- NatsConfig ---
 
+    #[cfg(feature = "nats")]
     #[test]
     fn test_nats_defaults_disabled() {
         let f = write_temp("[input]\n");
@@ -980,6 +787,7 @@ history_size = 5000
         assert!(cfg.nats.subscribe_subject.is_empty());
     }
 
+    #[cfg(feature = "nats")]
     #[test]
     fn test_nats_custom_values() {
         let f = write_temp(
@@ -998,6 +806,7 @@ subscribe_subject = "upstream.events"
         assert_eq!(cfg.nats.subscribe_subject, "upstream.events");
     }
 
+    #[cfg(feature = "nats")]
     #[test]
     fn test_nats_invalid_type_is_rejected() {
         let f = write_temp("[nats]\nenabled = 1\n");
