@@ -7,6 +7,7 @@ mod dnssec;
 mod filter;
 mod metrics;
 mod model;
+mod popularity;
 mod resolve;
 mod runtime;
 mod stats;
@@ -19,6 +20,7 @@ use std::{
 };
 
 use crate::cache::ResponseCache;
+use crate::popularity::PopularityTracker;
 use crate::runtime::{init_global_seed, start_with_single_worker, start_with_workers};
 use crate::stats::{StatsCounters, StatsSender};
 use crate::{config::Config, filter::engine::FilterEngine};
@@ -38,6 +40,12 @@ pub static STATS_COUNTERS: StatsCounters = StatsCounters::new();
 pub static STATS_SENDER: std::sync::OnceLock<StatsSender> = std::sync::OnceLock::new();
 /// TTL-aware LRU response cache.  Initialized at startup when `cache.enabled = true`.
 pub static RESPONSE_CACHE: std::sync::OnceLock<ResponseCache> = std::sync::OnceLock::new();
+/// Tracks per-domain popularity (decayed hit counts). Updated on every
+/// allowed cache hit; consumed by the Phase 4 snapshot writer and the
+/// Phase 5 prefetch worker. Always initialised at runtime startup so
+/// `handle_query` never has to branch on its absence.
+pub static POPULARITY_TRACKER: std::sync::LazyLock<Arc<PopularityTracker>> =
+    std::sync::LazyLock::new(|| Arc::new(PopularityTracker::new()));
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // rustls 0.23 requires an explicit process-level crypto provider.

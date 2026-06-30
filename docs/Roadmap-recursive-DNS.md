@@ -446,10 +446,10 @@ Added to `STATS_COUNTERS`:
 
 ### Phase 3 — Popularity tracking & decay
 
-- [ ] Add `PopularityTracker` (`DashMap<u64, PopularityEntry>`) as a global; xxh3_64 with **fixed seed 0**
-- [ ] Update `handle_query` to call `tracker.record_hit(domain)` on allowed cache hits (and from prefetch worker)
-- [ ] Expose `effective_score()` with integer bit-shift decay, `decay_half_life_secs` from config
-- [ ] Unit tests: saturation at 255, decay across multiple half-lives, zero after 8 periods, `record_hit` resets the clock
+- [x] Add `PopularityTracker` (`DashMap<u64, PopularityEntry>`) as a global; xxh3_64 with **fixed seed 0**
+- [x] Update `handle_query` to call `tracker.record_hit(domain)` on allowed cache hits (and from prefetch worker)
+- [x] Expose `effective_score()` with integer bit-shift decay, `decay_half_life_secs` from config
+- [x] Unit tests: saturation at 255, decay across multiple half-lives, zero after 8 periods, `record_hit` resets the clock
 
 ### Phase 4 — Disk persistence
 

@@ -147,6 +147,13 @@ pub(crate) async fn handle_query(
         let txid = [packet[0], packet[1]];
         if let Some(cached) = cache.get(&dns_packet.domain, dns_packet.qtype, txid) {
             STATS_COUNTERS.increment_cached();
+            // Popularity is recorded only here — by the time a response
+            // is in the cache, the full filter pipeline has already
+            // judged the domain "allowed", so the tracker never sees
+            // blocked names. Blocklist reloads (Phase 4) clear both
+            // RESPONSE_CACHE and POPULARITY_TRACKER together to keep
+            // this invariant valid across policy changes.
+            crate::POPULARITY_TRACKER.record_hit(&dns_packet.domain);
             socket.send_to(&cached, peer).await?;
             return Ok(());
         }
