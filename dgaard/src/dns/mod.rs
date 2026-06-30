@@ -145,7 +145,9 @@ pub(crate) async fn handle_query(
     //     A hit skips resolve_with_score, upstream forwarding, and DNSSEC entirely.
     if let Some(cache) = crate::RESPONSE_CACHE.get() {
         let txid = [packet[0], packet[1]];
-        if let Some(cached) = cache.get(&dns_packet.domain, dns_packet.qtype, txid) {
+        if let Some((cached, remaining_ttl)) =
+            cache.get_with_remaining_ttl(&dns_packet.domain, dns_packet.qtype, txid)
+        {
             STATS_COUNTERS.increment_cached();
             // Popularity is recorded only here — by the time a response
             // is in the cache, the full filter pipeline has already
@@ -154,6 +156,15 @@ pub(crate) async fn handle_query(
             // RESPONSE_CACHE and POPULARITY_TRACKER together to keep
             // this invariant valid across policy changes.
             crate::POPULARITY_TRACKER.record_hit(&dns_packet.domain);
+
+            // Phase 5: enqueue a prefetch when the entry is about to
+            // expire so the next client hit stays cached. Fire-and-
+            // forget — a full queue or absent worker is a no-op.
+            let trigger = CONFIG.load().prefetch.ttl_remaining_trigger_secs;
+            if trigger > 0 && remaining_ttl < trigger {
+                crate::prefetch::try_enqueue(&dns_packet.domain, dns_packet.qtype);
+            }
+
             socket.send_to(&cached, peer).await?;
             return Ok(());
         }

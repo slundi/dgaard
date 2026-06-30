@@ -255,6 +255,24 @@ timeout_ms = 2000
 use_0x20_randomization = true
 
 # -----------------------------------------------------------------------------
+# Background prefetch worker (Phase 5)
+# -----------------------------------------------------------------------------
+# When a cache hit is about to expire, fire-and-forget a refresh request
+# onto a bounded MPSC channel; a single worker task drains it through the
+# active resolver (forwarder or recursive) and rewrites the cache entry
+# before the client has to wait for a fresh upstream round-trip.
+[prefetch]
+enabled = true
+# Minimum gap between two consecutive prefetch resolutions.
+interval_ms = 200
+# Bounded channel depth. Excess requests are dropped (and counted in
+# prefetch_dropped_total) rather than blocking the query path.
+queue_capacity = 256
+# Fire the prefetch when remaining TTL falls below this many seconds.
+# Set to 0 to disable the trigger.
+ttl_remaining_trigger_secs = 30
+
+# -----------------------------------------------------------------------------
 # TLD Filtering
 # -----------------------------------------------------------------------------
 [tld]

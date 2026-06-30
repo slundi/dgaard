@@ -39,6 +39,21 @@ impl ResponseCache {
     /// bytes 0–1 are patched with `original_txid` so the reply matches the
     /// client's transaction ID.
     pub fn get(&self, domain: &str, qtype: u16, original_txid: [u8; 2]) -> Option<Vec<u8>> {
+        self.get_with_remaining_ttl(domain, qtype, original_txid)
+            .map(|(bytes, _)| bytes)
+    }
+
+    /// Same as [`Self::get`] but also returns the entry's remaining TTL in
+    /// seconds. Used by the Phase 5 prefetch trigger: when the remaining
+    /// TTL drops under a configured threshold, `handle_query` enqueues an
+    /// asynchronous refresh so the next client query sees a fresh answer
+    /// without paying the upstream-resolution latency.
+    pub fn get_with_remaining_ttl(
+        &self,
+        domain: &str,
+        qtype: u16,
+        original_txid: [u8; 2],
+    ) -> Option<(Vec<u8>, u32)> {
         let key = (domain.to_ascii_lowercase(), qtype);
         let now = Instant::now();
         let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -55,7 +70,14 @@ impl ResponseCache {
                 response[0] = original_txid[0];
                 response[1] = original_txid[1];
             }
-            response
+            // saturating_duration_since pegs at zero on the lock-race
+            // where the entry expired between the peek and here.
+            let remaining = entry
+                .expires_at
+                .saturating_duration_since(now)
+                .as_secs()
+                .min(u64::from(u32::MAX)) as u32;
+            (response, remaining)
         })
     }
 
@@ -178,6 +200,33 @@ mod tests {
 
         assert!(cache.get("example.com", 1, txid(1)).is_none());
         assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn get_with_remaining_ttl_returns_seconds_left() {
+        // Insert with 60s TTL; immediately checking the entry must
+        // report a remaining TTL very close to 60. We allow a small
+        // slack to absorb cross-platform timer wobble in CI runners.
+        let cache = ResponseCache::new(100);
+        let r = response_with_txid(1);
+        cache.insert("example.com", 1, &r, 60, 0);
+        let (_, remaining) = cache
+            .get_with_remaining_ttl("example.com", 1, txid(1))
+            .unwrap();
+        assert!(
+            (58..=60).contains(&remaining),
+            "remaining TTL out of expected range: {remaining}"
+        );
+    }
+
+    #[test]
+    fn get_with_remaining_ttl_miss_returns_none() {
+        let cache = ResponseCache::new(100);
+        assert!(
+            cache
+                .get_with_remaining_ttl("nope.com", 1, txid(1))
+                .is_none()
+        );
     }
 
     #[test]

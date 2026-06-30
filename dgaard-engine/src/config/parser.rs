@@ -1047,6 +1047,26 @@ fn parse_cache(table: &toml_span::value::Table<'_>) -> Result<CacheConfig, Confi
     Ok(cfg)
 }
 
+/// Parse `[prefetch]` section.
+fn parse_prefetch(table: &toml_span::value::Table<'_>) -> Result<PrefetchConfig, ConfigError> {
+    let mut cfg = PrefetchConfig::default();
+
+    if let Some(b) = get_bool(table, "enabled")? {
+        cfg.enabled = b;
+    }
+    if let Some(n) = get_typed_integer::<u64>(table, "interval_ms")? {
+        cfg.interval_ms = n;
+    }
+    if let Some(n) = get_typed_integer::<usize>(table, "queue_capacity")? {
+        cfg.queue_capacity = n;
+    }
+    if let Some(n) = get_typed_integer::<u32>(table, "ttl_remaining_trigger_secs")? {
+        cfg.ttl_remaining_trigger_secs = n;
+    }
+
+    Ok(cfg)
+}
+
 /// Parse `[memory]` section.
 fn parse_memory(table: &toml_span::value::Table<'_>) -> Result<MemoryConfig, ConfigError> {
     let mut cfg = MemoryConfig::default();
@@ -1134,6 +1154,9 @@ impl Config {
         }
         if let Some(t) = get_table(root, "memory")? {
             cfg.memory = parse_memory(t)?;
+        }
+        if let Some(t) = get_table(root, "prefetch")? {
+            cfg.prefetch = parse_prefetch(t)?;
         }
 
         Ok(cfg)

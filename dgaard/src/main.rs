@@ -8,6 +8,7 @@ mod filter;
 mod metrics;
 mod model;
 mod popularity;
+mod prefetch;
 mod resolve;
 mod runtime;
 mod stats;

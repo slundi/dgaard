@@ -462,11 +462,11 @@ Added to `STATS_COUNTERS`:
 
 ### Phase 5 — Prefetch worker
 
-- [ ] Bounded `mpsc::channel(queue_capacity)` for `(String, u16)` prefetch requests
-- [ ] `start_prefetch_worker()` task: rate-limited by `interval_ms`, calls `resolver.resolve(&query)`
-- [ ] Trigger in `handle_query`: `try_send` when remaining TTL < `ttl_remaining_trigger_secs`
-- [ ] `prefetch_dropped_total`, `prefetch_completed_total`, `prefetch_failed_total` metrics
-- [ ] Integration test: high-hit-count domain gets prefetched before TTL expires
+- [x] Bounded `mpsc::channel(queue_capacity)` for `(String, u16)` prefetch requests
+- [x] `start_prefetch_worker()` task: rate-limited by `interval_ms`, calls `resolver.resolve(&query)`
+- [x] Trigger in `handle_query`: `try_send` when remaining TTL < `ttl_remaining_trigger_secs`
+- [x] `prefetch_dropped_total`, `prefetch_completed_total`, `prefetch_failed_total` metrics
+- [x] Integration test: high-hit-count domain gets prefetched before TTL expires
 
 ### Phase 6 — DNSSEC in recursive mode (follow-on)
 

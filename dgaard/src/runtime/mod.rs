@@ -201,6 +201,7 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
         }
 
         spawn_popularity_persistence(shutdown_rx.clone());
+        spawn_prefetch_worker(shutdown_rx.clone());
 
         let tokio_socket = get_socket(&CONFIG.load().server.listen_addr)?;
 
@@ -263,6 +264,7 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
         }
 
         spawn_popularity_persistence(shutdown_rx.clone());
+        spawn_prefetch_worker(shutdown_rx.clone());
 
         let semaphore = Arc::new(Semaphore::new(
             CONFIG.load().server.runtime.max_concurrent_queries,
@@ -544,6 +546,39 @@ async fn reload_config_from_path(config_path: &std::path::Path) -> Result<(), St
         }
         Err(e) => Err(format!("Failed to reload config: {}", e)),
     }
+}
+
+/// Phase 5 wiring: bring up the prefetch worker and publish its sender
+/// so `handle_query` can fire-and-forget refresh requests on near-expiry
+/// cache hits. Disabled (no spawn, sender never set) when
+/// `[prefetch] enabled = false`, when there is no resolver installed, or
+/// when the configured queue capacity / interval would degenerate.
+fn spawn_prefetch_worker(shutdown_rx: watch::Receiver<bool>) {
+    let cfg = CONFIG.load();
+    let pf = &cfg.prefetch;
+    if !pf.enabled || pf.queue_capacity == 0 {
+        return;
+    }
+    let Some(resolver) = crate::dns::resolver::UPSTREAM_RESOLVER.get().cloned() else {
+        eprintln!("Prefetch: resolver not installed — worker disabled");
+        return;
+    };
+
+    let (tx, rx) = tokio::sync::mpsc::channel(pf.queue_capacity);
+    crate::prefetch::init_global_sender(tx);
+
+    let worker_cfg = crate::prefetch::PrefetchWorkerCfg {
+        interval_ms: pf.interval_ms,
+        cache_ttl_override: cfg.cache.ttl_override,
+        low_ttl_floor: cfg.security.low_ttl.min_ttl_floor_secs.unwrap_or(0),
+    };
+
+    tokio::spawn(crate::prefetch::run_prefetch_worker(
+        rx,
+        resolver,
+        worker_cfg,
+        shutdown_rx,
+    ));
 }
 
 /// Phase 4 wiring: restore the popularity snapshot from disk (if any)

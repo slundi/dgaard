@@ -152,6 +152,11 @@ pub struct StatsCounters {
     pub recursive_depth_cap_hit: AtomicU64,
     pub recursive_query_cap_hit: AtomicU64,
     pub recursive_bailiwick_reject: AtomicU64,
+
+    // Phase 5 — prefetch worker observability.
+    pub prefetch_dropped: AtomicU64,
+    pub prefetch_completed: AtomicU64,
+    pub prefetch_failed: AtomicU64,
 }
 
 impl StatsCounters {
@@ -174,7 +179,30 @@ impl StatsCounters {
             recursive_depth_cap_hit: AtomicU64::new(0),
             recursive_query_cap_hit: AtomicU64::new(0),
             recursive_bailiwick_reject: AtomicU64::new(0),
+
+            prefetch_dropped: AtomicU64::new(0),
+            prefetch_completed: AtomicU64::new(0),
+            prefetch_failed: AtomicU64::new(0),
         }
+    }
+
+    pub fn increment_prefetch_dropped(&self) {
+        self.prefetch_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn increment_prefetch_completed(&self) {
+        self.prefetch_completed.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn increment_prefetch_failed(&self) {
+        self.prefetch_failed.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn get_prefetch_dropped(&self) -> u64 {
+        self.prefetch_dropped.load(Ordering::Relaxed)
+    }
+    pub fn get_prefetch_completed(&self) -> u64 {
+        self.prefetch_completed.load(Ordering::Relaxed)
+    }
+    pub fn get_prefetch_failed(&self) -> u64 {
+        self.prefetch_failed.load(Ordering::Relaxed)
     }
 
     pub fn increment_recursive_queries(&self) {

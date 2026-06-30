@@ -1322,6 +1322,50 @@ impl Default for MemoryConfig {
 }
 
 // ---------------------------------------------------------------------------
+// [prefetch]
+// ---------------------------------------------------------------------------
+
+/// Background prefetch worker tuning (Phase 5).
+///
+/// On a cache hit whose remaining TTL falls below
+/// `ttl_remaining_trigger_secs`, `handle_query` non-blockingly enqueues a
+/// `(domain, qtype)` request onto a bounded MPSC channel. A single worker
+/// task drains that channel at most once per `interval_ms` and refreshes
+/// the cache via the active [`UpstreamResolver`].
+///
+/// The worker shares the configured resolver — recursive in recursive
+/// mode, forwarder in forwarder mode — so a prefetch behaves identically
+/// to a real client query for the purpose of upstream load and DNSSEC.
+#[derive(Debug, PartialEq, Clone)]
+pub struct PrefetchConfig {
+    /// Master switch. When `false` the worker is never spawned and the
+    /// `try_send` trigger in `handle_query` is skipped entirely.
+    pub enabled: bool,
+    /// Minimum gap between two consecutive prefetch resolutions (ms).
+    /// Smooths the CPU/network spike when a burst of cache entries near
+    /// their TTL ceiling on the same tick.
+    pub interval_ms: u64,
+    /// Bounded MPSC channel depth for `(domain, qtype)` requests. Excess
+    /// requests are dropped (and counted in `prefetch_dropped_total`)
+    /// rather than blocking the query path.
+    pub queue_capacity: usize,
+    /// Fire a prefetch when a cache hit's remaining TTL is shorter than
+    /// this threshold (seconds). 0 disables the trigger.
+    pub ttl_remaining_trigger_secs: u32,
+}
+
+impl Default for PrefetchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_ms: 200,
+            queue_capacity: 256,
+            ttl_remaining_trigger_secs: 30,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Top-level Config
 // ---------------------------------------------------------------------------
 
@@ -1355,6 +1399,8 @@ pub struct Config {
     pub cache: CacheConfig,
     /// In-process memory structure tuning.
     pub memory: MemoryConfig,
+    /// Background prefetch worker.
+    pub prefetch: PrefetchConfig,
 }
 
 // ---------------------------------------------------------------------------

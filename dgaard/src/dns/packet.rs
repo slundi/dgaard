@@ -1,8 +1,8 @@
 use std::net::IpAddr;
 
-use hickory_resolver::proto::op::{Message, MessageType, ResponseCode};
+use hickory_resolver::proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_resolver::proto::rr::rdata::{A, AAAA};
-use hickory_resolver::proto::rr::{RData, Record};
+use hickory_resolver::proto::rr::{DNSClass, Name, RData, Record, RecordType};
 
 pub struct DnsPacket {
     pub message: Message,
@@ -37,6 +37,39 @@ fn encode_response(msg: Message) -> Vec<u8> {
 }
 
 impl DnsPacket {
+    /// Build a synthetic client-style query for `domain` and `qtype`.
+    ///
+    /// Used by the Phase 5 prefetch worker, which needs to feed an
+    /// [`UpstreamResolver`] but has no incoming wire packet to parse —
+    /// only the cache key (`(domain, qtype)`). The resulting `DnsPacket`
+    /// matches what a stub resolver would send: a single standard query
+    /// in class IN with RD=1 (forwarder mode uses RD when it forwards;
+    /// recursive mode ignores RD and walks the chain itself).
+    ///
+    /// Returns `None` if `domain` cannot be parsed as a DNS name. The
+    /// prefetch worker drops such requests silently — they can only
+    /// happen if a cache entry was inserted with a malformed key, which
+    /// today is impossible (cache keys are derived from validated
+    /// incoming packets).
+    pub fn new_query(domain: &str, qtype: u16) -> Option<Self> {
+        let name = Name::parse(domain, Some(&Name::root())).ok()?;
+        let mut message = Message::query();
+        message.metadata.op_code = OpCode::Query;
+        message.metadata.recursion_desired = true;
+
+        let q = Query::query(name, RecordType::from(qtype))
+            .set_query_class(DNSClass::IN)
+            .clone();
+        message.add_query(q);
+
+        Some(DnsPacket {
+            message,
+            domain: domain.to_ascii_lowercase(),
+            qtype,
+            qclass: u16::from(DNSClass::IN),
+        })
+    }
+
     /// Parses raw UDP bytes into a DNS Message and extracts the query domain
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         let message = Message::from_vec(bytes).ok()?;
