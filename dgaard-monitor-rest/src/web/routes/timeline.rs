@@ -48,10 +48,10 @@ pub async fn timelines_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dgaard_monitor_core::state::AppState;
-    use dgaard_monitor_core::util::EventRecord;
     use crate::web::state::WebState;
     use axum::extract::State;
+    use dgaard_monitor_core::state::AppState;
+    use dgaard_monitor_core::util::EventRecord;
     use std::time::Duration;
 
     fn make_web_state() -> Arc<WebState> {

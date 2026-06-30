@@ -12,7 +12,7 @@ use axum::{
 };
 use tokio::sync::{broadcast::error::RecvError, watch};
 
-use crate::config::ConnectivityConfig;
+use crate::config::{ServerConfig, WebSocketConfig};
 use dgaard_monitor_core::state::AppState;
 use dgaard_monitor_core::util::event_to_record;
 
@@ -123,16 +123,17 @@ fn build_router(state: WsState, root_path: &str) -> Router {
 /// Only called when `config.enabled` is true.
 /// Returns when `shutdown` is signalled.
 pub async fn run(
-    config: ConnectivityConfig,
+    server: ServerConfig,
+    config: WebSocketConfig,
     state: Arc<AppState>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let ws_state = WsState {
         app: state,
-        token: config.token.clone(),
+        token: server.token,
     };
     let router = build_router(ws_state, &config.root_path);
-    let addr = format!("{}:{}", config.listen, config.port);
+    let addr = format!("{}:{}", server.listen, config.port);
 
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,

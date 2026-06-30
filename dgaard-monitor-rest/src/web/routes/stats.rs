@@ -6,8 +6,8 @@ use axum::Json;
 use axum::extract::State;
 use serde::Serialize;
 
-use dgaard_monitor_core::protocol::StatAction;
 use crate::web::state::WebState;
+use dgaard_monitor_core::protocol::StatAction;
 
 #[derive(Serialize)]
 pub struct DomainCount {
@@ -138,8 +138,8 @@ pub async fn stats_handler(State(web): State<Arc<WebState>>) -> Json<StatsRespon
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dgaard_monitor_core::state::AppState;
     use crate::web::state::WebState;
+    use dgaard_monitor_core::state::AppState;
     use std::time::Duration;
 
     fn make_web_state() -> Arc<WebState> {

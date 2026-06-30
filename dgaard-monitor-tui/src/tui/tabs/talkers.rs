@@ -29,8 +29,8 @@
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
-use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
 use crate::tui::tabs::queries::{format_ip, format_timestamp};
+use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 

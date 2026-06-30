@@ -18,7 +18,7 @@ use tokio::sync::{broadcast, watch};
 
 use constant_time_eq::constant_time_eq;
 
-use crate::config::WebConfig;
+use crate::config::{ServerConfig, WebConfig};
 use dgaard_monitor_core::state::AppState;
 use dgaard_monitor_core::util::{event_to_record, flags_of};
 pub use state::{ClientStats, WebState};
@@ -228,6 +228,7 @@ async fn run_ingestor(app: Arc<AppState>, web: Arc<WebState>) {
 pub async fn start(
     app: Arc<AppState>,
     web: Arc<WebState>,
+    server: ServerConfig,
     config: WebConfig,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -237,7 +238,7 @@ pub async fn start(
         tokio::spawn(async move { run_ingestor(app, web).await })
     };
 
-    let addr = format!("{}:{}", config.listen, config.port);
+    let addr = format!("{}:{}", server.listen, config.port);
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
@@ -249,7 +250,7 @@ pub async fn start(
 
     println!("Web UI listening on http://{addr}");
 
-    let router = build_router(Arc::clone(&web), config.token);
+    let router = build_router(Arc::clone(&web), server.token);
     let serve = axum::serve(listener, router).with_graceful_shutdown(async move {
         let _ = shutdown.changed().await;
     });

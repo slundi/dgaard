@@ -56,9 +56,9 @@ fn generate_ticket() -> Result<String, getrandom::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dgaard_monitor_core::state::AppState;
     use axum::body::Body;
     use axum::http::Request;
+    use dgaard_monitor_core::state::AppState;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 

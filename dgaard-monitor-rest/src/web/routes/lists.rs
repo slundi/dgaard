@@ -96,9 +96,9 @@ pub async fn lists_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dgaard_monitor_core::state::AppState;
     use crate::web::state::WebState;
     use axum::extract::State;
+    use dgaard_monitor_core::state::AppState;
     use std::time::Duration;
 
     async fn make_web_state() -> Arc<WebState> {

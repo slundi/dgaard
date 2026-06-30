@@ -6,7 +6,7 @@
 lifetimes into a single crate (~12k LoC of Rust):
 
 | Sub-system     | LoC   | Concern                                      |
-|----------------|-------|----------------------------------------------|
+| -------------- | ----- | -------------------------------------------- |
 | ingest+storage | ~1.0k | daemon work — UDS socket, host index, SQLite |
 | TUI            | ~3.6k | ratatui terminal UI                          |
 | web (axum)     | ~2.4k | REST + WebSocket + embedded SPA              |
@@ -89,10 +89,10 @@ members = [
   "dgaard-daemon",
   "dgaard-engine",
   "dgaard-monitor",
-  "dgaard-monitor-core",   # NEW
-  "dgaard-monitor-rest",   # NEW
-  "dgaard-monitor-nats",   # NEW
-  "dgaard-monitor-tui",    # NEW
+  "dgaard-monitor-core", # NEW
+  "dgaard-monitor-rest", # NEW
+  "dgaard-monitor-nats", # NEW
+  "dgaard-monitor-tui", # NEW
   "dgaard-rest",
   "list-stats",
 ]
@@ -108,7 +108,7 @@ Add path entries:
 dgaard-monitor-core = { path = "dgaard-monitor-core" }
 dgaard-monitor-rest = { path = "dgaard-monitor-rest" }
 dgaard-monitor-nats = { path = "dgaard-monitor-nats" }
-dgaard-monitor-tui  = { path = "dgaard-monitor-tui"  }
+dgaard-monitor-tui = { path = "dgaard-monitor-tui" }
 ```
 
 Feature gates in `dgaard-monitor/Cargo.toml`:
@@ -116,35 +116,35 @@ Feature gates in `dgaard-monitor/Cargo.toml`:
 ```toml
 [features]
 default = ["tui", "rest"]
-tui  = ["dep:dgaard-monitor-tui"]
+tui = ["dep:dgaard-monitor-tui"]
 rest = ["dep:dgaard-monitor-rest"]
 nats = ["dep:dgaard-monitor-nats"]
 ```
 
 ## File move map
 
-| From `dgaard-monitor/src/…`                          | To                                                           |
-|------------------------------------------------------|--------------------------------------------------------------|
-| `protocol.rs`                                        | `dgaard-monitor-core/src/protocol.rs`                        |
-| `state.rs`                                           | `dgaard-monitor-core/src/state.rs`                           |
-| `db.rs`                                              | `dgaard-monitor-core/src/db.rs`                              |
-| `forwarding.rs`                                      | `dgaard-monitor-core/src/forwarding.rs`                      |
-| `error.rs`, `util.rs`                                | `dgaard-monitor-core/src/`                                   |
-| `io/{mod,socket,watcher,index}.rs`                   | `dgaard-monitor-core/src/io/`                                |
-| `config.rs` → `CoreConfig`                           | `dgaard-monitor-core/src/config.rs`                          |
-| `config.rs` → `TuiConfig`                            | `dgaard-monitor-tui/src/config.rs`                           |
-| `config.rs` → `WebConfig`+`ConnectivityConfig` merged → `RestConfig` | `dgaard-monitor-rest/src/config.rs`          |
-| `config.rs` → `NatsConfig`                           | `dgaard-monitor-nats/src/config.rs`                          |
-| `web/{mod,state,rdns}.rs`                            | `dgaard-monitor-rest/src/`                                   |
-| `web/routes/*.rs`                                    | `dgaard-monitor-rest/src/routes/`                            |
-| `web/routes/ws*.rs` + `connectivity/websocket.rs`    | `dgaard-monitor-rest/src/ws.rs` (collapse duplicates)        |
-| `connectivity/api.rs`                                | `dgaard-monitor-rest/src/` (it's HTTP, not NATS)             |
-| `connectivity/mcp.rs`                                | `dgaard-monitor-rest/src/mcp/server.rs`                      |
-| `connectivity/mcp_token_auth_provider.rs`            | `dgaard-monitor-rest/src/mcp/auth.rs`                        |
-| `connectivity/nats.rs`                               | `dgaard-monitor-nats/src/lib.rs`                             |
-| `tui/**`                                             | `dgaard-monitor-tui/src/`                                    |
-| `assets/`                                            | `dgaard-monitor-rest/assets/`                                |
-| `cli.rs`, `main.rs`, `headless.rs`                   | stay in `dgaard-monitor/`                                    |
+| From `dgaard-monitor/src/…`                                          | To                                                    |
+| -------------------------------------------------------------------- | ----------------------------------------------------- |
+| `protocol.rs`                                                        | `dgaard-monitor-core/src/protocol.rs`                 |
+| `state.rs`                                                           | `dgaard-monitor-core/src/state.rs`                    |
+| `db.rs`                                                              | `dgaard-monitor-core/src/db.rs`                       |
+| `forwarding.rs`                                                      | `dgaard-monitor-core/src/forwarding.rs`               |
+| `error.rs`, `util.rs`                                                | `dgaard-monitor-core/src/`                            |
+| `io/{mod,socket,watcher,index}.rs`                                   | `dgaard-monitor-core/src/io/`                         |
+| `config.rs` → `CoreConfig`                                           | `dgaard-monitor-core/src/config.rs`                   |
+| `config.rs` → `TuiConfig`                                            | `dgaard-monitor-tui/src/config.rs`                    |
+| `config.rs` → `WebConfig`+`ConnectivityConfig` merged → `RestConfig` | `dgaard-monitor-rest/src/config.rs`                   |
+| `config.rs` → `NatsConfig`                                           | `dgaard-monitor-nats/src/config.rs`                   |
+| `web/{mod,state,rdns}.rs`                                            | `dgaard-monitor-rest/src/`                            |
+| `web/routes/*.rs`                                                    | `dgaard-monitor-rest/src/routes/`                     |
+| `web/routes/ws*.rs` + `connectivity/websocket.rs`                    | `dgaard-monitor-rest/src/ws.rs` (collapse duplicates) |
+| `connectivity/api.rs`                                                | `dgaard-monitor-rest/src/` (it's HTTP, not NATS)      |
+| `connectivity/mcp.rs`                                                | `dgaard-monitor-rest/src/mcp/server.rs`               |
+| `connectivity/mcp_token_auth_provider.rs`                            | `dgaard-monitor-rest/src/mcp/auth.rs`                 |
+| `connectivity/nats.rs`                                               | `dgaard-monitor-nats/src/lib.rs`                      |
+| `tui/**`                                                             | `dgaard-monitor-tui/src/`                             |
+| `assets/`                                                            | `dgaard-monitor-rest/assets/`                         |
+| `cli.rs`, `main.rs`, `headless.rs`                                   | stay in `dgaard-monitor/`                             |
 
 ## Binary wire-up sketch
 

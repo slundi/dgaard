@@ -29,17 +29,7 @@ async fn main() {
                 std::process::exit(1);
             }
         },
-        None => config::Config {
-            input: config::InputConfig::default(),
-            persistence: config::PersistenceConfig::default(),
-            tui: config::TuiConfig::default(),
-            forwarding: config::ForwardingConfig::default(),
-            api: config::ConnectivityConfig::default(),
-            websocket: config::ConnectivityConfig::default(),
-            mcp: config::ConnectivityConfig::default(),
-            web: config::WebConfig::default(),
-            nats: config::NatsConfig::default(),
-        },
+        None => config::Config::default(),
     };
 
     // CLI flags override config for the two input paths.
@@ -60,6 +50,7 @@ async fn main() {
         persistence: persistence_cfg,
         tui: tui_cfg,
         forwarding: fwd_cfg,
+        server: server_cfg,
         api: api_cfg,
         websocket: ws_cfg,
         mcp: mcp_cfg,
@@ -69,7 +60,7 @@ async fn main() {
     #[cfg(not(feature = "tui"))]
     let _ = tui_cfg;
     #[cfg(not(feature = "rest"))]
-    let _ = (api_cfg, ws_cfg, mcp_cfg, web_cfg);
+    let _ = (server_cfg, api_cfg, ws_cfg, mcp_cfg, web_cfg);
     #[cfg(not(feature = "nats"))]
     let _ = nats_cfg;
 
@@ -224,7 +215,10 @@ async fn main() {
         let db_clone = db.clone();
         let rx = shutdown_rx.clone();
         handles.push(tokio::spawn(async move {
-            rest::serve(api_cfg, ws_cfg, mcp_cfg, web_cfg, db_clone, s, rx).await;
+            rest::serve(
+                server_cfg, api_cfg, ws_cfg, mcp_cfg, web_cfg, db_clone, s, rx,
+            )
+            .await;
         }));
     }
 

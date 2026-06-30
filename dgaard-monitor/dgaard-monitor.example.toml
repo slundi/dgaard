@@ -56,53 +56,49 @@ template = "{timestamp} {client_ip} {action} {domain}"
 filter = ["Blocked", "Suspicious", "HighlySuspicious"]
 
 # ---------------------------------------------------------------------------
-# Connectivity — REST API
+# Server — shared listener settings inherited by every REST module
+# ---------------------------------------------------------------------------
+# The four modules below (api/websocket/mcp/web) each bind their own port
+# but share the listen address and bearer token from this section.
+[server]
+listen = "127.0.0.1"
+token = "changeme"
+
+# ---------------------------------------------------------------------------
+# REST API
 # ---------------------------------------------------------------------------
 [api]
 enabled = false
-listen = "127.0.0.1"
 port = 8080
-token = "changeme"
-root_path = "/api"
+root_path = "/api/v1"
 
 # ---------------------------------------------------------------------------
-# Connectivity — WebSocket
+# WebSocket — live event stream
 # ---------------------------------------------------------------------------
 [websocket]
 enabled = false
-listen = "127.0.0.1"
 port = 8081
-token = "changeme"
 root_path = "/ws"
 
 # ---------------------------------------------------------------------------
-# Connectivity — MCP (Model Context Protocol)
+# MCP — Model Context Protocol endpoint
 # ---------------------------------------------------------------------------
 [mcp]
 enabled = false
-listen = "127.0.0.1"
 port = 8082
-token = "changeme"
 root_path = "/mcp"
 
 # ---------------------------------------------------------------------------
-# Connectivity — Web UI (embedded axum server)
+# Web UI — embedded SPA (mounted at "/")
 # ---------------------------------------------------------------------------
 [web]
 enabled = false
-listen = "127.0.0.1"
 port = 8083
-
-# Static bearer token required on every /api/v1/* and /ws request.
-token = "changeme"
 
 # Maximum number of DNS events kept in the in-memory rolling log.
 history_size = 1000
 
-# ---------------------------------------------------------------------------
-# Beaconing detection (GET /api/v1/beaconing)
-# ---------------------------------------------------------------------------
-
+# --- Beaconing detection (GET /api/v1/beaconing) ---
 # Minimum number of queries from a single client to the same domain before
 # the pair is eligible for beaconing analysis.
 beaconing_min_observations = 5

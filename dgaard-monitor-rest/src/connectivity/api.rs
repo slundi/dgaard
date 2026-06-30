@@ -10,10 +10,12 @@ use axum::{
 use serde::Deserialize;
 use tokio::sync::watch;
 
-use crate::config::ConnectivityConfig;
+use crate::config::{ApiConfig, ServerConfig};
 use dgaard_monitor_core::protocol::StatBlockReason;
 use dgaard_monitor_core::state::AppState;
-use dgaard_monitor_core::util::{EventRecord, action_name, event_to_record, flags_of, parse_filter_ip};
+use dgaard_monitor_core::util::{
+    EventRecord, action_name, event_to_record, flags_of, parse_filter_ip,
+};
 
 // ── Query params ───────────────────────────────────────────────────────────────
 
@@ -184,16 +186,17 @@ fn build_router(state: ApiState, root_path: &str) -> Router {
 /// Only called when `config.enabled` is true.
 /// Returns when `shutdown` is signalled.
 pub async fn run(
-    config: ConnectivityConfig,
+    server: ServerConfig,
+    config: ApiConfig,
     state: Arc<AppState>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let api_state = ApiState {
         app: state,
-        token: config.token.clone(),
+        token: server.token,
     };
     let router = build_router(api_state, &config.root_path);
-    let addr = format!("{}:{}", config.listen, config.port);
+    let addr = format!("{}:{}", server.listen, config.port);
 
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
@@ -217,12 +220,12 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
-    use dgaard_monitor_core::state::AppState;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
+    use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
+    use dgaard_monitor_core::state::AppState;
     use http_body_util::BodyExt;
     use std::time::Duration;
     use tower::ServiceExt;

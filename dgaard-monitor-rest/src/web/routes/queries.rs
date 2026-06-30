@@ -8,8 +8,8 @@ use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use dgaard_monitor_core::util::EventRecord;
 use crate::web::state::WebState;
+use dgaard_monitor_core::util::EventRecord;
 
 #[derive(Serialize)]
 struct QueryResponse {
@@ -148,9 +148,9 @@ pub async fn queries_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::web::state::WebState;
     use dgaard_monitor_core::state::AppState;
     use dgaard_monitor_core::util::EventRecord;
-    use crate::web::state::WebState;
     use std::time::Duration;
 
     fn make_web_state() -> Arc<WebState> {

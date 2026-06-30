@@ -31,10 +31,10 @@
 use std::collections::{HashSet, VecDeque};
 use std::time::Instant;
 
-use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
 use crate::tui::tabs::queries::{flags_label, format_ip, format_timestamp};
 use crate::tui::tabs::talkers::flag_name;
 use crate::tui::util::DomainColor;
+use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 

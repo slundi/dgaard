@@ -1,5 +1,17 @@
 [workspace]
-members = ["adblockptimize", "dgaard", "dgaard-daemon", "dgaard-engine", "dgaard-monitor", "dgaard-monitor-core", "dgaard-monitor-nats", "dgaard-monitor-rest", "dgaard-monitor-tui", "dgaard-rest", "list-stats"]
+members = [
+  "adblockptimize",
+  "dgaard",
+  "dgaard-daemon",
+  "dgaard-engine",
+  "dgaard-monitor",
+  "dgaard-monitor-core",
+  "dgaard-monitor-nats",
+  "dgaard-monitor-rest",
+  "dgaard-monitor-tui",
+  "dgaard-rest",
+  "list-stats",
+]
 resolver = "2"
 
 [profile.release]
@@ -58,7 +70,7 @@ dgaard-engine = { path = "dgaard-engine" }
 dgaard-monitor-core = { path = "dgaard-monitor-core" }
 dgaard-monitor-nats = { path = "dgaard-monitor-nats" }
 dgaard-monitor-rest = { path = "dgaard-monitor-rest" }
-dgaard-monitor-tui  = { path = "dgaard-monitor-tui"  }
+dgaard-monitor-tui = { path = "dgaard-monitor-tui" }
 
 # ── dgaard ───────────────────────────────────────────────────────────────────
 arc-swap = "1.9.0"

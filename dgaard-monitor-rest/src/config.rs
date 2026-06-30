@@ -1,12 +1,15 @@
-/// Shared connectivity config used for the REST API, WebSocket, and MCP endpoints.
-#[derive(Debug)]
-pub struct ConnectivityConfig {
-    pub enabled: bool,
+// REST umbrella configuration: one shared listener address + token, plus a
+// per-module section that toggles each axum-mounted endpoint independently.
+// Each module currently binds its own port; merging onto a single listener
+// is a follow-up (roadmap step 6).
+
+/// Shared connectivity settings inherited by every REST module
+/// (`[api]`, `[websocket]`, `[mcp]`, `[web]`).
+#[derive(Debug, Clone)]
+pub struct ServerConfig {
     pub listen: String,
-    pub port: u16,
-    /// Static bearer token required on every request.
+    /// Static bearer token required on every authenticated request.
     pub token: String,
-    pub root_path: String,
 }
 
 fn default_listen() -> String {
@@ -17,29 +20,74 @@ fn default_token() -> String {
     "changeme".to_string()
 }
 
-fn default_root_path() -> String {
-    "/".to_string()
-}
-
-impl Default for ConnectivityConfig {
+impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             listen: default_listen(),
-            port: 0,
             token: default_token(),
-            root_path: default_root_path(),
         }
     }
 }
 
-/// Configuration for the embedded web UI server.
-#[derive(Debug)]
+/// `[api]` — REST endpoints.
+#[derive(Debug, Clone)]
+pub struct ApiConfig {
+    pub enabled: bool,
+    pub port: u16,
+    pub root_path: String,
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: 8080,
+            root_path: "/api/v1".to_string(),
+        }
+    }
+}
+
+/// `[websocket]` — live event stream.
+#[derive(Debug, Clone)]
+pub struct WebSocketConfig {
+    pub enabled: bool,
+    pub port: u16,
+    pub root_path: String,
+}
+
+impl Default for WebSocketConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: 8081,
+            root_path: "/ws".to_string(),
+        }
+    }
+}
+
+/// `[mcp]` — Model Context Protocol endpoint.
+#[derive(Debug, Clone)]
+pub struct McpConfig {
+    pub enabled: bool,
+    pub port: u16,
+    pub root_path: String,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: 8082,
+            root_path: "/mcp".to_string(),
+        }
+    }
+}
+
+/// `[web]` — embedded SPA + supporting endpoints. Mounted at `/`.
+#[derive(Debug, Clone)]
 pub struct WebConfig {
     pub enabled: bool,
-    pub listen: String,
     pub port: u16,
-    pub token: String,
     pub history_size: usize,
     /// Minimum number of queries from a single client to the same domain
     /// before the pair is eligible for beaconing analysis.
@@ -50,32 +98,14 @@ pub struct WebConfig {
     pub beaconing_cov_threshold: f64,
 }
 
-fn default_web_port() -> u16 {
-    8083
-}
-
-fn default_history_size() -> usize {
-    1000
-}
-
-fn default_beaconing_min_obs() -> usize {
-    5
-}
-
-fn default_beaconing_cov() -> f64 {
-    0.15
-}
-
 impl Default for WebConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            listen: default_listen(),
-            port: default_web_port(),
-            token: default_token(),
-            history_size: default_history_size(),
-            beaconing_min_observations: default_beaconing_min_obs(),
-            beaconing_cov_threshold: default_beaconing_cov(),
+            port: 8083,
+            history_size: 1000,
+            beaconing_min_observations: 5,
+            beaconing_cov_threshold: 0.15,
         }
     }
 }

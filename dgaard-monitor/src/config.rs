@@ -14,10 +14,21 @@ pub use dgaard_monitor_tui::config::TuiConfig;
 pub struct TuiConfig;
 
 #[cfg(feature = "rest")]
-pub use dgaard_monitor_rest::config::{ConnectivityConfig, WebConfig};
+pub use dgaard_monitor_rest::config::{
+    ApiConfig, McpConfig, ServerConfig, WebConfig, WebSocketConfig,
+};
 #[cfg(not(feature = "rest"))]
 #[derive(Debug, Default)]
-pub struct ConnectivityConfig;
+pub struct ServerConfig;
+#[cfg(not(feature = "rest"))]
+#[derive(Debug, Default)]
+pub struct ApiConfig;
+#[cfg(not(feature = "rest"))]
+#[derive(Debug, Default)]
+pub struct WebSocketConfig;
+#[cfg(not(feature = "rest"))]
+#[derive(Debug, Default)]
+pub struct McpConfig;
 #[cfg(not(feature = "rest"))]
 #[derive(Debug, Default)]
 pub struct WebConfig;
@@ -48,9 +59,10 @@ pub struct Config {
     pub persistence: PersistenceConfig,
     pub tui: TuiConfig,
     pub forwarding: ForwardingConfig,
-    pub api: ConnectivityConfig,
-    pub websocket: ConnectivityConfig,
-    pub mcp: ConnectivityConfig,
+    pub server: ServerConfig,
+    pub api: ApiConfig,
+    pub websocket: WebSocketConfig,
+    pub mcp: McpConfig,
     pub web: WebConfig,
     pub nats: NatsConfig,
 }
@@ -330,21 +342,55 @@ fn parse_forwarding(table: &toml_span::value::Table<'_>) -> Result<ForwardingCon
 }
 
 #[cfg(feature = "rest")]
-fn parse_connectivity(
-    table: &toml_span::value::Table<'_>,
-) -> Result<ConnectivityConfig, ConfigError> {
-    let mut cfg = ConnectivityConfig::default();
-    if let Some(b) = get_bool(table, "enabled")? {
-        cfg.enabled = b;
-    }
+fn parse_server(table: &toml_span::value::Table<'_>) -> Result<ServerConfig, ConfigError> {
+    let mut cfg = ServerConfig::default();
     if let Some(s) = get_str(table, "listen")? {
         cfg.listen = s.to_string();
+    }
+    if let Some(s) = get_str(table, "token")? {
+        cfg.token = s.to_string();
+    }
+    Ok(cfg)
+}
+
+#[cfg(feature = "rest")]
+fn parse_api(table: &toml_span::value::Table<'_>) -> Result<ApiConfig, ConfigError> {
+    let mut cfg = ApiConfig::default();
+    if let Some(b) = get_bool(table, "enabled")? {
+        cfg.enabled = b;
     }
     if let Some(n) = get_integer(table, "port")? {
         cfg.port = n as u16;
     }
-    if let Some(s) = get_str(table, "token")? {
-        cfg.token = s.to_string();
+    if let Some(s) = get_str(table, "root_path")? {
+        cfg.root_path = s.to_string();
+    }
+    Ok(cfg)
+}
+
+#[cfg(feature = "rest")]
+fn parse_websocket(table: &toml_span::value::Table<'_>) -> Result<WebSocketConfig, ConfigError> {
+    let mut cfg = WebSocketConfig::default();
+    if let Some(b) = get_bool(table, "enabled")? {
+        cfg.enabled = b;
+    }
+    if let Some(n) = get_integer(table, "port")? {
+        cfg.port = n as u16;
+    }
+    if let Some(s) = get_str(table, "root_path")? {
+        cfg.root_path = s.to_string();
+    }
+    Ok(cfg)
+}
+
+#[cfg(feature = "rest")]
+fn parse_mcp(table: &toml_span::value::Table<'_>) -> Result<McpConfig, ConfigError> {
+    let mut cfg = McpConfig::default();
+    if let Some(b) = get_bool(table, "enabled")? {
+        cfg.enabled = b;
+    }
+    if let Some(n) = get_integer(table, "port")? {
+        cfg.port = n as u16;
     }
     if let Some(s) = get_str(table, "root_path")? {
         cfg.root_path = s.to_string();
@@ -376,14 +422,8 @@ fn parse_web(table: &toml_span::value::Table<'_>) -> Result<WebConfig, ConfigErr
     if let Some(b) = get_bool(table, "enabled")? {
         cfg.enabled = b;
     }
-    if let Some(s) = get_str(table, "listen")? {
-        cfg.listen = s.to_string();
-    }
     if let Some(n) = get_integer(table, "port")? {
         cfg.port = n as u16;
-    }
-    if let Some(s) = get_str(table, "token")? {
-        cfg.token = s.to_string();
     }
     if let Some(n) = get_integer(table, "history_size")? {
         cfg.history_size = n as usize;
@@ -432,16 +472,20 @@ impl Config {
             cfg.forwarding = parse_forwarding(t)?;
         }
         #[cfg(feature = "rest")]
+        if let Some(t) = get_table(root, "server")? {
+            cfg.server = parse_server(t)?;
+        }
+        #[cfg(feature = "rest")]
         if let Some(t) = get_table(root, "api")? {
-            cfg.api = parse_connectivity(t)?;
+            cfg.api = parse_api(t)?;
         }
         #[cfg(feature = "rest")]
         if let Some(t) = get_table(root, "websocket")? {
-            cfg.websocket = parse_connectivity(t)?;
+            cfg.websocket = parse_websocket(t)?;
         }
         #[cfg(feature = "rest")]
         if let Some(t) = get_table(root, "mcp")? {
-            cfg.mcp = parse_connectivity(t)?;
+            cfg.mcp = parse_mcp(t)?;
         }
         #[cfg(feature = "rest")]
         if let Some(t) = get_table(root, "web")? {
@@ -672,35 +716,60 @@ forward_url = "https://soar.internal/api/v1/dns-alert"
         );
     }
 
-    // --- ConnectivityConfig ---
+    // --- ServerConfig ---
 
     #[test]
-    fn test_connectivity_disabled_by_default() {
+    fn test_server_defaults() {
+        let f = write_temp("[input]\n");
+        let cfg = Config::load(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(cfg.server.listen, "127.0.0.1");
+        assert_eq!(cfg.server.token, "changeme");
+    }
+
+    #[test]
+    fn test_server_custom_values() {
+        let f = write_temp(
+            r#"
+[server]
+listen = "0.0.0.0"
+token  = "s3cr3t"
+"#,
+        );
+        let cfg = Config::load(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(cfg.server.listen, "0.0.0.0");
+        assert_eq!(cfg.server.token, "s3cr3t");
+    }
+
+    // --- Module sections ---
+
+    #[test]
+    fn test_modules_disabled_by_default() {
         let f = write_temp("[input]\n");
         let cfg = Config::load(f.path().to_str().unwrap()).unwrap();
         assert!(!cfg.api.enabled);
         assert!(!cfg.websocket.enabled);
         assert!(!cfg.mcp.enabled);
+        assert!(!cfg.web.enabled);
+        // Each module advertises its own default port.
+        assert_eq!(cfg.api.port, 8080);
+        assert_eq!(cfg.websocket.port, 8081);
+        assert_eq!(cfg.mcp.port, 8082);
+        assert_eq!(cfg.web.port, 8083);
     }
 
     #[test]
     fn test_api_custom_values() {
         let f = write_temp(
             r#"
-[input]
 [api]
 enabled = true
-listen  = "0.0.0.0"
-port    = 8080
-token   = "s3cr3t"
+port    = 9080
 root_path = "/api/v1"
 "#,
         );
         let cfg = Config::load(f.path().to_str().unwrap()).unwrap();
         assert!(cfg.api.enabled);
-        assert_eq!(cfg.api.listen, "0.0.0.0");
-        assert_eq!(cfg.api.port, 8080);
-        assert_eq!(cfg.api.token, "s3cr3t");
+        assert_eq!(cfg.api.port, 9080);
         assert_eq!(cfg.api.root_path, "/api/v1");
     }
 
@@ -708,20 +777,19 @@ root_path = "/api/v1"
     fn test_websocket_and_mcp_independent() {
         let f = write_temp(
             r#"
-[input]
 [websocket]
 enabled = true
-port    = 8081
+port    = 9081
 [mcp]
 enabled = true
-port    = 8082
+port    = 9082
 "#,
         );
         let cfg = Config::load(f.path().to_str().unwrap()).unwrap();
         assert!(cfg.websocket.enabled);
-        assert_eq!(cfg.websocket.port, 8081);
+        assert_eq!(cfg.websocket.port, 9081);
         assert!(cfg.mcp.enabled);
-        assert_eq!(cfg.mcp.port, 8082);
+        assert_eq!(cfg.mcp.port, 9082);
         assert!(!cfg.api.enabled);
     }
 
@@ -732,31 +800,30 @@ port    = 8082
         let f = write_temp("[input]\n");
         let cfg = Config::load(f.path().to_str().unwrap()).unwrap();
         assert!(!cfg.web.enabled);
-        assert_eq!(cfg.web.listen, "127.0.0.1");
         assert_eq!(cfg.web.port, 8083);
-        assert_eq!(cfg.web.token, "changeme");
         assert_eq!(cfg.web.history_size, 1000);
+        assert_eq!(cfg.web.beaconing_min_observations, 5);
+        assert!((cfg.web.beaconing_cov_threshold - 0.15).abs() < 1e-9);
     }
 
     #[test]
     fn test_web_custom_values() {
         let f = write_temp(
             r#"
-[input]
 [web]
 enabled = true
-listen = "0.0.0.0"
 port = 9090
-token = "mytoken"
 history_size = 5000
+beaconing_min_observations = 8
+beaconing_cov_threshold = 0.2
 "#,
         );
         let cfg = Config::load(f.path().to_str().unwrap()).unwrap();
         assert!(cfg.web.enabled);
-        assert_eq!(cfg.web.listen, "0.0.0.0");
         assert_eq!(cfg.web.port, 9090);
-        assert_eq!(cfg.web.token, "mytoken");
         assert_eq!(cfg.web.history_size, 5000);
+        assert_eq!(cfg.web.beaconing_min_observations, 8);
+        assert!((cfg.web.beaconing_cov_threshold - 0.2).abs() < 1e-9);
     }
 
     // --- Error handling ---
@@ -812,5 +879,31 @@ subscribe_subject = "upstream.events"
         let f = write_temp("[nats]\nenabled = 1\n");
         let result = Config::load(f.path().to_str().unwrap());
         assert!(matches!(result, Err(ConfigError::InvalidType { .. })));
+    }
+
+    // --- Example file ---
+
+    /// Lock the shipped example TOML to the parser: any drift between
+    /// `dgaard-monitor.example.toml` and the section/field schema fails CI.
+    #[test]
+    fn example_file_parses_and_matches_defaults() {
+        let example = include_str!("../dgaard-monitor.example.toml");
+        let cfg = Config::parse(example).expect("example file must parse");
+
+        // Server defaults inherited by every REST module.
+        assert_eq!(cfg.server.listen, "127.0.0.1");
+        assert_eq!(cfg.server.token, "changeme");
+
+        // Every module ships disabled and on its documented port.
+        assert!(!cfg.api.enabled);
+        assert_eq!(cfg.api.port, 8080);
+        assert_eq!(cfg.api.root_path, "/api/v1");
+        assert!(!cfg.websocket.enabled);
+        assert_eq!(cfg.websocket.port, 8081);
+        assert!(!cfg.mcp.enabled);
+        assert_eq!(cfg.mcp.port, 8082);
+        assert!(!cfg.web.enabled);
+        assert_eq!(cfg.web.port, 8083);
+        assert_eq!(cfg.web.history_size, 1000);
     }
 }

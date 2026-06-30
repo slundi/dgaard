@@ -41,8 +41,8 @@
 
 use std::collections::VecDeque;
 
-use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
 use crate::tui::util::DomainColor;
+use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -375,10 +375,10 @@ pub fn render(area: ratatui::layout::Rect, frame: &mut ratatui::Frame) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
     use crate::tui::util::{
         INDICATOR_ALLOWED, INDICATOR_BLOCKED, INDICATOR_PROXIED, INDICATOR_SUSPICIOUS,
     };
+    use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
 
     fn ev(ts: u64, ip: [u8; 16], action: StatAction) -> StatEvent {
         StatEvent {

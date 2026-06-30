@@ -5,15 +5,15 @@ edition = "2024"
 
 [features]
 default = ["tui", "rest"]
-tui  = ["dep:dgaard-monitor-tui"]
+tui = ["dep:dgaard-monitor-tui"]
 rest = ["dep:dgaard-monitor-rest"]
 nats = ["dep:dgaard-monitor-nats"]
 
 [dependencies]
 dgaard-monitor-core.workspace = true
-dgaard-monitor-nats  = { workspace = true, optional = true }
-dgaard-monitor-rest  = { workspace = true, optional = true }
-dgaard-monitor-tui   = { workspace = true, optional = true }
+dgaard-monitor-nats = { workspace = true, optional = true }
+dgaard-monitor-rest = { workspace = true, optional = true }
+dgaard-monitor-tui = { workspace = true, optional = true }
 
 gumdrop.workspace = true
 serde_json.workspace = true

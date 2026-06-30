@@ -58,9 +58,9 @@ async fn handle_client(socket: WebSocket, web: Arc<WebState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::web::state::WebState;
     use dgaard_monitor_core::state::AppState;
     use dgaard_monitor_core::util::EventRecord;
-    use crate::web::state::WebState;
     use std::{sync::Arc, time::Duration};
 
     fn make_web() -> Arc<WebState> {
@@ -103,7 +103,7 @@ mod tests {
     #[tokio::test]
     async fn lagged_receiver_gets_error() {
         // Use capacity 1 to trigger lag quickly.
-        let app = Arc::new(AppState::new(Duration::from_secs(3600)));
+        let _app = Arc::new(AppState::new(Duration::from_secs(3600)));
         let (tx, mut rx) = tokio::sync::broadcast::channel::<EventRecord>(1);
         // Fill beyond capacity without subscribing.
         let _ = tx.send(make_record(1, "Allowed"));

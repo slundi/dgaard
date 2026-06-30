@@ -2,16 +2,18 @@ pub mod config;
 mod connectivity;
 mod web;
 
+use crate::config::{ApiConfig, McpConfig, ServerConfig, WebConfig, WebSocketConfig};
+use dgaard_monitor_core::{db::Database, state::AppState};
 use std::sync::Arc;
 use tokio::sync::watch;
-use dgaard_monitor_core::{db::Database, state::AppState};
-use crate::config::{ConnectivityConfig, WebConfig};
 pub use web::WebState;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn serve(
-    api_cfg: ConnectivityConfig,
-    ws_cfg: ConnectivityConfig,
-    mcp_cfg: ConnectivityConfig,
+    server_cfg: ServerConfig,
+    api_cfg: ApiConfig,
+    ws_cfg: WebSocketConfig,
+    mcp_cfg: McpConfig,
     web_cfg: WebConfig,
     db: Option<Arc<Database>>,
     state: Arc<AppState>,
@@ -23,20 +25,29 @@ pub async fn serve(
 
     if api_cfg.enabled {
         let s = Arc::clone(&state);
+        let srv = server_cfg.clone();
         let rx = shutdown.clone();
-        handles.push(tokio::spawn(async move { api::run(api_cfg, s, rx).await }));
+        handles.push(tokio::spawn(
+            async move { api::run(srv, api_cfg, s, rx).await },
+        ));
     }
 
     if ws_cfg.enabled {
         let s = Arc::clone(&state);
+        let srv = server_cfg.clone();
         let rx = shutdown.clone();
-        handles.push(tokio::spawn(async move { websocket::run(ws_cfg, s, rx).await }));
+        handles.push(tokio::spawn(async move {
+            websocket::run(srv, ws_cfg, s, rx).await
+        }));
     }
 
     if mcp_cfg.enabled {
         let s = Arc::clone(&state);
+        let srv = server_cfg.clone();
         let rx = shutdown.clone();
-        handles.push(tokio::spawn(async move { mcp::run(mcp_cfg, s, rx).await }));
+        handles.push(tokio::spawn(
+            async move { mcp::run(srv, mcp_cfg, s, rx).await },
+        ));
     }
 
     if web_cfg.enabled {
@@ -52,8 +63,11 @@ pub async fn serve(
             }
         };
         let web_state = Arc::new(web_state);
+        let srv = server_cfg.clone();
         let rx = shutdown.clone();
-        handles.push(tokio::spawn(async move { web::start(s, web_state, web_cfg, rx).await }));
+        handles.push(tokio::spawn(async move {
+            web::start(s, web_state, srv, web_cfg, rx).await
+        }));
     }
 
     // Wait until shutdown signalled, then cancel subtasks

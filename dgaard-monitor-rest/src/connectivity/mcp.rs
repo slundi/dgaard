@@ -13,7 +13,7 @@ use rust_mcp_sdk::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-use crate::config::ConnectivityConfig;
+use crate::config::{McpConfig, ServerConfig};
 use crate::connectivity::mcp_token_auth_provider::ConfigTokenAuthProvider;
 use dgaard_monitor_core::protocol::StatBlockReason;
 use dgaard_monitor_core::state::AppState;
@@ -223,7 +223,8 @@ async fn handle_events(
 /// Only called when `config.enabled` is true.
 /// Returns when `shutdown` is signalled or the server stops.
 pub async fn run(
-    config: ConnectivityConfig,
+    server: ServerConfig,
+    config: McpConfig,
     state: Arc<AppState>,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -265,11 +266,11 @@ pub async fn run(
         server_details,
         handler.to_mcp_server_handler(),
         HyperServerOptions {
-            host: config.listen,
+            host: server.listen,
             port: config.port,
             custom_streamable_http_endpoint: root_path,
-            auth: (!config.token.is_empty())
-                .then(|| Arc::new(ConfigTokenAuthProvider::new(&config.token)) as Arc<_>),
+            auth: (!server.token.is_empty())
+                .then(|| Arc::new(ConfigTokenAuthProvider::new(&server.token)) as Arc<_>),
             health_endpoint: Some("/health".into()),
             ..Default::default()
         },

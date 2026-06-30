@@ -42,8 +42,8 @@ pub async fn talkers_handler(State(web): State<Arc<WebState>>) -> Json<Vec<Talke
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dgaard_monitor_core::state::AppState;
     use crate::web::state::{ClientStats, WebState};
+    use dgaard_monitor_core::state::AppState;
     use std::net::IpAddr;
     use std::time::Duration;
 
