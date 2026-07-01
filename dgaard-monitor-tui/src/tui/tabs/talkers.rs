@@ -188,7 +188,7 @@ impl TalkerEntry {
         // Clone the action so we can match by value; StatAction is a small enum
         // (no-data or a Copy u16 bitflag) so this is cheap.
         match event.action.clone() {
-            StatAction::Allowed => self.allowed += 1,
+            StatAction::Allowed | StatAction::AllowedWithOverride => self.allowed += 1,
             StatAction::Proxied => self.proxied += 1,
             StatAction::Blocked(r) => {
                 self.blocked += 1;

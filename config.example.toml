@@ -616,3 +616,41 @@ expected_total_domains = 1000000
 [security.dnssec]
 # enabled = false
 # action = "block"
+
+# -----------------------------------------------------------------------------
+# [[overrides]] — Inline domain overrides
+# -----------------------------------------------------------------------------
+#
+# Each entry forces a fixed IP address for a domain, bypassing all filters
+# (blocklists, heuristics, structure checks, etc.). Useful for:
+#   - Split-horizon DNS on private infrastructure
+#   - Forcing a known-good IP for a domain you trust but that keeps getting
+#     flagged by heuristics
+#   - Redirecting a domain to a local service
+#
+# `domain` — exact match or wildcard prefix (*.example.com)
+#   Exact:    "example.com"    matches only "example.com"
+#   Wildcard: "*.example.com"  matches "sub.example.com", "a.b.example.com"
+#             but NOT "example.com" itself
+#
+# `to` — an IPv4 or IPv6 address to return
+#   If the client queries for a record type that doesn't match the address
+#   family (e.g. AAAA query with an IPv4 override), dgaard returns a NOERROR
+#   with an empty answer section so the client falls back gracefully.
+#
+# Events are emitted with action "Override" in the TUI and forwarding sinks.
+# Multiple entries are supported.
+#
+# Default: no overrides.
+
+# [[overrides]]
+# domain = "nas.home"
+# to = "192.168.1.50"
+
+# [[overrides]]
+# domain = "*.internal.corp"
+# to = "10.0.0.1"
+
+# [[overrides]]
+# domain = "metrics.internal"
+# to = "fd00::1"

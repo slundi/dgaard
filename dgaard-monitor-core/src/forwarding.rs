@@ -251,7 +251,7 @@ fn syslog_sd_escape(s: &str) -> String {
 
 fn syslog_severity(action: &StatAction) -> u8 {
     match action {
-        StatAction::Allowed | StatAction::Proxied => 6,
+        StatAction::Allowed | StatAction::Proxied | StatAction::AllowedWithOverride => 6,
         StatAction::Suspicious(_) => 5,
         StatAction::HighlySuspicious(_) | StatAction::Blocked(_) => 4,
     }
@@ -293,7 +293,7 @@ fn cef_ext_escape(s: &str) -> String {
 
 fn cef_severity(action: &StatAction) -> u8 {
     match action {
-        StatAction::Allowed | StatAction::Proxied => 1,
+        StatAction::Allowed | StatAction::Proxied | StatAction::AllowedWithOverride => 1,
         StatAction::Suspicious(_) => 5,
         StatAction::HighlySuspicious(_) => 7,
         StatAction::Blocked(_) => 8,
@@ -304,6 +304,7 @@ fn format_cef(timestamp: u64, ip: &str, action: &StatAction, domain: &str) -> St
     let (sig_id, event_name) = match action {
         StatAction::Allowed => ("DNS-ALLOWED", "DNS Query Allowed"),
         StatAction::Proxied => ("DNS-PROXIED", "DNS Query Proxied"),
+        StatAction::AllowedWithOverride => ("DNS-OVERRIDE", "DNS Query Override"),
         StatAction::Suspicious(_) => ("DNS-SUSPICIOUS", "DNS Query Suspicious"),
         StatAction::HighlySuspicious(_) => ("DNS-HIGHLY-SUSPICIOUS", "DNS Query Highly Suspicious"),
         StatAction::Blocked(_) => ("DNS-BLOCKED", "DNS Query Blocked"),
@@ -329,7 +330,9 @@ fn format_elasticsearch(timestamp: u64, ip: &str, action: &StatAction, domain: &
     let act = action_name(action);
     let reason = reason_labels(action);
     let (kind, category, ev_type) = match action {
-        StatAction::Allowed | StatAction::Proxied => ("event", "network", "allowed"),
+        StatAction::Allowed | StatAction::Proxied | StatAction::AllowedWithOverride => {
+            ("event", "network", "allowed")
+        }
         StatAction::Blocked(_) => ("alert", "network", "denied"),
         StatAction::Suspicious(_) | StatAction::HighlySuspicious(_) => {
             ("alert", "intrusion_detection", "info")

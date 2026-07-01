@@ -141,6 +141,7 @@ impl StatMessage {
                         buf.push(4);
                         buf.extend_from_slice(&reason.bits().to_le_bytes());
                     }
+                    StatAction::AllowedWithOverride => buf.push(5),
                 }
             }
         }
@@ -211,6 +212,7 @@ impl StatMessage {
                         let bits = u32::from_le_bytes(payload[33..37].try_into().ok()?);
                         StatAction::HighlySuspicious(StatBlockReason::from_bits_retain(bits))
                     }
+                    5 => StatAction::AllowedWithOverride,
                     _ => return None,
                 };
 
@@ -535,5 +537,18 @@ mod tests {
             event.timestamp > 1_577_836_800,
             "timestamp should be > 2020-01-01"
         );
+    }
+
+    #[test]
+    fn stat_message_event_allowed_with_override_round_trip() {
+        let event = StatEvent {
+            timestamp: 1_700_000_001,
+            domain_hash: 99,
+            client_ip: [0u8; 16],
+            action: StatAction::AllowedWithOverride,
+        };
+        let msg = StatMessage::Event(event);
+        let bytes = msg.serialize();
+        assert_eq!(StatMessage::deserialize(&bytes), Some(msg));
     }
 }

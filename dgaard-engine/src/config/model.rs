@@ -1366,6 +1366,24 @@ impl Default for PrefetchConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Overrides
+// ---------------------------------------------------------------------------
+
+/// A single inline domain-override entry.
+///
+/// When a query matches `domain` (exact or wildcard `*.example.com`), all
+/// filters are bypassed and `to` is returned directly as the answer.
+/// A type mismatch (e.g. AAAA query with an IPv4 override) yields a NOERROR
+/// response with an empty answer section so the client falls back gracefully.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverrideEntry {
+    /// Domain pattern — exact (`example.com`) or wildcard (`*.example.com`).
+    pub domain: String,
+    /// The IP address to return for matching queries.
+    pub to: std::net::IpAddr,
+}
+
+// ---------------------------------------------------------------------------
 // Top-level Config
 // ---------------------------------------------------------------------------
 
@@ -1401,6 +1419,8 @@ pub struct Config {
     pub memory: MemoryConfig,
     /// Background prefetch worker.
     pub prefetch: PrefetchConfig,
+    /// Inline domain overrides — bypass all filters and return a fixed IP.
+    pub overrides: Vec<OverrideEntry>,
 }
 
 // ---------------------------------------------------------------------------

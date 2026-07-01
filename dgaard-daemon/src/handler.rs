@@ -46,6 +46,7 @@ fn action_to_fields(action: &Action) -> (bool, String) {
         Action::Drop => (false, String::from("Drop")),
         Action::Respond(ip) => (false, format!("Respond({})", ip)),
         Action::Redirect(ip) => (false, format!("Redirect({})", ip)),
+        Action::Override(ip) => (false, format!("Override({})", ip)),
     }
 }
 

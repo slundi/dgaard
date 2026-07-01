@@ -32,6 +32,8 @@ pub enum StatAction {
     Blocked(StatBlockReason),
     Suspicious(StatBlockReason),
     HighlySuspicious(StatBlockReason),
+    /// Domain matched an inline config override — filters bypassed, fixed IP returned.
+    AllowedWithOverride,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +119,7 @@ impl StatMessage {
                         let reason = u32::from_le_bytes(payload[33..37].try_into().ok()?);
                         StatAction::HighlySuspicious(StatBlockReason::from_bits_retain(reason))
                     }
+                    5 => StatAction::AllowedWithOverride,
                     _ => return None,
                 };
 
@@ -184,6 +187,7 @@ impl StatMessage {
                         buf.push(4);
                         buf.extend_from_slice(&r.bits().to_le_bytes());
                     }
+                    StatAction::AllowedWithOverride => buf.push(5),
                 }
 
                 buf

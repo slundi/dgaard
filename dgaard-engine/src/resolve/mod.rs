@@ -16,7 +16,9 @@ pub use qtype::{check_qclass, check_qtype};
 pub use scoring::{compute_score, score_answer};
 pub use special_use::is_special_use_domain;
 
-use crate::config::{Config, PipelineStep};
+use std::net::IpAddr;
+
+use crate::config::{Config, OverrideEntry, PipelineStep};
 use crate::filter::engine::FilterEngine;
 use crate::model::{Action, BlockReason, SuspicionScore};
 
@@ -40,6 +42,28 @@ pub fn is_structure_invalid(domain: &str, config: &Config) -> bool {
     false
 }
 
+/// Return the override IP for `domain` if it matches any entry in `overrides`.
+///
+/// Patterns starting with `*.` match any single or multi-level subdomain
+/// (e.g. `*.example.com` matches `sub.example.com` and `a.b.example.com`
+/// but not `example.com` itself).  All other patterns are exact matches.
+pub fn find_override(domain: &str, overrides: &[OverrideEntry]) -> Option<IpAddr> {
+    for entry in overrides {
+        let matched = if let Some(suffix) = entry.domain.strip_prefix("*.") {
+            // `sub.suffix` — the part left after stripping the suffix must end with '.'
+            domain
+                .strip_suffix(suffix)
+                .is_some_and(|prefix| prefix.ends_with('.'))
+        } else {
+            domain == entry.domain
+        };
+        if matched {
+            return Some(entry.to);
+        }
+    }
+    None
+}
+
 /// Result of domain resolution including the suspicion score.
 #[derive(Debug, Clone)]
 pub struct ResolveResult {
@@ -49,6 +73,14 @@ pub struct ResolveResult {
 
 /// Resolution function that returns the computed suspicion score.
 pub fn resolve_with_score(domain: &str, filter: &FilterEngine, config: &Config) -> ResolveResult {
+    // Inline overrides are checked first — they bypass the entire filter pipeline.
+    if let Some(ip) = find_override(domain, &config.overrides) {
+        return ResolveResult {
+            action: Action::Override(ip),
+            score: SuspicionScore::default(),
+        };
+    }
+
     let score = compute_score(domain, filter, config);
 
     // PTR leak check runs before structure validation: a valid full IPv6 PTR
@@ -549,5 +581,102 @@ pub mod tests {
         let result = resolve_with_score("trusted.example.com", &engine, &config);
         assert!(matches!(result.action, Action::Allow));
         assert_eq!(result.score.total, 0);
+    }
+
+    // ── find_override ─────────────────────────────────────────────────────────
+
+    fn ipv4(s: &str) -> std::net::IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn find_override_exact_match() {
+        let overrides = vec![OverrideEntry {
+            domain: "example.com".into(),
+            to: ipv4("1.2.3.4"),
+        }];
+        assert_eq!(
+            find_override("example.com", &overrides),
+            Some(ipv4("1.2.3.4"))
+        );
+    }
+
+    #[test]
+    fn find_override_exact_no_match() {
+        let overrides = vec![OverrideEntry {
+            domain: "example.com".into(),
+            to: ipv4("1.2.3.4"),
+        }];
+        assert_eq!(find_override("other.com", &overrides), None);
+    }
+
+    #[test]
+    fn find_override_wildcard_subdomain() {
+        let overrides = vec![OverrideEntry {
+            domain: "*.internal.lan".into(),
+            to: ipv4("10.0.0.1"),
+        }];
+        assert_eq!(
+            find_override("db.internal.lan", &overrides),
+            Some(ipv4("10.0.0.1"))
+        );
+        assert_eq!(
+            find_override("a.b.internal.lan", &overrides),
+            Some(ipv4("10.0.0.1"))
+        );
+    }
+
+    #[test]
+    fn find_override_wildcard_does_not_match_parent() {
+        let overrides = vec![OverrideEntry {
+            domain: "*.internal.lan".into(),
+            to: ipv4("10.0.0.1"),
+        }];
+        // The wildcard must NOT match the bare parent domain
+        assert_eq!(find_override("internal.lan", &overrides), None);
+    }
+
+    #[test]
+    fn find_override_wildcard_no_partial_suffix_match() {
+        let overrides = vec![OverrideEntry {
+            domain: "*.internal.lan".into(),
+            to: ipv4("10.0.0.1"),
+        }];
+        // "notinternal.lan" ends with "internal.lan" but has no dot separator
+        assert_eq!(find_override("notinternal.lan", &overrides), None);
+    }
+
+    #[test]
+    fn find_override_empty_list_returns_none() {
+        assert_eq!(find_override("example.com", &[]), None);
+    }
+
+    #[test]
+    fn resolve_override_bypasses_blocklist() {
+        let engine = create_test_engine(&["blocked.com"], &[], &[]);
+        let mut config = Config::default();
+        config.overrides = vec![OverrideEntry {
+            domain: "blocked.com".into(),
+            to: ipv4("1.2.3.4"),
+        }];
+        let action = resolve_with_score("blocked.com", &engine, &config).action;
+        assert!(
+            matches!(action, Action::Override(ip) if ip == ipv4("1.2.3.4")),
+            "Override should bypass blocklist; got: {:?}",
+            action
+        );
+    }
+
+    #[test]
+    fn resolve_override_score_is_zero() {
+        let engine = create_test_engine(&[], &[], &[]);
+        let mut config = Config::default();
+        config.overrides = vec![OverrideEntry {
+            domain: "example.com".into(),
+            to: ipv4("9.9.9.9"),
+        }];
+        let result = resolve_with_score("example.com", &engine, &config);
+        assert!(matches!(result.action, Action::Override(_)));
+        assert_eq!(result.score.total, 0, "override should skip scoring");
     }
 }

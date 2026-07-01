@@ -38,6 +38,7 @@ pub fn action_name(action: &StatAction) -> &'static str {
         StatAction::Blocked(_) => "Blocked",
         StatAction::Suspicious(_) => "Suspicious",
         StatAction::HighlySuspicious(_) => "HighlySuspicious",
+        StatAction::AllowedWithOverride => "Override",
     }
 }
 

@@ -38,6 +38,10 @@ pub enum Action {
     /// Optional: The query is redirected to a local landing page (e.g., for a "Blocked" UI).
     #[allow(dead_code)] // For future landing page feature
     Redirect(IpAddr),
+
+    /// The domain matched an inline config override.
+    /// All filters are bypassed and this IP is returned directly.
+    Override(IpAddr),
 }
 
 /// Compact representation of the action taken for a DNS query.
@@ -56,6 +60,8 @@ pub enum StatAction {
     /// Query was forwarded but scored above the highly-suspicious threshold.
     /// Carries the primary contributing reason for telemetry.
     HighlySuspicious(StatBlockReason),
+    /// Query matched an inline config override — filters bypassed, fixed IP returned.
+    AllowedWithOverride,
 }
 
 bitflags! {

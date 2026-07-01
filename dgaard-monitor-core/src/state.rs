@@ -40,7 +40,7 @@ impl RollingStats {
         self.total += 1;
 
         match &event.action {
-            StatAction::Allowed => self.allowed += 1,
+            StatAction::Allowed | StatAction::AllowedWithOverride => self.allowed += 1,
             StatAction::Proxied => self.proxied += 1,
             StatAction::Blocked(_)
             | StatAction::Suspicious(_)

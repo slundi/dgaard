@@ -213,7 +213,7 @@ pub(crate) async fn process_stat_message(
                 StatAction::Allowed => {
                     // Only log in verbose/debug mode (currently silent)
                 }
-                StatAction::Proxied => {
+                StatAction::Proxied | StatAction::AllowedWithOverride => {
                     // Only log in verbose/debug mode (currently silent)
                 }
             }

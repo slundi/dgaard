@@ -453,6 +453,13 @@ pub(crate) async fn handle_query(
                 Some(StatAction::Proxied),
             )
         }
+        Action::Override(ip) => {
+            STATS_COUNTERS.increment_allowed();
+            (
+                DnsPacket::build_ip_response(&dns_packet.message, *ip),
+                Some(StatAction::AllowedWithOverride),
+            )
+        }
     };
 
     // 4. Send response back to client

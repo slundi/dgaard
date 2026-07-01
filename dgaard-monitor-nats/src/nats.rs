@@ -62,7 +62,7 @@ pub enum WireAction {
 impl WireEvent {
     pub fn from_event(event: &StatEvent, domain: Option<String>) -> Self {
         let (action, reasons) = match &event.action {
-            StatAction::Allowed => (WireAction::Allowed, 0),
+            StatAction::Allowed | StatAction::AllowedWithOverride => (WireAction::Allowed, 0),
             StatAction::Proxied => (WireAction::Proxied, 0),
             StatAction::Blocked(r) => (WireAction::Blocked, r.bits()),
             StatAction::Suspicious(r) => (WireAction::Suspicious, r.bits()),

@@ -179,7 +179,7 @@ struct BucketEntry {
 impl BucketEntry {
     fn record(&mut self, event: &StatEvent) {
         match event.action.clone() {
-            StatAction::Allowed => self.allowed += 1,
+            StatAction::Allowed | StatAction::AllowedWithOverride => self.allowed += 1,
             StatAction::Proxied => self.proxied += 1,
             StatAction::Blocked(_) => self.blocked += 1,
             StatAction::Suspicious(_) => self.suspicious += 1,

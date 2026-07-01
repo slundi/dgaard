@@ -1087,6 +1087,37 @@ fn parse_memory(table: &toml_span::value::Table<'_>) -> Result<MemoryConfig, Con
     Ok(cfg)
 }
 
+/// Parse the top-level `[[overrides]]` array of inline-table entries.
+fn parse_overrides(
+    tables: Vec<&toml_span::value::Table<'_>>,
+) -> Result<Vec<OverrideEntry>, ConfigError> {
+    let mut entries = Vec::with_capacity(tables.len());
+    for t in tables {
+        let domain = get_str(t, "domain")?
+            .ok_or_else(|| ConfigError::MissingKey {
+                key: "overrides[].domain".to_string(),
+                span: toml_span::Span::default(),
+            })?
+            .to_owned();
+
+        let to_str = get_str(t, "to")?.ok_or_else(|| ConfigError::MissingKey {
+            key: "overrides[].to".to_string(),
+            span: toml_span::Span::default(),
+        })?;
+
+        let to = to_str
+            .parse::<std::net::IpAddr>()
+            .map_err(|_| ConfigError::InvalidValue {
+                key: "overrides[].to".to_string(),
+                message: format!("\"{to_str}\" is not a valid IP address"),
+                span: toml_span::Span::default(),
+            })?;
+
+        entries.push(OverrideEntry { domain, to });
+    }
+    Ok(entries)
+}
+
 // ---------------------------------------------------------------------------
 // Config implementation
 // ---------------------------------------------------------------------------
@@ -1157,6 +1188,9 @@ impl Config {
         }
         if let Some(t) = get_table(root, "prefetch")? {
             cfg.prefetch = parse_prefetch(t)?;
+        }
+        if let Some(tables) = get_table_array(root, "overrides")? {
+            cfg.overrides = parse_overrides(tables)?;
         }
 
         Ok(cfg)
@@ -3044,5 +3078,79 @@ metrics_listen = "127.0.0.1:9153"
         let mut cfg = Config::default();
         cfg.server.metrics_listen = None;
         assert!(cfg.validate().is_ok());
+    }
+
+    // ── [[overrides]] ────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_overrides_exact_ipv4() {
+        let toml = r#"
+[[overrides]]
+domain = "example.com"
+to = "1.2.3.4"
+"#;
+        let cfg = Config::parse(toml).unwrap();
+        assert_eq!(cfg.overrides.len(), 1);
+        assert_eq!(cfg.overrides[0].domain, "example.com");
+        assert_eq!(
+            cfg.overrides[0].to,
+            "1.2.3.4".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_overrides_wildcard_ipv6() {
+        let toml = r#"
+[[overrides]]
+domain = "*.internal.lan"
+to = "::1"
+"#;
+        let cfg = Config::parse(toml).unwrap();
+        assert_eq!(cfg.overrides.len(), 1);
+        assert_eq!(cfg.overrides[0].domain, "*.internal.lan");
+        assert_eq!(
+            cfg.overrides[0].to,
+            "::1".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_overrides_multiple_entries() {
+        let toml = r#"
+[[overrides]]
+domain = "a.com"
+to = "1.1.1.1"
+
+[[overrides]]
+domain = "b.com"
+to = "2.2.2.2"
+"#;
+        let cfg = Config::parse(toml).unwrap();
+        assert_eq!(cfg.overrides.len(), 2);
+    }
+
+    #[test]
+    fn parse_overrides_missing_domain_is_error() {
+        let toml = r#"
+[[overrides]]
+to = "1.2.3.4"
+"#;
+        assert!(Config::parse(toml).is_err());
+    }
+
+    #[test]
+    fn parse_overrides_invalid_ip_is_error() {
+        let toml = r#"
+[[overrides]]
+domain = "example.com"
+to = "not-an-ip"
+"#;
+        assert!(Config::parse(toml).is_err());
+    }
+
+    #[test]
+    fn parse_overrides_empty_when_absent() {
+        let cfg = Config::parse("").unwrap();
+        assert!(cfg.overrides.is_empty());
     }
 }

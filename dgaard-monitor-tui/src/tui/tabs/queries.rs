@@ -99,7 +99,7 @@ pub enum ActionKind {
 impl ActionKind {
     pub fn from_action(action: &StatAction) -> Self {
         match action {
-            StatAction::Allowed => Self::Allowed,
+            StatAction::Allowed | StatAction::AllowedWithOverride => Self::Allowed,
             StatAction::Proxied => Self::Proxied,
             StatAction::Blocked(_) => Self::Blocked,
             StatAction::Suspicious(_) => Self::Suspicious,
@@ -175,6 +175,7 @@ fn reason_str(r: StatBlockReason) -> String {
 pub fn flags_label(action: &StatAction) -> String {
     match action {
         StatAction::Allowed => "Allowed".to_string(),
+        StatAction::AllowedWithOverride => "Override".to_string(),
         StatAction::Proxied => "Proxied".to_string(),
         StatAction::Blocked(r) => {
             let s = reason_str(*r);

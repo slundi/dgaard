@@ -28,7 +28,7 @@ pub enum DomainColor {
 impl DomainColor {
     pub fn from_action(action: &StatAction) -> Self {
         match action {
-            StatAction::Allowed => Self::Green,
+            StatAction::Allowed | StatAction::AllowedWithOverride => Self::Green,
             StatAction::Proxied => Self::Dim,
             StatAction::Blocked(_) | StatAction::HighlySuspicious(_) => Self::Red,
             StatAction::Suspicious(_) => Self::Yellow,
