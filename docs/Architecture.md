@@ -32,12 +32,13 @@ flowchart TD
 
 ## 2. Stratified Filtering Pipeline
 
-Every DNS query passes through up to 8 stages inside `dgaard-engine`. Each stage can short-circuit to **Block** or **Allow**; otherwise the query falls through to the next stage.
+Every DNS query passes through up to 9 stages inside `dgaard-engine`. Stage 0 is checked first and, when matched, bypasses all subsequent stages entirely. Stages 1–8 can each short-circuit to **Block** or **Allow**; otherwise the query falls through to the next stage.
 
 ```mermaid
 flowchart TD
-    IN([DNS Query]) --> S1
+    IN([DNS Query]) --> S0
 
+    S0["0. Domain Override<br/>[overrides] table — exact or *.wildcard match"]
     S1["1. Fast-Drop Gatekeeper<br/>ASCII + structural validation"]
     S2["2. Zero-Copy Whitelist<br/>xxh64 hash lookup"]
     S3["3. Smart-IDN Blocker<br/>Punycode + homograph check"]
@@ -47,9 +48,12 @@ flowchart TD
     S7["7. GeoIP Scoring<br/>MaxMind MMDB lookup"]
     S8["8. Custom TI Flags<br/>16 user-defined bitflags"]
 
+    OVERRIDE(["Override — return fixed IP<br/>(Action::Override — skips all filters)"])
     BLOCK(["Block — return NXDOMAIN"])
     ALLOW(["Allow — proxy to upstream"])
 
+    S0 -->|matched| OVERRIDE
+    S0 -->|no match| S1
     S1 -->|invalid| BLOCK
     S1 -->|valid| S2
     S2 -->|whitelisted| ALLOW
@@ -94,16 +98,16 @@ flowchart LR
     end
 
     subgraph up["Upstream DNS"]
-        DOT["DNS-over-TLS<br/>1.1.1.1 · 8.8.8.8"]
-        REC["Local recursive<br/>resolver"]
+        DOT["DNS-over-TLS<br/>1.1.1.1 · 8.8.8.8<br/><i>forwarder mode</i>"]
+        ROOT["IANA Root Servers<br/>a–m.root-servers.net<br/><i>recursive mode — iterative walk</i>"]
     end
 
     C1 -->|":53 direct"| DG
     C2 -->|":53 direct"| DG
     C3 -->|":53 via dnsmasq"| GW
     GW  -->|":5353"| DG
-    DG  -->|"forwarded queries"| DOT
-    DG  -->|"forwarded queries"| REC
+    DG  -->|"[server] mode = forwarder"| DOT
+    DG  -->|"[server] mode = recursive"| ROOT
 ```
 
 ---
@@ -186,3 +190,58 @@ flowchart LR
 ```
 
 > Hot-reload: on `SIGHUP`, `FilterEngine` is rebuilt from disk and swapped atomically via `arc-swap` — zero query loss.
+
+---
+
+## 6. Iterative Recursive Resolver
+
+When `[server] mode = "recursive"`, dgaard resolves queries itself by walking the DNS delegation hierarchy from the IANA root servers down to the authoritative nameserver — no external forwarder involved.
+
+```mermaid
+flowchart TD
+    IN([Client Query]) --> ROOTS
+
+    ROOTS["Seed NS pool\n3 random addresses from 26 compiled-in\nIANA root hints — IPv4 + IPv6"]
+    ROOTS --> CAPS
+
+    CAPS{"Query or depth\ncap exceeded?"}
+    CAPS -->|Yes| FAIL(["SERVFAIL"])
+    CAPS -->|No| QUERY
+
+    QUERY["UDP query to current NS pool\nEDNS0 · TXID randomised\nDO bit set when DNSSEC validator active"]
+    QUERY --> CLASSIFY
+
+    CLASSIFY{Classify response}
+    CLASSIFY -->|Answer| CNAME{"Answer is CNAME\nand qtype ≠ CNAME?"}
+    CLASSIFY -->|NXDOMAIN| NX(["NXDOMAIN → client"])
+    CLASSIFY -->|TC bit set| TC(["SERVFAIL — TCP fallback pending"])
+    CLASSIFY -->|SERVFAIL / empty| ERR(["io::Error"])
+    CLASSIFY -->|Referral| BAIL
+
+    CNAME -->|No| ANS(["Answer → client\nTXID + RA=1 restamped"])
+    CNAME -->|Yes — within CNAME budget| QUERY
+    CNAME -->|CNAME budget exceeded| FAIL2(["SERVFAIL — CNAME depth"])
+
+    BAIL{"New zone\nin-bailiwick of\ncurrent zone?"}
+    BAIL -->|No| FAIL3(["SERVFAIL — bailiwick reject\ncache-poisoning defence"])
+    BAIL -->|Yes| VISITED{"Zone hash\nalready in\nvisited set?"}
+
+    VISITED -->|Yes| FAIL4(["SERVFAIL — delegation cycle"])
+    VISITED -->|No| GLUE{"In-bailiwick glue\nin additional section?"}
+
+    GLUE -->|Yes| DNSSEC
+    GLUE -->|No| NS_ADDR["Recurse: resolve NS name → A / AAAA\nshares same query + depth budget"]
+    NS_ADDR --> DNSSEC
+
+    DNSSEC["DNSSEC chain step\n① DS RRset hand-off from parent referral\n② DNSKEY fetch + self-verify from child NS\nno-op when validator not installed"]
+    DNSSEC --> ADVANCE["new_zone → current_zone\ndepth += 1"]
+    ADVANCE --> CAPS
+```
+
+Key invariants:
+
+- **Bailiwick**: a referral that widens the current zone is rejected outright (strict) or silently discarded (lenient), preventing cache-poisoning via off-path NS injection.
+- **Cycle detection**: every visited zone is recorded as an xxh3-64 hash; a repeat hash aborts with SERVFAIL.
+- **Caps**: `max_queries_per_resolution` (total outgoing UDP queries) and `max_delegation_depth` (referral hops) are checked at the top of every loop iteration.
+- **Glue safety**: only glue records whose owner name sits inside the newly-delegated zone are accepted; out-of-bailiwick additional records are silently dropped.
+- **DNSSEC chain**: when `[security.dnssec] enabled = true`, each delegation hop harvests the child DS from the parent referral and fetches the child's DNSKEY rrset, building the chain of trust incrementally.
