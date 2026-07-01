@@ -27,3 +27,18 @@ adblockptimize --network-file=custom.txt --browser-file=ublock_origin.txt <FILES
 - **Pi-hole & AdGuard Home**: These have a dedicated "allowlist" database that takes precedence over blocklists automatically.
 - **Dnsmasq**: `address=/example.com/0.0.0.0`, it automatically blocks `sub.example.com` and `deep.sub.example.com`.
 - **Unbound**: It uses `local-zone` and `local-data` directives. Setting a zone to `always_null` or `always_nxdomain` acts as a wildcard block. For whitelisting, we must manage the exclusion by ensuring the whitelist entry is more specific than the block entry.
+
+## Quick start
+
+```bash
+cargo install adblockptimize
+
+# split a list into network and browser files
+adblockptimize https://example.com/list.txt local-list.txt
+
+# dnsmasq format, network rules only
+adblockptimize --no-browser --format=dnsmasq https://example.com/list.txt
+
+# custom output file names
+adblockptimize --network-file=dns.txt --browser-file=ublock.txt https://example.com/list.txt
+```

@@ -24,11 +24,6 @@ A heuristic DNS filtering proxy that goes beyond static blocklists. Instead of w
 - **Live telemetry** — streams length-prefixed binary events over a Unix Domain Socket for real-time dashboards.
 - **OpenWrt-optimised** — binary under 5 MB, `SO_REUSEPORT` multi-threading, async Tokio runtime, zero-copy parsing with `rkyv`.
 
-```bash
-cargo install dgaard
-dgaard --config /etc/dgaard/dgaard.toml
-```
-
 See the [dgaard README](./dgaard/README.md) and [example configuration](./dgaard/config.example.toml) for the full setup guide.
 
 ---
@@ -49,29 +44,6 @@ The pure-Rust filtering engine extracted from `dgaard` as a standalone `[lib]` c
 - All state is explicit: `FilterEngine` and `Config` are plain structs passed by reference; no global statics.
 - `FilterEngine` carries its own `seed: u64` so multiple independent instances can coexist safely.
 
-**Quick start:**
-
-```toml
-# Cargo.toml
-[dependencies]
-dgaard-engine = { path = "../dgaard-engine" } # or version from crates.io
-```
-
-```rust
-use dgaard_engine::{Config, FilterEngine, resolve_with_score};
-use dgaard_engine::model::Action;
-
-let config = Config::default();
-let filter = FilterEngine::new(/* blocklists loaded here */);
-
-let result = resolve_with_score("suspicious-domain.xyz", &filter, &config);
-match result.action {
-    Action::Block(reason) => eprintln!("Blocked: {reason:?}"),
-    Action::ProxyToUpstream => println!("Clean — forward to upstream"),
-    Action::LocalResolve    => println!("Answered from cache/blocklist"),
-}
-```
-
 See the [dgaard-engine README](./dgaard-engine/README.md) for the full API reference.
 
 ---
@@ -90,13 +62,6 @@ A terminal UI that connects to `dgaard`'s Unix Domain Socket and visualises DNS 
 - Resolves client IPs to hostnames via reverse-DNS (PTR lookups) in the background.
 - Linux only (relies on `inotify`).
 
-```bash
-cargo install dgaard-monitor
-
-# attach to a running dgaard instance
-dgaard-monitor --socket /tmp/dgaard_stats.sock --index /var/lib/dgaard/hosts.bin
-```
-
 See the [dgaard-monitor README](./dgaard-monitor/README.md) for the full protocol and configuration reference.
 
 ---
@@ -105,20 +70,7 @@ See the [dgaard-monitor README](./dgaard-monitor/README.md) for the full protoco
 
 [![Crates.io](https://img.shields.io/crates/v/adblockptimize)](https://crates.io/crates/adblockptimize)
 
-A CLI tool that ingests standard adblock lists (files or URLs) and splits them into two deduplicated, sorted outputs: one for **network-level** blocking (DNS, dnsmasq, Unbound, Pi-hole, AdGuard Home) and one for **browser-level** blocking (CSS/JS/HTML cosmetic rules). Feeding the network output directly into `dgaard` gives you cleaner, smaller blocklists with no browser-specific noise.
-
-```bash
-cargo install adblockptimize
-
-# split a list into network and browser files
-adblockptimize https://example.com/list.txt local-list.txt
-
-# dnsmasq format, network rules only
-adblockptimize --no-browser --format=dnsmasq https://example.com/list.txt
-
-# custom output file names
-adblockptimize --network-file=dns.txt --browser-file=ublock.txt https://example.com/list.txt
-```
+A CLI tool that ingests standard adblock lists (files or URLs) and splits them into two deduplicated, sorted outputs: one for **network-level** blocking (DNS, dnsmasq, Unbound, Pi-hole, AdGuard Home) and one for **browser-level** blocking (CSS/JS/HTML cosmetic rules). Feeding the network output directly into `dgaard` (or other network ad blocker) gives you cleaner, smaller blocklists with no browser-specific noise.
 
 See the [adblockptimize README](./adblockptimize/README.md) for the full format and target compatibility table.
 
@@ -126,25 +78,10 @@ See the [adblockptimize README](./adblockptimize/README.md) for the full format 
 
 ## Architecture
 
-```
-adblockptimize          dgaard-monitor
-      |                       |
-      | (optimised lists)     | (Unix socket telemetry)
-      v                       |
-   dgaard  <-----------------/        your-app (MTA, HTTP proxy…)
-(DNS proxy, port 5353)                      |
-      |                                     | (library embed)
-      +--------- dgaard-engine  <----------/
-      |          (filtering core)
-   dnsmasq / router DNS
-      |
-   LAN clients
-```
-
-`adblockptimize` pre-processes upstream adblock lists into compact, DNS-ready formats that `dgaard` can ingest. `dgaard-monitor` connects to `dgaard`'s telemetry socket and provides a live view of what is happening on the network. `dgaard-engine` is the shared filtering library used by `dgaard` internally and available for embedding in any Rust application — all tools are designed to work together but can be used independently.
+See [docs/Architecture.md](docs/Architecture.md).
 
 ---
 
 ## Installation
 
-See [available methods](docs/Install.md)
+See [available methods](docs/Install.md).

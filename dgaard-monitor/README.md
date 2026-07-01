@@ -15,3 +15,12 @@ The monitor parses the following wire format:
 
 - Frame: [u16: Length][u8: Type][Payload]
 - Types: 0x00 (Mapping Update) or 0x01 (Query Event).
+
+## Quick start
+
+```bash
+cargo install dgaard-monitor
+
+# attach to a running dgaard instance
+dgaard-monitor --socket /tmp/dgaard_stats.sock --index /var/lib/dgaard/hosts.bin
+```

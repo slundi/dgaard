@@ -30,6 +30,27 @@ let result = resolve_with_score("example.com", &engine, &config);
 println!("{:?}", result.action);
 ```
 
+```toml
+# Cargo.toml
+[dependencies]
+dgaard-engine = { path = "../dgaard-engine" } # or version from crates.io
+```
+
+```rust
+use dgaard_engine::{Config, FilterEngine, resolve_with_score};
+use dgaard_engine::model::Action;
+
+let config = Config::default();
+let filter = FilterEngine::new(/* blocklists loaded here */);
+
+let result = resolve_with_score("suspicious-domain.xyz", &filter, &config);
+match result.action {
+    Action::Block(reason) => eprintln!("Blocked: {reason:?}"),
+    Action::ProxyToUpstream => println!("Clean — forward to upstream"),
+    Action::LocalResolve    => println!("Answered from cache/blocklist"),
+}
+```
+
 ## Public API
 
 | Symbol                                          | Description                                                                       |
