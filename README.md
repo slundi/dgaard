@@ -10,7 +10,7 @@ A suite of Rust tools for high-performance, privacy-first DNS filtering and netw
 
 [![Crates.io](https://img.shields.io/crates/v/dgaard)](https://crates.io/crates/dgaard)
 
-A heuristic DNS filtering proxy that goes beyond static blocklists. Instead of waiting for a threat to appear on a list, Dgaard analyses the mathematical and lexical structure of every domain in real time to detect and block malicious traffic proactively.
+A heuristic DNS filtering proxy and server (with recursive resolver) that goes beyond static blocklists. Instead of waiting for a threat to appear on a list, Dgaard analyses the mathematical and lexical structure of every domain in real time to detect and block malicious traffic proactively.
 
 **Key capabilities:**
 
@@ -48,21 +48,99 @@ See the [dgaard-engine README](./dgaard-engine/README.md) for the full API refer
 
 ---
 
-### [dgaard-monitor](./dgaard-monitor) — Real-Time TUI Dashboard
+### [dgaard-daemon](./dgaard-daemon) — Unix-Socket Engine Sidecar _(binary)_
+
+A ready-made daemon that wraps `dgaard-engine` behind a Unix Domain Socket. Each connection sends one newline-terminated domain and receives a newline-terminated JSON verdict (`score`, `blocked`, `action`, `reasons`). No DNS resolution is performed — the daemon only scores domain strings against the engine's static filters and heuristics.
+
+**Designed as a sidecar for:**
+
+- **MTAs and spam filters** — Postfix policy daemons, Rspamd modules, or any local process that can write to a Unix socket.
+- **Language interop** — Python, Go, shell (`socat`) can call the engine without linking Rust.
+
+**Key properties:**
+
+- Stateless wire protocol — one domain per connection, reconnect for each query.
+- `SIGHUP` atomically reloads `dgaard-engine` config and rebuilds the `FilterEngine` via `arc-swap`.
+- Socket created with `0o600` permissions; config discovery via `--config`, `/etc/dgaard-daemon/dgaard-daemon.toml`, or `./dgaard-daemon.toml`.
+
+See the [dgaard-daemon README](./dgaard-daemon/README.md) for the wire protocol and signal reference.
+
+---
+
+### [dgaard-rest](./dgaard-rest) — HTTP REST API for the Engine _(binary)_
+
+A standalone HTTP server that exposes `dgaard-engine` scoring over JSON. Aimed at dashboards, web services, and any tool that speaks HTTP but cannot embed the Rust library directly. Does **not** perform DNS resolution.
+
+**Endpoints:**
+
+- `POST /api/v1/check` — score a domain, returns `score`, `blocked`, `action`, `reasons`.
+- `GET  /api/v1/blocklists` — metadata (mtime, entry count) for every configured blocklist and whitelist.
+- `POST /api/v1/blocklists/update` — async reload from disk; engine swap is atomic via `arc-swap`.
+- `GET  /api/v1/health` — `204 No Content` liveness probe.
+
+**Key properties:**
+
+- `axum` on top of `dgaard-engine`; `SIGHUP` atomically reloads config.
+- Configurable status code for blocked domains (`200` or `403`), 253-byte domain length cap enforced with `422`.
+- Config discovery via `--config`, `/etc/dgaard-rest/dgaard-rest.toml`, or `./dgaard-rest.toml`.
+
+See the [dgaard-rest README](./dgaard-rest/README.md) for the endpoint reference.
+
+---
+
+### [dgaard-monitor](./dgaard-monitor) — Telemetry Monitor _(binary)_
 
 [![Crates.io](https://img.shields.io/crates/v/dgaard-monitor)](https://crates.io/crates/dgaard-monitor)
 
-A terminal UI that connects to `dgaard`'s Unix Domain Socket and visualises DNS activity without adding any overhead to the proxy process. It resolves domain hashes back to human-readable names via a static mapping file, then renders live feeds, per-client traffic (Talkers), timeline charts, and top-N block statistics.
+The umbrella binary that connects to `dgaard`'s Unix Domain Socket, resolves domain hashes via the static mapping file, and fans events out to one or more frontends. Frontends are cargo features so binaries only ship what they use.
 
-**Key capabilities:**
+**Feature flags:**
 
-- Parses the length-prefixed binary protocol emitted by `dgaard` (`[u16: length][u8: type][payload]`).
-- Watches the host-index file with `inotify` and hot-reloads domain mappings without restarting.
-- Aggregates events into bucketed timelines with zoom cycling and gap-filling.
-- Resolves client IPs to hostnames via reverse-DNS (PTR lookups) in the background.
-- Linux only (relies on `inotify`).
+- `tui` _(default)_ — real-time Ratatui dashboard, provided by [`dgaard-monitor-tui`](#dgaard-monitor-tui--tui-frontend-library).
+- `rest` _(default)_ — HTTP API, WebSocket stream, embedded web UI, and MCP server, provided by [`dgaard-monitor-rest`](#dgaard-monitor-rest--restwebsocketmcp-frontend-library).
+- `nats` — publishes events to a NATS subject, provided by [`dgaard-monitor-nats`](#dgaard-monitor-nats--nats-publisher-library).
+
+All frontends share the protocol, state store, storage, and IO layer from [`dgaard-monitor-core`](#dgaard-monitor-core--shared-monitor-library). Linux only (relies on `inotify` for hot-reloading the host-index).
 
 See the [dgaard-monitor README](./dgaard-monitor/README.md) for the full protocol and configuration reference.
+
+---
+
+### [dgaard-monitor-core](./dgaard-monitor-core) — Shared Monitor Library
+
+The core primitives every monitor frontend depends on, with **zero HTTP, UI, or sink concerns of its own**. Split out of `dgaard-monitor` so the TUI, REST/WS/MCP, and NATS frontends can be composed independently or embedded elsewhere.
+
+**Provides:**
+
+- **Protocol** — parser for `dgaard`'s length-prefixed binary stream (`[u16 length][u8 type][payload]`).
+- **State** — in-memory aggregation of live feeds, per-client Talkers, bucketed timelines.
+- **Storage** — `rusqlite` (bundled) persistence layer.
+- **IO / forwarding** — Unix-socket client, `inotify`-based host-index hot-reload, event fan-out.
+
+---
+
+### [dgaard-monitor-tui](./dgaard-monitor-tui) — TUI Frontend Library
+
+Ratatui + Crossterm dashboard on top of `dgaard-monitor-core`. Renders live feeds, per-client Talkers, timeline charts with zoom/gap-filling, and top-N block statistics; runs background PTR lookups for client hostnames via `hickory-resolver`. Consumed by `dgaard-monitor` when the `tui` feature is enabled.
+
+---
+
+### [dgaard-monitor-rest](./dgaard-monitor-rest) — REST/WebSocket/MCP Frontend Library
+
+`axum`-based HTTP frontend on top of `dgaard-monitor-core`. Exposes:
+
+- A **REST API** for querying live state and history.
+- A **WebSocket** stream that mirrors the binary telemetry feed to browsers.
+- An embedded **web UI** (via `rust-embed`) so a single binary self-serves the dashboard.
+- An **MCP server** (`rust-mcp-sdk`) that makes the same state queryable by LLM tooling.
+
+Consumed by `dgaard-monitor` when the `rest` feature is enabled.
+
+---
+
+### [dgaard-monitor-nats](./dgaard-monitor-nats) — NATS Publisher Library
+
+Bridges the monitor's event stream to a [NATS](https://nats.io) server via `async-nats`. Each parsed event is serialised as JSON and published to a configurable subject so external services can subscribe without holding a Unix socket. Consumed by `dgaard-monitor` when the `nats` feature is enabled.
 
 ---
 
@@ -76,9 +154,31 @@ See the [adblockptimize README](./adblockptimize/README.md) for the full format 
 
 ---
 
+### [list-stats](./list-stats) — Blocklist Statistics & Overlap Analyzer
+
+A standalone binary that ingests DNS blocklists (built-in sources or user-supplied files/URLs) and produces per-list, per-category, and global statistics as **JSON + CSV**, plus a static **ECharts** HTML dashboard that reads the JSON.
+
+**Computes:**
+
+- Entry counts split by type (plain / wildcard / regex).
+- Top TLDs and tokenised word frequencies per list, per category, and globally.
+- **Overlap matrix** between every pair of lists (shared entries + percentage) — useful for picking a minimal non-redundant blocklist set.
+
+Built-in sources cover uBlockOrigin, StevenBlack, and oisd, categorised as ads / privacy / malware / annoyances / fake-news / gambling / porn.
+
+See the [list-stats README](./list-stats/README.md) for the output schema and CLI options.
+
+---
+
 ## Architecture
 
 See [docs/Architecture.md](docs/Architecture.md).
+
+---
+
+## History & motivations
+
+How Dgaard grew from a single DNS proxy into this multi-crate workspace, and why the pieces are shaped the way they are: see [docs/History.md](docs/History.md).
 
 ---
 
