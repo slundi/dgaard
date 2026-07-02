@@ -232,6 +232,11 @@ async fn reload_lists_inner() {
     };
 
     new_engine.load_tld_filters(&cfg);
+    // TLD entries were appended after the initial sort — restore the
+    // sort invariant so binary_search_by_key in is_suffix_blocked works.
+    new_engine
+        .hierarchical_list
+        .sort_by(|a, b| a.depth.cmp(&b.depth).then(a.hash.cmp(&b.hash)));
     new_engine.load_lexical_filters(&cfg);
     new_engine.load_asn_filters(&cfg);
     new_engine.load_geoip_filter(&cfg);

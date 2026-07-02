@@ -1,0 +1,70 @@
+# dgaard DNS proxy — recursive mode config for Podman integration tests.
+# Used by docker/test-recursive.sh.
+# No external list downloads; filter sources are local files from docker/.
+
+[server]
+listen_addr = "0.0.0.0:5353"
+mode = "recursive"
+# Open ACL — container runs on an isolated bridge; source IPs are gateway addrs.
+allowed_networks = ["0.0.0.0/0"]
+
+[server.runtime]
+worker_threads = 1
+
+[security.structure]
+max_subdomain_depth = 5
+max_domain_length = 128
+force_lowercase_ascii = true
+block_chaos_class = true
+max_txt_record_length = 128
+max_answers_per_query = 10
+
+[security.lexical]
+enabled = true
+banned_keywords = ["porno", "casino", "drogue", "bet", "sex"]
+# false = substring match; mirrors docker/dgaard.toml for consistent filter tests
+strict_keyword_matching = false
+
+[security.intelligence]
+enabled = true
+entropy_threshold = 4.0
+entropy_fast = true
+min_word_length = 8
+consonant_ratio_threshold = 0.6
+max_consonant_sequence = 5
+use_ngram_model = false
+ngram_use_embedded = true
+ngram_embedded_languages = ["english"]
+ngram_probability_threshold = -4.0
+
+[security.idn]
+mode = "Off"
+allowed_scripts = ["Latin"]
+
+[recursive]
+max_delegation_depth = 8
+max_queries_per_resolution = 64
+max_cname_depth = 10
+# Slightly longer timeout to tolerate container network latency.
+query_timeout_ms = 5000
+qname_minimization = false
+strict_bailiwick = true
+ns_concurrency = "sequential"
+max_concurrent_queries = 2
+ns_stagger_ms = 200
+edns0_enabled = true
+edns0_udp_payload_size = 1232
+# Disable popularity persistence — no /var/dgaard in the test container.
+save_top_domains = 0
+save_path = ""
+save_interval_secs = 0
+decay_half_life_secs = 86400
+
+[tld]
+exclude = [".top", ".xyz", ".bid", ".country", ".stream", ".gdn"]
+
+[sources]
+blacklists = ["/etc/dgaard/blocklist.txt"]
+whitelists = ["/etc/dgaard/whitelist.txt"]
+host_index_path = ""
+browser_rules_path = ""

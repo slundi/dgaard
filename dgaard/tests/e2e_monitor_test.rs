@@ -310,11 +310,13 @@ db = "{db}"
 events_retention_hours = 72
 aggregates_retention_days = 90
 
+[server]
+listen = "127.0.0.1"
+token = ""
+
 [web]
 enabled = true
-listen = "127.0.0.1"
 port = {port}
-token = ""
 history_size = 5000
 "#,
             socket = stats_socket.display(),

@@ -56,11 +56,14 @@ pub fn is_suffix_blocked(domain: &str, filter: &FilterEngine) -> bool {
     while parts.len() > 1 {
         parts.remove(0);
         let parent = parts.join(".");
+        let depth = parent.bytes().filter(|&b| b == b'.').count() as u8;
         let hash = twox_hash::XxHash64::oneshot(filter.seed, parent.as_bytes());
 
+        // hierarchical_list is sorted by (depth, hash); use both fields as the
+        // search key so binary_search works correctly on mixed-depth lists.
         if let Ok(idx) = filter
             .hierarchical_list
-            .binary_search_by_key(&hash, |e| e.hash)
+            .binary_search_by_key(&(depth, hash), |e| (e.depth, e.hash))
         {
             let entry = &filter.hierarchical_list[idx];
             if entry.flags.contains(DomainEntryFlags::WILDCARD)

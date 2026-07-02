@@ -221,6 +221,9 @@ impl FilterEngine {
         };
 
         engine.load_tld_filters(config);
+        engine
+            .hierarchical_list
+            .sort_by(|a, b| a.depth.cmp(&b.depth).then(a.hash.cmp(&b.hash)));
         engine.load_lexical_filters(config);
         engine.load_asn_filters(config);
         engine.load_geoip_filter(config);

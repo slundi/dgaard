@@ -1,0 +1,37 @@
+# recursive-domains.txt — exercises dgaard in recursive DNS mode
+#
+# Format:  <domain>  <expected>
+#   expected = "nxdomain"  blocked by the filter pipeline (no network needed)
+#              "noerror"   filter passed AND recursive resolver found records
+#
+# Run: docker/test-recursive.sh
+# Config used: docker/dgaard-recursive.toml  (same filter tuning as dgaard.toml)
+
+# ── blocked: static blocklist ─────────────────────────────────────────────────
+malware-c2-demo.com          nxdomain
+phishing-bank-login.net      nxdomain
+ransomware-payload.io        nxdomain
+
+# ── blocked: high Shannon entropy (DGA / C2 channel) ─────────────────────────
+# threshold = 4.0 bits; same logic as demo-domains.txt
+xk9bvpq3zm7nrfta1s.com      nxdomain
+q8zp3vk7nbmxtj4rya.net      nxdomain
+
+# ── blocked: consonant clustering (unpronounceable labels) ───────────────────
+bxtzpkqmnvrf.com             nxdomain
+kvzxbtqprnmsd.net            nxdomain
+
+# ── blocked: banned keywords ──────────────────────────────────────────────────
+online-casino-slots.net      nxdomain
+porno-movies-online.com      nxdomain
+
+# ── blocked: excluded TLDs ────────────────────────────────────────────────────
+automation.top               nxdomain
+openai-api.xyz               nxdomain
+
+# ── resolved: clean well-known domains (recursive path) ─────────────────────
+# Requires outbound UDP port 53 from the container to root nameservers.
+google.com                   noerror
+cloudflare.com               noerror
+github.com                   noerror
+wikipedia.org                noerror

@@ -123,6 +123,10 @@
             nixfmt-rfc-style # Nix formatter (RFC 166)
             yamlfmt # YAML formatter
             nil # Nix language server (referenced in .vscode/settings.json)
+            # DNS utilities
+            dig
+            host
+            dnslookup
           ];
 
           # This runs when the shell starts
