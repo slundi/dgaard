@@ -296,6 +296,15 @@ pub struct IntelligenceConfig {
     /// Minimum acceptable N-gram log-probability.  A domain must score above
     /// this value in **at least one** loaded model to pass.
     pub ngram_probability_threshold: f32,
+
+    /// When `true`, blacklist entries whose SLD already trips the entropy /
+    /// consonant heuristics (using the thresholds above) are dropped at load
+    /// time — the DGA detector would flag them at query time anyway, so
+    /// storing them wastes memory and lookup work.
+    ///
+    /// Whitelist entries are never dropped by this optimisation.
+    /// Default: `false` (keep every entry).
+    pub ignore_entry_matching_entropy: bool,
 }
 
 impl Default for IntelligenceConfig {
@@ -315,6 +324,7 @@ impl Default for IntelligenceConfig {
                 String::from("/etc/dgaard/models/french.bin"),
             ],
             ngram_probability_threshold: -4.0,
+            ignore_entry_matching_entropy: false,
         }
     }
 }

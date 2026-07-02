@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::{
-    filter::process_line,
+    filter::{LoadFilter, process_line},
     model::{DomainEntry, DomainEntryFlags},
 };
 
@@ -27,6 +27,7 @@ pub fn load_list_file(
     regex_pool: &mut Vec<Regex>,
     host_index: &mut HashMap<u64, String>,
     browser_rules: &mut Vec<String>,
+    load_filter: Option<&LoadFilter>,
 ) -> std::io::Result<()> {
     let path = Path::new(path);
     if !path.exists() {
@@ -59,6 +60,7 @@ pub fn load_list_file(
                     regex_pool,
                     host_index,
                     browser_rules,
+                    load_filter,
                 );
             }
             break;
@@ -89,6 +91,7 @@ pub fn load_list_file(
                 regex_pool,
                 host_index,
                 browser_rules,
+                load_filter,
             );
         }
 
@@ -136,6 +139,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
@@ -161,6 +165,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert!(result.is_ok());
         // 3 valid domains (comment and blank line skipped)
@@ -183,6 +188,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert!(result.is_ok());
         assert_eq!(fm.len(), 3);
@@ -203,6 +209,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert!(result.is_ok());
         // Whitelist entries are in the hierarchical list
@@ -225,6 +232,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert!(result.is_ok());
         let _ = std::fs::remove_file(&path);
@@ -244,6 +252,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert!(result.is_ok());
         assert!(fm.is_empty());
@@ -265,6 +274,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert!(result.is_ok());
         assert!(

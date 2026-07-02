@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     config::Config,
-    filter::io::load_list_file,
+    filter::{LoadFilter, io::load_list_file},
     model::{DomainEntry, DomainEntryFlags},
 };
 
@@ -144,6 +144,12 @@ impl FilterEngine {
         let mut host_index: HashMap<u64, String> = HashMap::new();
         let mut browser_rules: Vec<String> = Vec::new();
 
+        // Load-time filter: drop blacklist / NRD entries that a cheaper
+        // query-time filter (structural sanity, TLD exclude, entropy) would
+        // already cover. Whitelists pass `None` — legitimate whitelist entries
+        // must survive regardless.
+        let load_filter = LoadFilter::from_config(config, seed);
+
         // Load blacklists
         for path in &sources.blacklists {
             if let Err(e) = load_list_file(
@@ -156,6 +162,7 @@ impl FilterEngine {
                 &mut regex_pool,
                 &mut host_index,
                 &mut browser_rules,
+                Some(&load_filter),
             ) {
                 eprintln!("Warning: Failed to load blacklist {}: {}", path, e);
             }
@@ -173,6 +180,7 @@ impl FilterEngine {
                 &mut regex_pool,
                 &mut host_index,
                 &mut browser_rules,
+                None,
             ) {
                 eprintln!("Warning: Failed to load whitelist {}: {}", path, e);
             }
@@ -190,6 +198,7 @@ impl FilterEngine {
                 &mut regex_pool,
                 &mut host_index,
                 &mut browser_rules,
+                Some(&load_filter),
             )
         {
             eprintln!(

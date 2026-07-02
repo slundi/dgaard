@@ -3,7 +3,7 @@ pub use dgaard_engine::filter::engine::FilterEngine;
 pub use dgaard_engine::filter::host_index;
 pub use dgaard_engine::filter::{load_list_file, write_browser_rules};
 
-use dgaard_engine::filter::load_list_content;
+use dgaard_engine::filter::{LoadFilter, load_list_content};
 use dgaard_engine::model::{DomainEntry, DomainEntryFlags};
 
 use http_body_util::{BodyExt, Empty};
@@ -76,6 +76,7 @@ pub(crate) async fn load_source(
     regex_pool: &mut Vec<Regex>,
     host_index: &mut HashMap<u64, String>,
     browser_rules: &mut Vec<String>,
+    load_filter: Option<&LoadFilter>,
 ) {
     match validate_input(source) {
         Ok(Resource::HttpUrl(url)) => match download_list(client, &url).await {
@@ -91,6 +92,7 @@ pub(crate) async fn load_source(
                     regex_pool,
                     host_index,
                     browser_rules,
+                    load_filter,
                 );
             }
             Err(e) => eprintln!("Warning: Failed to download {}: {}", source, e),
@@ -106,6 +108,7 @@ pub(crate) async fn load_source(
                 regex_pool,
                 host_index,
                 browser_rules,
+                load_filter,
             ) {
                 eprintln!("Warning: Failed to load {}: {}", source, e);
             }
@@ -155,6 +158,8 @@ async fn reload_lists_inner() {
     let mut host_index: HashMap<u64, String> = HashMap::new();
     let mut browser_rules: Vec<String> = Vec::new();
 
+    let load_filter = LoadFilter::from_config(&cfg, seed);
+
     for source in &sources.whitelists {
         println!("Loading whitelist from {}", source);
         load_source(
@@ -168,6 +173,7 @@ async fn reload_lists_inner() {
             &mut regex_pool,
             &mut host_index,
             &mut browser_rules,
+            None,
         )
         .await;
     }
@@ -185,6 +191,7 @@ async fn reload_lists_inner() {
             &mut regex_pool,
             &mut host_index,
             &mut browser_rules,
+            Some(&load_filter),
         )
         .await;
     }
@@ -202,6 +209,7 @@ async fn reload_lists_inner() {
             &mut regex_pool,
             &mut host_index,
             &mut browser_rules,
+            Some(&load_filter),
         )
         .await;
     }

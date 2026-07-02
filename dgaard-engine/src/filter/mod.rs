@@ -8,7 +8,7 @@ mod parser;
 pub mod types;
 
 pub use io::load_list_file;
-pub use types::{ListError, ListFormat};
+pub use types::{EntropyThresholds, ListError, ListFormat, LoadFilter};
 
 use regex::Regex;
 use std::collections::HashMap;
@@ -16,7 +16,16 @@ use std::collections::HashMap;
 use abp::parse_abp_line;
 use parser::{detect_format, parse_dnsmasq_line, parse_host_line, parse_plain_domain};
 
+use crate::dga::entropy::{calculate_entropy, calculate_entropy_fast, is_consonant_suspicious};
 use crate::model::{DomainEntry, DomainEntryFlags, RawDomainEntry};
+
+/// Emit a message only in debug builds. Release builds strip the call entirely.
+macro_rules! load_debug {
+    ($($arg:tt)*) => {
+        #[cfg(debug_assertions)]
+        eprintln!($($arg)*);
+    };
+}
 
 /// Checks if a domain is already covered by a broader rule (lower depth).
 fn is_redundant(
@@ -53,6 +62,68 @@ fn is_redundant(
     false
 }
 
+/// Return `Some(reason)` when a blacklist entry should be dropped at load
+/// time because a cheaper query-time filter already covers it.
+///
+/// Returns `None` for WILDCARD / REGEX entries (structural depth/length are
+/// meaningless on pattern text) and for whitelist entries.
+fn load_skip_reason(
+    entry: &RawDomainEntry,
+    base_flags: DomainEntryFlags,
+    filter: &LoadFilter,
+    seed: u64,
+) -> Option<&'static str> {
+    // Whitelist entries always survive.
+    let combined = base_flags | entry.flags;
+    if combined.contains(DomainEntryFlags::WHITELIST) {
+        return None;
+    }
+
+    // Pattern-like entries (wildcards, regexes) do not have a real depth or
+    // length in the RFC sense — skip these checks.
+    if combined.intersects(DomainEntryFlags::WILDCARD | DomainEntryFlags::REGEX) {
+        return None;
+    }
+
+    if entry.depth > filter.max_subdomain_depth {
+        return Some("depth > max_subdomain_depth");
+    }
+    if entry.value.len() > filter.max_domain_length as usize {
+        return Some("length > max_domain_length");
+    }
+    if let Some(tld) = entry.value.rsplit('.').next() {
+        let tld_hash = twox_hash::XxHash64::oneshot(seed, tld.to_ascii_lowercase().as_bytes());
+        if filter.tld_exclude_hashes.contains(&tld_hash) {
+            return Some("tld in tld.exclude");
+        }
+    }
+    if let Some(t) = filter.entropy_check.as_ref()
+        && let Some(sld) = sld_of(&entry.value)
+        && sld.len() >= t.min_word_length
+    {
+        let entropy = if t.fast {
+            calculate_entropy_fast(sld)
+        } else {
+            calculate_entropy(sld)
+        };
+        if entropy > t.threshold
+            || is_consonant_suspicious(sld, t.consonant_ratio_threshold, t.max_consonant_sequence)
+        {
+            return Some("entropy/consonant heuristic");
+        }
+    }
+
+    None
+}
+
+/// Extract the second-level label from a domain string (e.g. `example` in
+/// `sub.example.com`).
+fn sld_of(domain: &str) -> Option<&str> {
+    let mut parts = domain.rsplit('.');
+    let _tld = parts.next()?;
+    parts.next()
+}
+
 /// Process a single line using the appropriate parser based on detected format.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn process_line(
@@ -65,6 +136,7 @@ pub(crate) fn process_line(
     regex_pool: &mut Vec<Regex>,
     host_index: &mut HashMap<u64, String>,
     browser_rules: &mut Vec<String>,
+    load_filter: Option<&LoadFilter>,
 ) {
     let result: Result<RawDomainEntry, ListError<'_>> =
         parse_line(line, |trimmed| match detect_format(trimmed) {
@@ -83,6 +155,19 @@ pub(crate) fn process_line(
         Ok(entry) => {
             let combined_flags = base_flags | entry.flags;
             let is_whitelist = combined_flags.contains(DomainEntryFlags::WHITELIST);
+
+            if let Some(filter) = load_filter
+                && let Some(reason) = load_skip_reason(&entry, base_flags, filter, seed)
+            {
+                load_debug!(
+                    "dgaard-engine: skipping list entry '{}' ({})",
+                    entry.value,
+                    reason
+                );
+                #[cfg(not(debug_assertions))]
+                let _ = reason;
+                return;
+            }
 
             if !is_whitelist && is_redundant(&entry, fast_map, seed) {
                 return;
@@ -184,6 +269,7 @@ pub fn load_list_content(
     regex_pool: &mut Vec<Regex>,
     host_index: &mut HashMap<u64, String>,
     browser_rules: &mut Vec<String>,
+    load_filter: Option<&LoadFilter>,
 ) {
     for line in content.lines() {
         process_line(
@@ -196,6 +282,7 @@ pub fn load_list_content(
             regex_pool,
             host_index,
             browser_rules,
+            load_filter,
         );
     }
 }
@@ -277,6 +364,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert_eq!(fm.len(), 1);
         assert_eq!(hl[0].depth, 2);
@@ -295,6 +383,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert_eq!(fm.len(), 1);
         assert_eq!(hl[0].depth, 2);
@@ -313,6 +402,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert!(fm.is_empty());
     }
@@ -330,6 +420,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert_eq!(fm.len(), 1);
         assert_eq!(hl[0].flags, DomainEntryFlags::WHITELIST);
@@ -348,6 +439,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert_eq!(fm.len(), 1);
         let expected_hash = twox_hash::XxHash64::oneshot(SEED, "ads.example.com".as_bytes());
@@ -367,6 +459,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert_eq!(fm.len(), 0);
         assert_eq!(hl.len(), 1);
@@ -388,6 +481,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert_eq!(wp.len(), 1);
         assert_eq!(wp[0], "ads*.example.com");
@@ -407,6 +501,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert!(fm.is_empty());
         assert!(hl.is_empty());
@@ -426,6 +521,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert_eq!(fm.len(), 3);
         assert_eq!(hl.len(), 3);
@@ -445,6 +541,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert_eq!(fm.len(), 4);
     }
@@ -462,6 +559,7 @@ mod tests {
             &mut rp,
             &mut hi,
             &mut br,
+            None,
         );
         assert!(fm.is_empty());
     }
@@ -494,5 +592,187 @@ mod tests {
             depth: 1,
         };
         assert!(!is_redundant(&entry, &fast_map, SEED));
+    }
+
+    // ── LoadFilter-driven skip logic ─────────────────────────────────────────
+
+    fn base_load_filter() -> LoadFilter {
+        LoadFilter {
+            max_subdomain_depth: 3,
+            max_domain_length: 40,
+            tld_exclude_hashes: std::collections::HashSet::new(),
+            entropy_check: None,
+        }
+    }
+
+    #[test]
+    fn process_line_skips_when_depth_exceeds_max() {
+        let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
+        let filter = base_load_filter();
+        // depth = 4 (four dots), max_subdomain_depth = 3
+        process_line(
+            "a.b.c.d.example.com",
+            DomainEntryFlags::NONE,
+            SEED,
+            &mut fm,
+            &mut hl,
+            &mut wp,
+            &mut rp,
+            &mut hi,
+            &mut br,
+            Some(&filter),
+        );
+        assert!(fm.is_empty(), "entry deeper than max should be dropped");
+        assert!(hl.is_empty());
+    }
+
+    #[test]
+    fn process_line_skips_when_length_exceeds_max() {
+        let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
+        let filter = LoadFilter {
+            max_subdomain_depth: 20,
+            max_domain_length: 15,
+            tld_exclude_hashes: std::collections::HashSet::new(),
+            entropy_check: None,
+        };
+        process_line(
+            "way-too-long-domain-name.example.com",
+            DomainEntryFlags::NONE,
+            SEED,
+            &mut fm,
+            &mut hl,
+            &mut wp,
+            &mut rp,
+            &mut hi,
+            &mut br,
+            Some(&filter),
+        );
+        assert!(fm.is_empty(), "over-length entry should be dropped");
+        assert!(hl.is_empty());
+    }
+
+    #[test]
+    fn process_line_skips_when_tld_in_exclude() {
+        let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
+        let mut tld_hashes = std::collections::HashSet::new();
+        tld_hashes.insert(twox_hash::XxHash64::oneshot(SEED, b"xyz"));
+        let filter = LoadFilter {
+            max_subdomain_depth: 20,
+            max_domain_length: 253,
+            tld_exclude_hashes: tld_hashes,
+            entropy_check: None,
+        };
+        process_line(
+            "bad.xyz",
+            DomainEntryFlags::NONE,
+            SEED,
+            &mut fm,
+            &mut hl,
+            &mut wp,
+            &mut rp,
+            &mut hi,
+            &mut br,
+            Some(&filter),
+        );
+        assert!(
+            fm.is_empty(),
+            "entry whose TLD is excluded should be dropped"
+        );
+        assert!(hl.is_empty());
+    }
+
+    #[test]
+    fn process_line_skips_when_entropy_high_and_flag_enabled() {
+        let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
+        let filter = LoadFilter {
+            max_subdomain_depth: 20,
+            max_domain_length: 253,
+            tld_exclude_hashes: std::collections::HashSet::new(),
+            entropy_check: Some(EntropyThresholds {
+                threshold: 3.5,
+                fast: true,
+                min_word_length: 8,
+                consonant_ratio_threshold: 0.75,
+                max_consonant_sequence: 5,
+            }),
+        };
+        // SLD "a1b2c3d4e5f6g7h8" is high entropy; passes min_word_length=8.
+        process_line(
+            "a1b2c3d4e5f6g7h8.com",
+            DomainEntryFlags::NONE,
+            SEED,
+            &mut fm,
+            &mut hl,
+            &mut wp,
+            &mut rp,
+            &mut hi,
+            &mut br,
+            Some(&filter),
+        );
+        assert!(
+            fm.is_empty(),
+            "high-entropy blacklist entry should be dropped"
+        );
+    }
+
+    #[test]
+    fn process_line_keeps_whitelist_regardless_of_filter() {
+        let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
+        let mut tld_hashes = std::collections::HashSet::new();
+        tld_hashes.insert(twox_hash::XxHash64::oneshot(SEED, b"xyz"));
+        let filter = LoadFilter {
+            max_subdomain_depth: 1,
+            max_domain_length: 5,
+            tld_exclude_hashes: tld_hashes,
+            entropy_check: Some(EntropyThresholds {
+                threshold: 0.0,
+                fast: true,
+                min_word_length: 1,
+                consonant_ratio_threshold: 0.0,
+                max_consonant_sequence: 0,
+            }),
+        };
+        // Would trip every skip check if not for the WHITELIST flag.
+        process_line(
+            "a.b.c.d.example.xyz",
+            DomainEntryFlags::WHITELIST,
+            SEED,
+            &mut fm,
+            &mut hl,
+            &mut wp,
+            &mut rp,
+            &mut hi,
+            &mut br,
+            Some(&filter),
+        );
+        assert_eq!(hl.len(), 1, "whitelist entries must survive load filter");
+    }
+
+    #[test]
+    fn process_line_keeps_wildcard_regardless_of_length() {
+        let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
+        let filter = LoadFilter {
+            max_subdomain_depth: 1,
+            max_domain_length: 5,
+            tld_exclude_hashes: std::collections::HashSet::new(),
+            entropy_check: None,
+        };
+        process_line(
+            "||ads*.example.com^",
+            DomainEntryFlags::NONE,
+            SEED,
+            &mut fm,
+            &mut hl,
+            &mut wp,
+            &mut rp,
+            &mut hi,
+            &mut br,
+            Some(&filter),
+        );
+        assert_eq!(
+            hl.len(),
+            1,
+            "wildcard patterns bypass structural length/depth skip"
+        );
     }
 }

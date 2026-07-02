@@ -30,6 +30,7 @@ pub fn parse_list_data(name: &str, url: &str, category: &str, content: &str) -> 
         &mut regex_pool,
         &mut host_index,
         &mut browser_rules,
+        None,
     );
 
     let domain_hashes: HashSet<u64> = host_index.keys().copied().collect();

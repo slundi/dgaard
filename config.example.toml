@@ -151,6 +151,12 @@ ngram_models = ["/etc/dgaard/models/english.bin", "/etc/dgaard/models/french.bin
 # Typical range: -6.0 (strict) to -3.0 (lenient). Default: -4.0
 ngram_probability_threshold = -4.0
 
+# Drop blacklist entries whose SLD already trips the entropy / consonant
+# heuristics above at LOAD time. The DGA detector would block them at query
+# time anyway, so storing them wastes memory. Whitelists are never dropped
+# by this optimisation. Default: false.
+ignore_entry_matching_entropy = false
+
 [security.idn]
 # IDN filtering mode: "Off", "Strict" (block everything), "Smart" (european accent only)
 # force_lowercase_ascii must be false to use it
