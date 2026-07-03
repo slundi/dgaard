@@ -2,7 +2,7 @@ use hickory_resolver::proto::ProtoError;
 use std::collections::HashSet;
 use thiserror::Error;
 
-use crate::config::Config;
+use crate::config::{Config, IdnMode};
 
 #[derive(Error, Debug)]
 pub enum ListError<'a> {
@@ -54,6 +54,12 @@ pub struct LoadFilter {
     /// Only `Some` when `intelligence.enabled` and
     /// `intelligence.ignore_entry_matching_entropy` are both true.
     pub entropy_check: Option<EntropyThresholds>,
+    /// Drop blacklist entries whose domain contains Punycode (`xn--`) labels
+    /// or non-ASCII characters at load time, because the query-time IDN filter
+    /// will block them anyway.
+    ///
+    /// Set when `server.block_idn` is `true` or `security.idn.mode` is not `Off`.
+    pub skip_idn: bool,
 }
 
 impl LoadFilter {
@@ -84,11 +90,14 @@ impl LoadFilter {
                 max_consonant_sequence: intel.max_consonant_sequence,
             });
 
+        let skip_idn = config.server.block_idn || config.security.idn.mode != IdnMode::Off;
+
         Self {
             max_subdomain_depth: structure.max_subdomain_depth,
             max_domain_length: structure.max_domain_length,
             tld_exclude_hashes,
             entropy_check,
+            skip_idn,
         }
     }
 }

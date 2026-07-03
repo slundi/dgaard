@@ -85,6 +85,10 @@ fn load_skip_reason(
         return None;
     }
 
+    if filter.skip_idn && is_idn_domain(&entry.value) {
+        return Some("idn blocked");
+    }
+
     if entry.depth > filter.max_subdomain_depth {
         return Some("depth > max_subdomain_depth");
     }
@@ -114,6 +118,12 @@ fn load_skip_reason(
     }
 
     None
+}
+
+/// Return `true` when a domain string is an Internationalized Domain Name —
+/// either Punycode-encoded (`xn--` label) or containing non-ASCII bytes.
+fn is_idn_domain(domain: &str) -> bool {
+    !domain.is_ascii() || domain.split('.').any(|label| label.starts_with("xn--"))
 }
 
 /// Extract the second-level label from a domain string (e.g. `example` in
@@ -602,6 +612,7 @@ mod tests {
             max_domain_length: 40,
             tld_exclude_hashes: std::collections::HashSet::new(),
             entropy_check: None,
+            skip_idn: false,
         }
     }
 
@@ -634,6 +645,7 @@ mod tests {
             max_domain_length: 15,
             tld_exclude_hashes: std::collections::HashSet::new(),
             entropy_check: None,
+            skip_idn: false,
         };
         process_line(
             "way-too-long-domain-name.example.com",
@@ -661,6 +673,7 @@ mod tests {
             max_domain_length: 253,
             tld_exclude_hashes: tld_hashes,
             entropy_check: None,
+            skip_idn: false,
         };
         process_line(
             "bad.xyz",
@@ -695,6 +708,7 @@ mod tests {
                 consonant_ratio_threshold: 0.75,
                 max_consonant_sequence: 5,
             }),
+            skip_idn: false,
         };
         // SLD "a1b2c3d4e5f6g7h8" is high entropy; passes min_word_length=8.
         process_line(
@@ -731,6 +745,7 @@ mod tests {
                 consonant_ratio_threshold: 0.0,
                 max_consonant_sequence: 0,
             }),
+            skip_idn: false,
         };
         // Would trip every skip check if not for the WHITELIST flag.
         process_line(
@@ -756,6 +771,7 @@ mod tests {
             max_domain_length: 5,
             tld_exclude_hashes: std::collections::HashSet::new(),
             entropy_check: None,
+            skip_idn: false,
         };
         process_line(
             "||ads*.example.com^",
@@ -774,5 +790,53 @@ mod tests {
             1,
             "wildcard patterns bypass structural length/depth skip"
         );
+    }
+
+    #[test]
+    fn process_line_skips_punycode_when_skip_idn_enabled() {
+        let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
+        let filter = LoadFilter {
+            skip_idn: true,
+            ..base_load_filter()
+        };
+        process_line(
+            "xn--pple-43d.com",
+            DomainEntryFlags::NONE,
+            SEED,
+            &mut fm,
+            &mut hl,
+            &mut wp,
+            &mut rp,
+            &mut hi,
+            &mut br,
+            Some(&filter),
+        );
+        assert!(
+            fm.is_empty(),
+            "punycode entry should be dropped when skip_idn"
+        );
+    }
+
+    #[test]
+    fn process_line_keeps_punycode_when_skip_idn_disabled() {
+        let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
+        let filter = LoadFilter {
+            max_subdomain_depth: 20,
+            max_domain_length: 253,
+            ..base_load_filter()
+        };
+        process_line(
+            "xn--pple-43d.com",
+            DomainEntryFlags::NONE,
+            SEED,
+            &mut fm,
+            &mut hl,
+            &mut wp,
+            &mut rp,
+            &mut hi,
+            &mut br,
+            Some(&filter),
+        );
+        assert!(!fm.is_empty(), "punycode entry kept when skip_idn is false");
     }
 }
