@@ -46,6 +46,9 @@ rustls-pemfile = "2"
 tokio-rustls = "0.26"
 webpki-roots = "0.26"
 
+# DoQ transport
+quinn.workspace = true
+
 # Structured output
 serde.workspace = true
 serde_json.workspace = true
@@ -55,4 +58,5 @@ env_logger.workspace = true
 log.workspace = true
 
 [dev-dependencies]
+rcgen = "0.13"
 tokio = { workspace = true, features = ["process"] }

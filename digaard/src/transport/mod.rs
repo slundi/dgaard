@@ -1,3 +1,4 @@
+pub mod doq;
 pub mod https;
 pub mod tcp;
 pub mod tls;
@@ -17,6 +18,8 @@ pub enum TransportKind {
     Tls,
     /// DNS over HTTPS (RFC 8484)
     Https,
+    /// DNS over QUIC (RFC 9250)
+    Quic,
 }
 
 impl TransportKind {
@@ -24,7 +27,7 @@ impl TransportKind {
     pub fn default_port(self) -> u16 {
         match self {
             Self::Udp | Self::Tcp => 53,
-            Self::Tls => 853,
+            Self::Tls | Self::Quic => 853,
             Self::Https => 443,
         }
     }
@@ -126,6 +129,7 @@ pub async fn send_with_wire(
         TransportKind::Tcp => tcp::send_raw(cfg, query).await?,
         TransportKind::Tls => tls::send_raw(cfg, query).await?,
         TransportKind::Https => https::send_raw(cfg, query).await?,
+        TransportKind::Quic => doq::send_raw(cfg, query).await?,
     };
     let msg = Message::from_bytes(&wire)?;
     if kind == TransportKind::Udp && msg.metadata.truncation {

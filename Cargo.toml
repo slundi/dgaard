@@ -54,6 +54,9 @@ hickory-resolver = "0.26.1"
 # IDN A-label / U-label conversion
 idna = "1"
 
+# QUIC transport for DoQ
+quinn = { version = "0.11", default-features = false, features = ["rustls-ring", "runtime-tokio"] }
+
 # URL parsing
 url = "2.5.8"
 

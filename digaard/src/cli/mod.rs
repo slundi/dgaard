@@ -154,7 +154,10 @@ fn transport() -> impl Parser<TransportKind> {
     let https = long("https")
         .help("DNS over HTTPS (DoH, port 443)")
         .req_flag(TransportKind::Https);
-    construct!([udp, tcp, tls, https]).fallback(TransportKind::Udp)
+    let quic = long("quic")
+        .help("DNS over QUIC (DoQ, RFC 9250, port 853)")
+        .req_flag(TransportKind::Quic);
+    construct!([udp, tcp, tls, https, quic]).fallback(TransportKind::Udp)
 }
 
 // ── output format ─────────────────────────────────────────────────────────────
