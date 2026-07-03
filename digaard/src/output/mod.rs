@@ -8,6 +8,8 @@ pub use color::ColorMode;
 
 use hickory_proto::op::Message;
 
+use crate::dnssec::Verdict;
+
 /// All output formats digaard can emit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
@@ -25,6 +27,8 @@ pub struct Rendered<'a> {
     /// Raw wire bytes of the response (for `--hex`).
     pub wire: &'a [u8],
     pub elapsed_ms: Option<u64>,
+    /// DNSSEC verdict when `--validate` is enabled.
+    pub verdict: Option<&'a Verdict>,
 }
 
 /// Rendering options shared across formats.
@@ -50,7 +54,13 @@ pub fn render(opts: RenderOpts, item: &Rendered<'_>) -> String {
     match opts.format {
         OutputFormat::Text => text::render(item, opts.short, opts.color, opts.edge),
         OutputFormat::Json => {
-            let mut out = json::render(item.response, item.elapsed_ms, item.query, opts.edge);
+            let mut out = json::render(
+                item.response,
+                item.elapsed_ms,
+                item.query,
+                opts.edge,
+                item.verdict,
+            );
             out.push('\n');
             out
         }

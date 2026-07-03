@@ -7,9 +7,11 @@ use hickory_proto::rr::RecordType;
 use tokio::sync::Semaphore;
 
 use digaard::cli::{DohMethod as CliDohMethod, TlsOpts};
+use digaard::dnssec::{TrustAnchors, Verdict, classify, parse_trust_anchor_file};
 use digaard::error::{Error, Result};
 use digaard::output::{RenderOpts, Rendered};
 use digaard::query::{QueryFlags, build_query, pad_message, resolve_name};
+use digaard::stats::Stats;
 use digaard::transport::{
     DohMethod, DohSettings, ServerPicker, ServerStrategy, TlsSettings, TransportConfig,
     TransportKind,
@@ -46,6 +48,7 @@ async fn run() -> Result<()> {
     }
 
     let picker = Arc::new(build_server_picker(&args)?);
+    let trust_anchors = Arc::new(load_trust_anchors(&args.trust_anchor_files)?);
     let batch = targets.len() > 1;
     let concurrency = args
         .concurrency
@@ -68,19 +71,22 @@ async fn run() -> Result<()> {
         let picker = Arc::clone(&picker);
         let semaphore = Arc::clone(&semaphore);
         let args = args.clone();
+        let anchors = Arc::clone(&trust_anchors);
         handles.push(tokio::spawn(async move {
             let _permit = semaphore.acquire_owned().await.expect("semaphore closed");
-            do_one(&target, &args, &picker).await
+            do_one(&target, &args, &picker, &anchors).await
         }));
     }
 
     let stdout = std::io::stdout();
     let mut lock = stdout.lock();
     let mut first_error: Option<Error> = None;
+    let mut stats = Stats::new();
 
     for (target, handle) in targets.iter().zip(handles) {
         match handle.await.expect("join") {
             Ok(one) => {
+                stats.record_ok(one.elapsed_ms);
                 let item = Rendered {
                     query: target,
                     response: &one.response,
@@ -90,11 +96,13 @@ async fn run() -> Result<()> {
                     } else {
                         None
                     },
+                    verdict: one.verdict.as_ref(),
                 };
                 let rendered = output::render_batch(opts, std::slice::from_ref(&item));
                 lock.write_all(rendered.as_bytes()).map_err(Error::Io)?;
             }
             Err(e) => {
+                stats.record_err();
                 eprintln!("{target}: {e}");
                 first_error.get_or_insert(e);
             }
@@ -102,11 +110,29 @@ async fn run() -> Result<()> {
     }
     lock.flush().map_err(Error::Io)?;
 
+    if args.stats && stats.len() > 1 {
+        eprint!("{}", stats.summary().to_stderr_lines());
+    }
+
     if let Some(e) = first_error {
         return Err(e);
     }
 
     Ok(())
+}
+
+fn load_trust_anchors(files: &[String]) -> Result<TrustAnchors> {
+    let mut anchors = TrustAnchors::new();
+    for path in files {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| Error::Transport(format!("--trust-anchor: read {path}: {e}")))?;
+        let parsed = parse_trust_anchor_file(&text)
+            .map_err(|e| Error::Transport(format!("--trust-anchor {path}: {e}")))?;
+        for k in parsed.drain() {
+            anchors.add_dnskey(k.0, k.1);
+        }
+    }
+    Ok(anchors)
 }
 
 fn build_server_picker(args: &cli::Args) -> Result<ServerPicker> {
@@ -160,9 +186,15 @@ struct QueryOutcome {
     response: Message,
     wire: Vec<u8>,
     elapsed_ms: u64,
+    verdict: Option<Verdict>,
 }
 
-async fn do_one(target: &str, args: &cli::Args, picker: &ServerPicker) -> Result<QueryOutcome> {
+async fn do_one(
+    target: &str,
+    args: &cli::Args,
+    picker: &ServerPicker,
+    anchors: &TrustAnchors,
+) -> Result<QueryOutcome> {
     let name = resolve_name(target, args.reverse)?;
     let qtype = if args.reverse {
         RecordType::PTR
@@ -170,12 +202,15 @@ async fn do_one(target: &str, args: &cli::Args, picker: &ServerPicker) -> Result
         args.qtype
     };
 
+    // --validate implies --dnssec (we need RRSIGs to classify).
+    let dnssec_ok = args.dnssec || args.validate;
+
     let flags = QueryFlags {
         recursion_desired: !args.no_rd,
         authoritative: args.aa,
         authentic_data: args.ad,
         checking_disabled: args.cd,
-        dnssec_ok: args.dnssec,
+        dnssec_ok,
     };
 
     let mut query = build_query(&name, qtype, args.qclass, flags, &args.edns)?;
@@ -190,10 +225,17 @@ async fn do_one(target: &str, args: &cli::Args, picker: &ServerPicker) -> Result
     };
     let elapsed_ms = start.elapsed().as_millis() as u64;
 
+    let verdict = if args.validate {
+        Some(classify(&response, anchors))
+    } else {
+        None
+    };
+
     Ok(QueryOutcome {
         response,
         wire,
         elapsed_ms,
+        verdict,
     })
 }
 

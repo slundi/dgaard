@@ -3,9 +3,16 @@ use hickory_proto::rr::Record;
 use serde_json::{Value, json};
 
 use super::edge;
+use crate::dnssec::Verdict;
 use crate::idn;
 
-pub fn render(msg: &Message, elapsed_ms: Option<u64>, query_label: &str, edge: bool) -> String {
+pub fn render(
+    msg: &Message,
+    elapsed_ms: Option<u64>,
+    query_label: &str,
+    edge: bool,
+    verdict: Option<&Verdict>,
+) -> String {
     let m = &msg.metadata;
 
     let questions: Vec<Value> = msg
@@ -56,6 +63,13 @@ pub fn render(msg: &Message, elapsed_ms: Option<u64>, query_label: &str, edge: b
                 .collect::<Vec<_>>()
                 .into();
         }
+    }
+
+    if let Some(v) = verdict {
+        obj["dnssec"] = json!({
+            "status": v.status.as_str(),
+            "reason": v.reason,
+        });
     }
 
     if let Some(ms) = elapsed_ms {

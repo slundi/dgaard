@@ -72,6 +72,8 @@ pub struct Args {
     pub doh: DohOpts,
     pub edge: bool,
     pub hex: bool,
+    pub validate: bool,
+    pub trust_anchor_files: Vec<String>,
     pub names: Vec<String>,
 }
 
@@ -409,6 +411,15 @@ pub fn parse() -> Args {
         .help("Print raw response wire bytes as a hex dump instead of parsed records")
         .switch();
 
+    let validate = long("validate")
+        .help("Classify response as SECURE / INSECURE / BOGUS (implies --dnssec)")
+        .switch();
+
+    let trust_anchor_files = long("trust-anchor")
+        .help("BIND-style trust-anchor file with DNSKEY records. Repeatable.")
+        .argument::<String>("FILE")
+        .many();
+
     construct!(Args {
         qtype,
         qclass,
@@ -438,6 +449,8 @@ pub fn parse() -> Args {
         doh,
         edge,
         hex,
+        validate,
+        trust_anchor_files,
         names,
     })
     .to_options()

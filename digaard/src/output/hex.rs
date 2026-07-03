@@ -47,6 +47,7 @@ mod tests {
             response: &hickory_proto::op::Message::query(),
             wire: &wire,
             elapsed_ms: None,
+            verdict: None,
         };
         let out = render(&item);
         // First row prints bytes 00 through 0f
@@ -64,6 +65,7 @@ mod tests {
             response: &hickory_proto::op::Message::query(),
             wire: &wire,
             elapsed_ms: None,
+            verdict: None,
         };
         let out = render(&item);
         assert!(out.contains("|digaard..|"));

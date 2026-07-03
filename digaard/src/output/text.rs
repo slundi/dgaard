@@ -65,6 +65,22 @@ pub fn render(item: &Rendered<'_>, short: bool, color: ColorMode, edge: bool) ->
             }
         }
 
+        if let Some(v) = item.verdict {
+            out.push('\n');
+            let style = match v.status {
+                crate::dnssec::Status::Secure => palette.header,
+                crate::dnssec::Status::Bogus => palette.error,
+                crate::dnssec::Status::Insecure => palette.comment,
+            };
+            out.push_str(&format!(
+                "{s};; DNSSEC: {status} — {reason}{r}\n",
+                s = style,
+                status = v.status.as_str(),
+                reason = v.reason,
+                r = palette.reset,
+            ));
+        }
+
         if let Some(ms) = item.elapsed_ms {
             out.push_str(&format!(
                 "\n{c};; Query time: {ms} ms{r}\n{c};; MSG SIZE rcvd: {sz}{r}\n",
