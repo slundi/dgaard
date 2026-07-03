@@ -1,20 +1,14 @@
-mod cli;
-mod error;
-mod output;
-mod transport;
-
 use std::time::Instant;
 
 use hickory_proto::op::{Edns, Message, Query};
 use hickory_proto::rr::{Name, RecordType};
 
-use error::{Error, Result};
-use transport::{TransportConfig, TransportKind};
+use digaard::error::{Error, Result};
+use digaard::transport::{TransportConfig, TransportKind};
+use digaard::{cli, output, transport};
 
 #[tokio::main]
 async fn main() {
-    env_logger::init();
-
     if let Err(e) = run().await {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -23,6 +17,8 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let args = cli::parse();
+
+    init_logger(args.verbose);
 
     let name = resolve_name(&args)?;
     let qtype = if args.reverse {
@@ -38,6 +34,7 @@ async fn run() -> Result<()> {
         server,
         port,
         timeout_ms: args.timeout_ms,
+        retry: args.retry,
         ipv4_only: args.ipv4,
         ipv6_only: args.ipv6,
     };
@@ -62,6 +59,21 @@ async fn run() -> Result<()> {
     print!("{out}");
 
     Ok(())
+}
+
+fn init_logger(verbosity: usize) {
+    // Only override RUST_LOG if the user asked for more verbosity via -v/-vv/-vvv.
+    let level = match verbosity {
+        0 => None,
+        1 => Some("info"),
+        2 => Some("debug"),
+        _ => Some("trace"),
+    };
+    let mut builder = env_logger::Builder::from_default_env();
+    if let Some(lvl) = level {
+        builder.parse_filters(lvl);
+    }
+    builder.init();
 }
 
 fn resolve_name(args: &cli::Args) -> Result<Name> {

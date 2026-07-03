@@ -10,6 +10,10 @@ readme = "README.md"
 repository = "https://codeberg.org/slundi/dgaard"
 description = "A modern DNS lookup CLI — dig done right."
 
+[lib]
+name = "digaard"
+path = "src/lib.rs"
+
 [[bin]]
 name = "digaard"
 path = "src/main.rs"

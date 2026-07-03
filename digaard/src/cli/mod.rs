@@ -6,7 +6,6 @@ use crate::transport::TransportKind;
 
 #[derive(Debug, Clone)]
 pub struct Args {
-    pub name: String,
     pub qtype: RecordType,
     pub qclass: DNSClass,
     pub server: Option<String>,
@@ -23,7 +22,10 @@ pub struct Args {
     pub cd: bool,
     pub reverse: bool,
     pub timeout_ms: u64,
+    pub retry: u32,
+    pub verbose: usize,
     pub stats: bool,
+    pub name: String,
 }
 
 // ── record type ───────────────────────────────────────────────────────────────
@@ -155,12 +157,23 @@ pub fn parse() -> Args {
         .argument::<u64>("MS")
         .fallback(5000);
 
+    let retry = long("retry")
+        .help("Number of retries on UDP timeout [default: 2]")
+        .argument::<u32>("N")
+        .fallback(2);
+
+    let verbose = bpaf::short('v')
+        .long("verbose")
+        .help("Increase logging verbosity (repeatable: -v, -vv, -vvv)")
+        .req_flag(())
+        .many()
+        .map(|v| v.len());
+
     let stats = long("stats")
         .help("Print elapsed time and message size after the response")
         .switch();
 
     construct!(Args {
-        name,
         qtype,
         qclass,
         server,
@@ -177,12 +190,16 @@ pub fn parse() -> Args {
         cd,
         reverse,
         timeout_ms,
+        retry,
+        verbose,
         stats,
+        name,
     })
     .to_options()
     .descr("A modern DNS lookup CLI")
     .footer(
         "Examples:\n  digaard example.com\n  digaard -t MX gmail.com @8.8.8.8\n  digaard -x 1.1.1.1\n  digaard --tls example.com @1.1.1.1",
     )
+    .version(env!("CARGO_PKG_VERSION"))
     .run()
 }

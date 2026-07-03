@@ -34,8 +34,11 @@ pub struct TransportConfig {
     pub server: String,
     pub port: u16,
     pub timeout_ms: u64,
-    /// Preferred address family: None = system default, Some(true) = IPv4 only, Some(false) = IPv6 only.
+    /// Number of retries on UDP timeout (UDP only; ignored by other transports).
+    pub retry: u32,
+    /// Force IPv4-only outbound socket.
     pub ipv4_only: bool,
+    /// Force IPv6-only outbound socket.
     pub ipv6_only: bool,
 }
 

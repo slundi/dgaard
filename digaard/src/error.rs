@@ -6,12 +6,6 @@ pub enum Error {
     #[error("invalid name: {0}")]
     InvalidName(String),
 
-    #[error("invalid record type: {0}")]
-    InvalidRecordType(String),
-
-    #[error("invalid server address: {0}")]
-    InvalidServer(String),
-
     #[error("transport error: {0}")]
     Transport(String),
 
