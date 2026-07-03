@@ -2,18 +2,25 @@ use hickory_proto::op::Message;
 use hickory_proto::rr::Record;
 use serde_json::{Value, json};
 
-pub fn render(msg: &Message, elapsed_ms: Option<u64>) -> String {
+pub fn render(msg: &Message, elapsed_ms: Option<u64>, query_label: &str) -> String {
     let m = &msg.metadata;
 
     let questions: Vec<Value> = msg
         .queries
         .iter()
-        .map(|q| json!({ "name": q.name().to_string(), "type": q.query_type().to_string(), "class": q.query_class().to_string() }))
+        .map(|q| {
+            json!({
+                "name": q.name().to_string(),
+                "type": q.query_type().to_string(),
+                "class": q.query_class().to_string(),
+            })
+        })
         .collect();
 
     let mut obj = json!({
-        "status": format!("{}", m.response_code),
-        "id": m.id,
+        "query":      query_label,
+        "status":     format!("{}", m.response_code),
+        "id":         m.id,
         "flags": {
             "qr": matches!(m.message_type, hickory_proto::op::MessageType::Response),
             "aa": m.authoritative,

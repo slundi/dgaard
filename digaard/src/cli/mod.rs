@@ -1,7 +1,7 @@
 use bpaf::*;
 use hickory_proto::rr::{DNSClass, RecordType};
 
-use crate::output::OutputFormat;
+use crate::output::{ColorMode, OutputFormat};
 use crate::transport::TransportKind;
 
 #[derive(Debug, Clone)]
@@ -12,6 +12,7 @@ pub struct Args {
     pub port: Option<u16>,
     pub transport: TransportKind,
     pub format: OutputFormat,
+    pub color: ColorMode,
     pub short: bool,
     pub no_rd: bool,
     pub dnssec: bool,
@@ -25,7 +26,9 @@ pub struct Args {
     pub retry: u32,
     pub verbose: usize,
     pub stats: bool,
-    pub name: String,
+    pub file: Option<String>,
+    pub concurrency: Option<usize>,
+    pub names: Vec<String>,
 }
 
 // ── record type ───────────────────────────────────────────────────────────────
@@ -101,17 +104,33 @@ fn format() -> impl Parser<OutputFormat> {
     let text = long("text")
         .help("Dig-style text output (default)")
         .req_flag(OutputFormat::Text);
-    let json = short('j')
-        .long("json")
-        .help("JSON output")
+    let json = long("json")
+        .help("JSON output (line-delimited when multiple queries)")
         .req_flag(OutputFormat::Json);
     construct!([text, json]).fallback(OutputFormat::Text)
+}
+
+// ── color mode ────────────────────────────────────────────────────────────────
+
+fn color() -> impl Parser<ColorMode> {
+    long("color")
+        .help("Colorize pretty-print output: auto (default), always, never")
+        .argument::<String>("WHEN")
+        .parse(|s| match s.to_ascii_lowercase().as_str() {
+            "auto" => Ok(ColorMode::Auto),
+            "always" | "yes" | "on" => Ok(ColorMode::Always),
+            "never" | "no" | "off" => Ok(ColorMode::Never),
+            other => Err(format!("unknown color mode '{other}'")),
+        })
+        .fallback(ColorMode::Auto)
 }
 
 // ── top-level ─────────────────────────────────────────────────────────────────
 
 pub fn parse() -> Args {
-    let name = positional::<String>("NAME").help("Domain name to query");
+    let names = positional::<String>("NAME")
+        .help("Domain name(s) to query; repeat for batch")
+        .many();
     let qtype = qtype();
     let qclass = qclass();
     let server = server();
@@ -124,6 +143,7 @@ pub fn parse() -> Args {
 
     let transport = transport();
     let format = format();
+    let color = color();
 
     let short = {
         use bpaf::short as s;
@@ -170,8 +190,20 @@ pub fn parse() -> Args {
         .map(|v| v.len());
 
     let stats = long("stats")
-        .help("Print elapsed time and message size after the response")
+        .help("Print elapsed time and message size after each response")
         .switch();
+
+    let file = bpaf::short('f')
+        .long("file")
+        .help("Read domains from file, one per line; use '-' for stdin. Blank lines and '#' comments ignored")
+        .argument::<String>("PATH")
+        .optional();
+
+    let concurrency = bpaf::short('j')
+        .long("concurrency")
+        .help("Max concurrent in-flight queries [default: min(cpus, 32)]")
+        .argument::<usize>("N")
+        .optional();
 
     construct!(Args {
         qtype,
@@ -180,6 +212,7 @@ pub fn parse() -> Args {
         port,
         transport,
         format,
+        color,
         short,
         no_rd,
         dnssec,
@@ -193,12 +226,20 @@ pub fn parse() -> Args {
         retry,
         verbose,
         stats,
-        name,
+        file,
+        concurrency,
+        names,
     })
     .to_options()
     .descr("A modern DNS lookup CLI")
     .footer(
-        "Examples:\n  digaard example.com\n  digaard -t MX gmail.com @8.8.8.8\n  digaard -x 1.1.1.1\n  digaard --tls example.com @1.1.1.1",
+        "Examples:\n  \
+         digaard example.com\n  \
+         digaard -t MX gmail.com @8.8.8.8\n  \
+         digaard -x 1.1.1.1\n  \
+         digaard --tls example.com @1.1.1.1\n  \
+         digaard -f domains.txt -j 16 --json\n  \
+         cat domains.txt | digaard -f -",
     )
     .version(env!("CARGO_PKG_VERSION"))
     .run()
