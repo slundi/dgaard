@@ -62,6 +62,28 @@ fn is_redundant(
     false
 }
 
+/// Reason why a blacklist entry is dropped at load time.
+#[repr(u8)]
+enum LoadSkipReason {
+    Idn = 0,
+    DepthExceeded = 1,
+    LengthExceeded = 2,
+    TldExcluded = 3,
+    EntropyHeuristic = 4,
+}
+
+impl std::fmt::Display for LoadSkipReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Idn => "idn blocked",
+            Self::DepthExceeded => "depth > max_subdomain_depth",
+            Self::LengthExceeded => "length > max_domain_length",
+            Self::TldExcluded => "tld in tld.exclude",
+            Self::EntropyHeuristic => "entropy/consonant heuristic",
+        })
+    }
+}
+
 /// Return `Some(reason)` when a blacklist entry should be dropped at load
 /// time because a cheaper query-time filter already covers it.
 ///
@@ -72,7 +94,7 @@ fn load_skip_reason(
     base_flags: DomainEntryFlags,
     filter: &LoadFilter,
     seed: u64,
-) -> Option<&'static str> {
+) -> Option<LoadSkipReason> {
     // Whitelist entries always survive.
     let combined = base_flags | entry.flags;
     if combined.contains(DomainEntryFlags::WHITELIST) {
@@ -86,19 +108,19 @@ fn load_skip_reason(
     }
 
     if filter.skip_idn && is_idn_domain(&entry.value) {
-        return Some("idn blocked");
+        return Some(LoadSkipReason::Idn);
     }
 
     if entry.depth > filter.max_subdomain_depth {
-        return Some("depth > max_subdomain_depth");
+        return Some(LoadSkipReason::DepthExceeded);
     }
     if entry.value.len() > filter.max_domain_length as usize {
-        return Some("length > max_domain_length");
+        return Some(LoadSkipReason::LengthExceeded);
     }
     if let Some(tld) = entry.value.rsplit('.').next() {
         let tld_hash = twox_hash::XxHash64::oneshot(seed, tld.to_ascii_lowercase().as_bytes());
         if filter.tld_exclude_hashes.contains(&tld_hash) {
-            return Some("tld in tld.exclude");
+            return Some(LoadSkipReason::TldExcluded);
         }
     }
     if let Some(t) = filter.entropy_check.as_ref()
@@ -113,7 +135,7 @@ fn load_skip_reason(
         if entropy > t.threshold
             || is_consonant_suspicious(sld, t.consonant_ratio_threshold, t.max_consonant_sequence)
         {
-            return Some("entropy/consonant heuristic");
+            return Some(LoadSkipReason::EntropyHeuristic);
         }
     }
 
