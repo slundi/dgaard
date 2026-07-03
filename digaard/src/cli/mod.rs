@@ -4,6 +4,18 @@ use hickory_proto::rr::{DNSClass, RecordType};
 use crate::output::{ColorMode, OutputFormat};
 use crate::transport::TransportKind;
 
+/// EDNS(0) OPT options that shape the outgoing query.
+#[derive(Debug, Clone)]
+pub struct EdnsOpts {
+    pub enabled: bool,
+    pub bufsize: Option<u16>,
+    pub subnet: Option<String>,
+    pub nsid: bool,
+    pub cookie: Option<Vec<u8>>,
+    /// Block size in bytes; `None` = padding disabled.
+    pub pad: Option<u16>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Args {
     pub qtype: RecordType,
@@ -28,6 +40,9 @@ pub struct Args {
     pub stats: bool,
     pub file: Option<String>,
     pub concurrency: Option<usize>,
+    pub edns: EdnsOpts,
+    pub edge: bool,
+    pub hex: bool,
     pub names: Vec<String>,
 }
 
@@ -72,7 +87,6 @@ fn server() -> impl Parser<Option<String>> {
         .optional();
 
     // Accept a bare token that starts with '@', e.g. @8.8.8.8, anywhere on the command line.
-    // `any()` returns None (leaves arg in place) for tokens that don't start with '@'.
     let at_token = any::<String, _, _>("@SERVER", |s: String| {
         s.strip_prefix('@').map(str::to_owned)
     })
@@ -123,6 +137,95 @@ fn color() -> impl Parser<ColorMode> {
             other => Err(format!("unknown color mode '{other}'")),
         })
         .fallback(ColorMode::Auto)
+}
+
+// ── EDNS(0) ──────────────────────────────────────────────────────────────────
+
+fn edns_opts() -> impl Parser<EdnsOpts> {
+    // --edns / --no-edns pair. Default enabled.
+    let enable = long("edns")
+        .help("Enable EDNS(0) OPT record (default)")
+        .req_flag(true);
+    let disable = long("no-edns")
+        .help("Disable EDNS(0) OPT record")
+        .req_flag(false);
+    let enabled = construct!([enable, disable]).fallback(true);
+
+    let bufsize = long("edns-bufsize")
+        .help("Advertised UDP payload size in OPT [default: 1232]")
+        .argument::<u16>("BYTES")
+        .optional();
+
+    let subnet = long("subnet")
+        .help("EDNS Client Subnet: PREFIX like 1.2.3.0/24 or 2001:db8::/32")
+        .argument::<String>("PREFIX")
+        .optional();
+
+    let nsid = long("nsid").help("Request NSID (RFC 5001)").switch();
+
+    // Two knobs: `--cookie` (switch, random 8-byte client cookie) and
+    // `--cookie-hex HEX` (explicit value). Explicit value wins.
+    let cookie_hex = long("cookie-hex")
+        .help("Send DNS Cookie (RFC 7873) with an explicit hex value")
+        .argument::<String>("HEX")
+        .optional()
+        .parse(|opt| -> std::result::Result<Option<Vec<u8>>, String> {
+            match opt {
+                None => Ok(None),
+                Some(s) => Ok(Some(
+                    parse_hex(&s).map_err(|e| format!("--cookie-hex: {e}"))?,
+                )),
+            }
+        });
+    let cookie_switch = long("cookie")
+        .help("Send DNS Cookie (RFC 7873) with 8 random bytes")
+        .switch()
+        .map(|on| if on { Some(random_cookie()) } else { None });
+    let cookie = construct!(cookie_hex, cookie_switch).map(|(a, b)| a.or(b));
+
+    // Two knobs: `--pad` (switch, default 128-byte block) and `--pad-size N`
+    // (explicit block size). Explicit size wins.
+    let pad_size = long("pad-size")
+        .help("EDNS Padding block size in bytes")
+        .argument::<u16>("SIZE")
+        .optional();
+    let pad_switch = long("pad")
+        .help("Enable EDNS Padding (RFC 7830), rounding wire size to a 128-byte block")
+        .switch()
+        .map(|on| if on { Some(128u16) } else { None });
+    let pad = construct!(pad_size, pad_switch).map(|(a, b)| a.or(b));
+
+    construct!(EdnsOpts {
+        enabled,
+        bufsize,
+        subnet,
+        nsid,
+        cookie,
+        pad,
+    })
+}
+
+fn parse_hex(s: &str) -> std::result::Result<Vec<u8>, String> {
+    let cleaned: String = s
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != ':')
+        .collect();
+    if !cleaned.len().is_multiple_of(2) {
+        return Err(format!("hex string has odd length: {cleaned}"));
+    }
+    (0..cleaned.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&cleaned[i..i + 2], 16)
+                .map_err(|e| format!("bad hex byte at offset {i}: {e}"))
+        })
+        .collect()
+}
+
+fn random_cookie() -> Vec<u8> {
+    let mut buf = [0u8; 8];
+    getrandom::fill(&mut buf).expect("system rng");
+    buf.to_vec()
 }
 
 // ── top-level ─────────────────────────────────────────────────────────────────
@@ -205,6 +308,16 @@ pub fn parse() -> Args {
         .argument::<usize>("N")
         .optional();
 
+    let edns = edns_opts();
+
+    let edge = long("edge")
+        .help("Decode Extended DNS Errors (RFC 8914) into ADDITIONAL section")
+        .switch();
+
+    let hex = long("hex")
+        .help("Print raw response wire bytes as a hex dump instead of parsed records")
+        .switch();
+
     construct!(Args {
         qtype,
         qclass,
@@ -228,6 +341,9 @@ pub fn parse() -> Args {
         stats,
         file,
         concurrency,
+        edns,
+        edge,
+        hex,
         names,
     })
     .to_options()
@@ -239,7 +355,8 @@ pub fn parse() -> Args {
          digaard -x 1.1.1.1\n  \
          digaard --tls example.com @1.1.1.1\n  \
          digaard -f domains.txt -j 16 --json\n  \
-         cat domains.txt | digaard -f -",
+         digaard --subnet 192.0.2.0/24 --nsid example.com\n  \
+         digaard --hex example.com",
     )
     .version(env!("CARGO_PKG_VERSION"))
     .run()

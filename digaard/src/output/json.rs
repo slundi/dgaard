@@ -2,15 +2,20 @@ use hickory_proto::op::Message;
 use hickory_proto::rr::Record;
 use serde_json::{Value, json};
 
-pub fn render(msg: &Message, elapsed_ms: Option<u64>, query_label: &str) -> String {
+use super::edge;
+use crate::idn;
+
+pub fn render(msg: &Message, elapsed_ms: Option<u64>, query_label: &str, edge: bool) -> String {
     let m = &msg.metadata;
 
     let questions: Vec<Value> = msg
         .queries
         .iter()
         .map(|q| {
+            let ascii = q.name().to_ascii();
             json!({
-                "name": q.name().to_string(),
+                "name": ascii,
+                "unicode_name": maybe_unicode(&ascii),
                 "type": q.query_type().to_string(),
                 "class": q.query_class().to_string(),
             })
@@ -36,6 +41,23 @@ pub fn render(msg: &Message, elapsed_ms: Option<u64>, query_label: &str) -> Stri
         "additional": rr_to_json(&msg.additionals),
     });
 
+    if edge {
+        let edes = edge::extract(msg);
+        if !edes.is_empty() {
+            obj["edge"] = edes
+                .iter()
+                .map(|e| {
+                    json!({
+                        "code": e.info_code,
+                        "purpose": e.purpose,
+                        "text": e.extra_text,
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into();
+        }
+    }
+
     if let Some(ms) = elapsed_ms {
         obj["query_time_ms"] = json!(ms);
     }
@@ -47,13 +69,25 @@ fn rr_to_json(records: &[Record]) -> Value {
     records
         .iter()
         .map(|rr| {
+            let ascii = rr.name.to_ascii();
             json!({
-                "name":  rr.name.to_string(),
-                "ttl":   rr.ttl,
-                "type":  rr.record_type().to_string(),
-                "class": rr.dns_class.to_string(),
-                "data":  rr.data.to_string(),
+                "name":         ascii,
+                "unicode_name": maybe_unicode(&ascii),
+                "ttl":          rr.ttl,
+                "type":         rr.record_type().to_string(),
+                "class":        rr.dns_class.to_string(),
+                "data":         rr.data.to_string(),
             })
         })
         .collect()
+}
+
+fn maybe_unicode(name: &str) -> Option<String> {
+    if idn::is_idna(name) {
+        let uni = idn::to_unicode(name);
+        if uni != name {
+            return Some(uni);
+        }
+    }
+    None
 }

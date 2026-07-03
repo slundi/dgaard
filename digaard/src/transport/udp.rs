@@ -7,6 +7,15 @@ use crate::error::{Error, Result};
 const UDP_BUF: usize = 4096;
 
 pub async fn send(cfg: &TransportConfig, query: &Message) -> Result<Message> {
+    let wire = send_raw(cfg, query).await?;
+    let msg = Message::from_bytes(&wire)?;
+    if msg.metadata.truncation {
+        return Err(Error::Truncated);
+    }
+    Ok(msg)
+}
+
+pub async fn send_raw(cfg: &TransportConfig, query: &Message) -> Result<Vec<u8>> {
     let wire = query.to_vec()?;
 
     let local = match (cfg.ipv4_only, cfg.ipv6_only) {
@@ -33,12 +42,7 @@ pub async fn send(cfg: &TransportConfig, query: &Message) -> Result<Message> {
 
     for attempt in 0..attempts {
         match exchange_once(&sock, &wire, timeout).await {
-            Ok(response) => {
-                if response.metadata.truncation {
-                    return Err(Error::Truncated);
-                }
-                return Ok(response);
-            }
+            Ok(bytes) => return Ok(bytes),
             Err(Error::Timeout) => {
                 if attempt + 1 < attempts {
                     log::debug!(
@@ -61,7 +65,7 @@ async fn exchange_once(
     sock: &UdpSocket,
     wire: &[u8],
     timeout: std::time::Duration,
-) -> Result<Message> {
+) -> Result<Vec<u8>> {
     time::timeout(timeout, sock.send(wire))
         .await
         .map_err(|_| Error::Timeout)?
@@ -73,5 +77,6 @@ async fn exchange_once(
         .map_err(|_| Error::Timeout)?
         .map_err(|e| Error::Transport(e.to_string()))?;
 
-    Ok(Message::from_bytes(&buf[..n])?)
+    buf.truncate(n);
+    Ok(buf)
 }

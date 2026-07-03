@@ -2,5 +2,7 @@
 
 pub mod cli;
 pub mod error;
+pub mod idn;
 pub mod output;
+pub mod query;
 pub mod transport;

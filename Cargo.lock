@@ -935,11 +935,13 @@ version = "0.1.0"
 dependencies = [
  "bpaf",
  "env_logger",
+ "getrandom 0.4.2",
  "hickory-proto",
  "http-body-util",
  "hyper",
  "hyper-rustls",
  "hyper-util",
+ "idna",
  "log",
  "rustls",
  "serde",

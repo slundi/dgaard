@@ -14,6 +14,11 @@ const DOH_PATH: &str = "/dns-query";
 
 /// DNS over HTTPS (DoH) — RFC 8484, POST method.
 pub async fn send(cfg: &TransportConfig, query: &Message) -> Result<Message> {
+    let bytes = send_raw(cfg, query).await?;
+    Ok(Message::from_bytes(&bytes)?)
+}
+
+pub async fn send_raw(cfg: &TransportConfig, query: &Message) -> Result<Vec<u8>> {
     let wire = query.to_vec()?;
 
     let tls = hyper_rustls::HttpsConnectorBuilder::new()
@@ -60,5 +65,5 @@ pub async fn send(cfg: &TransportConfig, query: &Message) -> Result<Message> {
         .map_err(|e| Error::Transport(format!("read body: {e}")))?
         .to_bytes();
 
-    Ok(Message::from_bytes(&body)?)
+    Ok(body.to_vec())
 }

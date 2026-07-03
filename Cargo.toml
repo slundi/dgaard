@@ -51,6 +51,9 @@ hyper-util = { version = "0.1.20", features = ["client-legacy", "http1", "tokio"
 hickory-proto = "0.26.1"
 hickory-resolver = "0.26.1"
 
+# IDN A-label / U-label conversion
+idna = "1"
+
 # URL parsing
 url = "2.5.8"
 

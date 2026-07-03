@@ -28,6 +28,12 @@ bpaf.workspace = true
 # DNS protocol primitives
 hickory-proto = { workspace = true, features = ["dnssec-ring"] }
 
+# IDN conversion
+idna.workspace = true
+
+# Randomness for cookies etc.
+getrandom.workspace = true
+
 # DoH transport (reuses workspace HTTP stack)
 http-body-util.workspace = true
 hyper = { workspace = true }

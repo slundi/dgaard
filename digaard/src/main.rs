@@ -2,12 +2,13 @@ use std::io::{BufRead, BufReader, Write};
 use std::sync::Arc;
 use std::time::Instant;
 
-use hickory_proto::op::{Edns, Message, Query};
-use hickory_proto::rr::{Name, RecordType};
+use hickory_proto::op::Message;
+use hickory_proto::rr::RecordType;
 use tokio::sync::Semaphore;
 
 use digaard::error::{Error, Result};
 use digaard::output::{RenderOpts, Rendered};
+use digaard::query::{QueryFlags, build_query, pad_message, resolve_name};
 use digaard::transport::{TransportConfig, TransportKind};
 use digaard::{cli, output, transport};
 
@@ -60,6 +61,8 @@ async fn run() -> Result<()> {
         short: args.short,
         color: args.color,
         batch,
+        edge: args.edge,
+        hex: args.hex,
     };
 
     // Fan out with bounded concurrency, preserving input order in the result Vec.
@@ -86,6 +89,7 @@ async fn run() -> Result<()> {
                 let item = Rendered {
                     query: target,
                     response: &one.response,
+                    wire: &one.wire,
                     elapsed_ms: if args.stats {
                         Some(one.elapsed_ms)
                     } else {
@@ -112,6 +116,7 @@ async fn run() -> Result<()> {
 
 struct QueryOutcome {
     response: Message,
+    wire: Vec<u8>,
     elapsed_ms: u64,
 }
 
@@ -123,16 +128,27 @@ async fn do_one(target: &str, args: &cli::Args, cfg: &TransportConfig) -> Result
         args.qtype
     };
 
-    let query = build_query(&name, qtype, args);
-    let mut kind = args.transport;
+    let flags = QueryFlags {
+        recursion_desired: !args.no_rd,
+        authoritative: args.aa,
+        authentic_data: args.ad,
+        checking_disabled: args.cd,
+        dnssec_ok: args.dnssec,
+    };
 
+    let mut query = build_query(&name, qtype, args.qclass, flags, &args.edns)?;
+    if let Some(block) = args.edns.pad {
+        pad_message(&mut query, block)?;
+    }
+
+    let mut kind = args.transport;
     let start = Instant::now();
-    let response = match transport::send(kind, cfg, &query).await {
-        Ok(msg) => msg,
+    let (response, wire) = match transport::send_with_wire(kind, cfg, &query).await {
+        Ok(v) => v,
         Err(Error::Truncated) if kind == TransportKind::Udp => {
             log::info!("response truncated over UDP, retrying with TCP");
             kind = TransportKind::Tcp;
-            transport::send(kind, cfg, &query).await?
+            transport::send_with_wire(kind, cfg, &query).await?
         }
         Err(e) => return Err(e),
     };
@@ -140,6 +156,7 @@ async fn do_one(target: &str, args: &cli::Args, cfg: &TransportConfig) -> Result
 
     Ok(QueryOutcome {
         response,
+        wire,
         elapsed_ms,
     })
 }
@@ -172,7 +189,6 @@ fn num_cpus() -> usize {
 }
 
 fn init_logger(verbosity: usize) {
-    // Only override RUST_LOG if the user asked for more verbosity via -v/-vv/-vvv.
     let level = match verbosity {
         0 => None,
         1 => Some("info"),
@@ -184,60 +200,4 @@ fn init_logger(verbosity: usize) {
         builder.parse_filters(lvl);
     }
     builder.init();
-}
-
-fn resolve_name(raw_name: &str, reverse: bool) -> Result<Name> {
-    let raw = if reverse {
-        raw_name
-            .parse::<std::net::IpAddr>()
-            .map_err(|_| Error::InvalidName(format!("'{raw_name}' is not a valid IP for -x")))
-            .map(|ip| match ip {
-                std::net::IpAddr::V4(v4) => {
-                    let o = v4.octets();
-                    format!("{}.{}.{}.{}.in-addr.arpa.", o[3], o[2], o[1], o[0])
-                }
-                std::net::IpAddr::V6(v6) => {
-                    let nibbles: String = v6
-                        .to_bits()
-                        .to_be_bytes()
-                        .iter()
-                        .flat_map(|b| [b >> 4, b & 0xf])
-                        .rev()
-                        .map(|n| format!("{n:x}"))
-                        .collect::<Vec<_>>()
-                        .join(".");
-                    format!("{nibbles}.ip6.arpa.")
-                }
-            })?
-    } else if raw_name.ends_with('.') {
-        raw_name.to_string()
-    } else {
-        format!("{raw_name}.")
-    };
-
-    Name::from_ascii(&raw).map_err(|e| Error::InvalidName(format!("{raw}: {e}")))
-}
-
-fn build_query(name: &Name, qtype: RecordType, args: &cli::Args) -> Message {
-    let mut msg = Message::query();
-
-    msg.metadata.recursion_desired = !args.no_rd;
-    msg.metadata.authoritative = args.aa;
-    msg.metadata.authentic_data = args.ad;
-    msg.metadata.checking_disabled = args.cd;
-
-    let mut q = Query::new();
-    q.set_name(name.clone());
-    q.set_query_type(qtype);
-    q.set_query_class(args.qclass);
-    msg.add_query(q);
-
-    if args.dnssec {
-        let mut edns = Edns::new();
-        edns.set_dnssec_ok(true);
-        edns.set_max_payload(4096);
-        msg.set_edns(edns);
-    }
-
-    msg
 }

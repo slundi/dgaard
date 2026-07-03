@@ -13,6 +13,11 @@ use crate::error::{Error, Result};
 ///
 /// Same 2-byte length-prefix framing as plain TCP, wrapped in TLS.
 pub async fn send(cfg: &TransportConfig, query: &Message) -> Result<Message> {
+    let bytes = send_raw(cfg, query).await?;
+    Ok(Message::from_bytes(&bytes)?)
+}
+
+pub async fn send_raw(cfg: &TransportConfig, query: &Message) -> Result<Vec<u8>> {
     let wire = query.to_vec()?;
     let addr = format!("{}:{}", cfg.server, cfg.port);
     let timeout = std::time::Duration::from_millis(cfg.timeout_ms);
@@ -55,7 +60,7 @@ pub async fn send(cfg: &TransportConfig, query: &Message) -> Result<Message> {
         .map_err(|_| Error::Timeout)?
         .map_err(|e| Error::Transport(e.to_string()))?;
 
-    Ok(Message::from_bytes(&resp_buf)?)
+    Ok(resp_buf)
 }
 
 fn client_tls_config() -> Result<rustls::ClientConfig> {

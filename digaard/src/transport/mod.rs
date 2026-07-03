@@ -5,6 +5,7 @@ pub mod udp;
 
 use crate::error::Result;
 use hickory_proto::op::Message;
+use hickory_proto::serialize::binary::BinDecodable;
 
 /// Wire-level transport kinds supported by digaard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,10 +47,25 @@ pub struct TransportConfig {
 ///
 /// Selects the concrete transport based on `kind` and routes through it.
 pub async fn send(kind: TransportKind, cfg: &TransportConfig, query: &Message) -> Result<Message> {
-    match kind {
-        TransportKind::Udp => udp::send(cfg, query).await,
-        TransportKind::Tcp => tcp::send(cfg, query).await,
-        TransportKind::Tls => tls::send(cfg, query).await,
-        TransportKind::Https => https::send(cfg, query).await,
+    send_with_wire(kind, cfg, query).await.map(|(m, _)| m)
+}
+
+/// Send a single DNS query and return both the decoded response and the raw
+/// wire bytes (for `--hex` output).
+pub async fn send_with_wire(
+    kind: TransportKind,
+    cfg: &TransportConfig,
+    query: &Message,
+) -> Result<(Message, Vec<u8>)> {
+    let wire = match kind {
+        TransportKind::Udp => udp::send_raw(cfg, query).await?,
+        TransportKind::Tcp => tcp::send_raw(cfg, query).await?,
+        TransportKind::Tls => tls::send_raw(cfg, query).await?,
+        TransportKind::Https => https::send_raw(cfg, query).await?,
+    };
+    let msg = Message::from_bytes(&wire)?;
+    if kind == TransportKind::Udp && msg.metadata.truncation {
+        return Err(crate::error::Error::Truncated);
     }
+    Ok((msg, wire))
 }

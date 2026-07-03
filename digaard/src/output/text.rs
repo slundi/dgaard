@@ -3,8 +3,10 @@ use hickory_proto::rr::Record;
 
 use super::Rendered;
 use super::color::{ColorMode, Palette};
+use super::edge;
+use crate::idn;
 
-pub fn render(item: &Rendered<'_>, short: bool, color: ColorMode) -> String {
+pub fn render(item: &Rendered<'_>, short: bool, color: ColorMode, edge: bool) -> String {
     let msg = item.response;
     let palette = color.resolved();
     let mut out = String::new();
@@ -41,6 +43,27 @@ pub fn render(item: &Rendered<'_>, short: bool, color: ColorMode) -> String {
             &msg.additionals,
             &palette,
         );
+
+        if edge {
+            let edes = edge::extract(msg);
+            if !edes.is_empty() {
+                out.push('\n');
+                out.push_str(&format!(
+                    "{}{}{}\n",
+                    palette.header, ";; EDGE (RFC 8914):", palette.reset,
+                ));
+                for e in edes {
+                    if e.extra_text.is_empty() {
+                        out.push_str(&format!("; {} (code {})\n", e.purpose, e.info_code,));
+                    } else {
+                        out.push_str(&format!(
+                            "; {} (code {}): {}\n",
+                            e.purpose, e.info_code, e.extra_text,
+                        ));
+                    }
+                }
+            }
+        }
 
         if let Some(ms) = item.elapsed_ms {
             out.push_str(&format!(
@@ -100,14 +123,16 @@ fn header(out: &mut String, msg: &Message, p: &Palette) {
             r = p.reset,
         ));
         for q in &msg.queries {
+            let name_str = q.name().to_ascii();
             out.push_str(&format!(
-                ";{name}\t\t{cls}{class}{r}\t{ty}{qtype}{r}\n",
-                name = q.name(),
+                ";{name}\t\t{cls}{class}{r}\t{ty}{qtype}{r}{unicode}\n",
+                name = name_str,
                 cls = p.class,
                 class = q.query_class(),
                 r = p.reset,
                 ty = p.rtype,
                 qtype = q.query_type(),
+                unicode = idn_hint(&name_str, p),
             ));
         }
         out.push('\n');
@@ -134,10 +159,11 @@ fn section(out: &mut String, title: &str, records: &[Record], p: &Palette) {
 }
 
 fn rr_line(rr: &Record, p: &Palette) -> String {
+    let name_str = rr.name.to_ascii();
     format!(
-        "{n}{name}{r}\t{tl}{ttl}{r}\t{cl}{class}{r}\t{ty}{rtype}{r}\t{name_r}\n",
+        "{n}{name}{r}\t{tl}{ttl}{r}\t{cl}{class}{r}\t{ty}{rtype}{r}\t{data}{unicode}\n",
         n = p.name,
-        name = rr.name,
+        name = name_str,
         r = p.reset,
         tl = p.ttl,
         ttl = rr.ttl,
@@ -145,8 +171,19 @@ fn rr_line(rr: &Record, p: &Palette) -> String {
         class = rr.dns_class,
         ty = p.rtype,
         rtype = rr.record_type(),
-        name_r = rr.data,
+        data = rr.data,
+        unicode = idn_hint(&name_str, p),
     )
+}
+
+fn idn_hint(name: &str, p: &Palette) -> String {
+    if idn::is_idna(name) {
+        let uni = idn::to_unicode(name);
+        if uni != name {
+            return format!(" {c}; ({uni}){r}", c = p.comment, r = p.reset);
+        }
+    }
+    String::new()
 }
 
 fn wire_size(msg: &Message) -> usize {

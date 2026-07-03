@@ -1,4 +1,6 @@
 pub mod color;
+pub mod edge;
+pub mod hex;
 pub mod json;
 pub mod text;
 
@@ -20,6 +22,8 @@ pub enum OutputFormat {
 pub struct Rendered<'a> {
     pub query: &'a str,
     pub response: &'a Message,
+    /// Raw wire bytes of the response (for `--hex`).
+    pub wire: &'a [u8],
     pub elapsed_ms: Option<u64>,
 }
 
@@ -29,17 +33,24 @@ pub struct RenderOpts {
     pub format: OutputFormat,
     pub short: bool,
     pub color: ColorMode,
-    /// When true, `render_batch` inserts a header/separator between entries
-    /// (dig-style). Ignored for JSON, which always emits one object per line.
+    /// When true, `render_batch` inserts a header/separator between entries.
     pub batch: bool,
+    /// Decode EDGE options (RFC 8914) into the ADDITIONAL section (pretty output).
+    pub edge: bool,
+    /// Print raw wire bytes as hex dump instead of parsed records.
+    pub hex: bool,
 }
 
 /// Render a single DNS response.
 pub fn render(opts: RenderOpts, item: &Rendered<'_>) -> String {
+    if opts.hex {
+        return hex::render(item);
+    }
+
     match opts.format {
-        OutputFormat::Text => text::render(item, opts.short, opts.color),
+        OutputFormat::Text => text::render(item, opts.short, opts.color, opts.edge),
         OutputFormat::Json => {
-            let mut out = json::render(item.response, item.elapsed_ms, item.query);
+            let mut out = json::render(item.response, item.elapsed_ms, item.query, opts.edge);
             out.push('\n');
             out
         }
@@ -47,14 +58,10 @@ pub fn render(opts: RenderOpts, item: &Rendered<'_>) -> String {
 }
 
 /// Render a batch of responses in order.
-///
-/// - Text: each response is prefixed with `; <-- query <name> -->` when
-///   `opts.batch` is true, so users can tell them apart.
-/// - JSON: line-delimited (one object per line), no separator.
 pub fn render_batch(opts: RenderOpts, items: &[Rendered<'_>]) -> String {
     let mut out = String::new();
     for (idx, item) in items.iter().enumerate() {
-        if opts.format == OutputFormat::Text && opts.batch {
+        if !opts.hex && opts.format == OutputFormat::Text && opts.batch {
             if idx > 0 {
                 out.push('\n');
             }
