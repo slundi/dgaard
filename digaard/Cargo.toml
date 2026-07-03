@@ -44,7 +44,7 @@ rustls.workspace = true
 # DoT transport
 rustls-pemfile = "2"
 tokio-rustls = "0.26"
-webpki-roots = "0.26"
+webpki-roots = "1.0.8"
 
 # DoQ transport
 quinn.workspace = true
@@ -61,5 +61,5 @@ log.workspace = true
 toml-span.workspace = true
 
 [dev-dependencies]
-rcgen = "0.13"
+rcgen = "0.14.8"
 tokio = { workspace = true, features = ["process"] }

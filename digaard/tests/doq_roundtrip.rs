@@ -26,7 +26,7 @@ fn init_crypto_provider() {
 fn self_signed_server_config() -> (ServerConfig, Vec<u8>) {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     let cert_der = cert.cert.der().clone();
-    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.key_pair.serialize_der().into());
+    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
 
     let mut server_crypto = rustls::ServerConfig::builder()
         .with_no_client_auth()
