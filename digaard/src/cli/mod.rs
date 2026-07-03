@@ -320,7 +320,9 @@ fn random_cookie() -> Vec<u8> {
 
 // ── top-level ─────────────────────────────────────────────────────────────────
 
-pub fn parse() -> Args {
+/// Build the top-level `OptionParser` so callers can either `.run()` it (uses
+/// real argv) or run against a synthetic argv slice (tests, pre-pass).
+fn options() -> OptionParser<Args> {
     let names = positional::<String>("NAME")
         .help("Domain name(s) to query; repeat for batch")
         .many();
@@ -466,5 +468,52 @@ pub fn parse() -> Args {
          digaard -x 1.1.1.1",
     )
     .version(env!("CARGO_PKG_VERSION"))
-    .run()
+}
+
+/// Parse the process argv, applying the `+shortcut` pre-pass and optional
+/// TOML config-file defaults.
+pub fn parse() -> Args {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let expanded = crate::prepass::expand_shortcuts(raw);
+    let (config_path, expanded) = crate::prepass::take_config_flag(expanded);
+
+    let cfg_source = config_path
+        .clone()
+        .map(std::path::PathBuf::from)
+        .or_else(crate::config::default_path);
+
+    let cfg = match &cfg_source {
+        Some(p) => match crate::config::load_if_present(p) {
+            Ok(c) => c.unwrap_or_default(),
+            Err(e) => {
+                // If --config was explicit, hard-error. Otherwise warn and keep going.
+                if config_path.is_some() {
+                    eprintln!("error: --config {}: {e}", p.display());
+                    std::process::exit(2);
+                }
+                log::warn!("config: {e}");
+                crate::config::Config::default()
+            }
+        },
+        None => crate::config::Config::default(),
+    };
+
+    let final_argv = crate::prepass::merge_config_defaults(expanded, &cfg);
+    parse_from(&final_argv)
+}
+
+/// Parse a synthetic argv (test helper). Returns a `ParseFailure` if bpaf rejects it.
+pub fn try_parse_from(argv: &[String]) -> std::result::Result<Args, bpaf::ParseFailure> {
+    options().run_inner(bpaf::Args::from(argv))
+}
+
+/// Parse a synthetic argv and terminate the process on failure (like `.run()`).
+pub fn parse_from(argv: &[String]) -> Args {
+    match try_parse_from(argv) {
+        Ok(a) => a,
+        Err(failure) => {
+            failure.print_message(120);
+            std::process::exit(failure.exit_code());
+        }
+    }
 }

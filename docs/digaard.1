@@ -1,0 +1,240 @@
+.TH DIGAARD 1 "2026" "digaard 0.1.0" "User Commands"
+.SH NAME
+digaard \- a modern DNS query CLI
+.SH SYNOPSIS
+.B digaard
+[\fIOPTIONS\fR] \fINAME\fR...
+.br
+.B digaard
+[\fIOPTIONS\fR] \fB-f\fR \fIFILE\fR
+.br
+.B digaard
+[\fIOPTIONS\fR] \fB-x\fR \fIIP\fR
+.SH DESCRIPTION
+.B digaard
+is a dig-style command-line DNS client with modern transport support (Do53,
+DoT, DoH, DoQ), full EDNS(0), DNSSEC record display + AD-based validation,
+IDN input, batch mode with bounded concurrency, JSON output, and latency
+statistics.
+
+It is a pure client — no caching, no resolver logic, one query in, one
+response out.
+
+.SH POSITIONAL ARGUMENTS
+.TP
+.I NAME
+One or more domain names. IDN input is punycode-encoded before wire send.
+Ignored when \fB-x\fR interprets the argument as an IP address.
+
+.SH QUERY SHAPE
+.TP
+\fB-t\fR, \fB--type\fR=\fITYPE\fR
+Record type: \fBA\fR (default), \fBAAAA\fR, \fBMX\fR, \fBTXT\fR, \fBCNAME\fR,
+\fBNS\fR, \fBSOA\fR, \fBPTR\fR, \fBSRV\fR, \fBCAA\fR, \fBHTTPS\fR, \fBSVCB\fR,
+\fBDNSKEY\fR, \fBDS\fR, \fBRRSIG\fR, \fBNSEC3\fR, \fBANY\fR, ....
+.TP
+\fB-c\fR, \fB--class\fR=\fICLASS\fR
+DNS class: \fBIN\fR (default), \fBCH\fR, \fBHS\fR, \fBANY\fR.
+.TP
+\fB-x\fR, \fB--reverse\fR
+Interpret positional arguments as IPv4/IPv6 addresses and synthesise the
+corresponding PTR query.
+.TP
+\fB--aa\fR, \fB--ad\fR, \fB--cd\fR
+Set the AA / AD / CD header bits.
+.TP
+\fB--no-rd\fR
+Clear the Recursion Desired bit (default: set).
+.TP
+\fB--dnssec\fR
+Set the EDNS DO (DNSSEC OK) bit.
+
+.SH TRANSPORT
+.TP
+\fB-s\fR, \fB--server\fR=\fISERVER\fR
+Nameserver address (IP or hostname). Repeatable. Bare
+\fB@\fR\fIserver\fR is also accepted anywhere in argv.
+.TP
+\fB--server-strategy\fR=\fIMODE\fR
+When multiple \fB-s\fR are given: \fBfirst\fR (default), \fBrace\fR, or
+\fBround-robin\fR.
+.TP
+\fB-p\fR, \fB--port\fR=\fIPORT\fR
+Override the default port for the chosen transport.
+.TP
+\fB--udp\fR, \fB--tcp\fR, \fB--tls\fR, \fB--https\fR, \fB--quic\fR
+Force transport. Default \fB--udp\fR.
+.TP
+\fB-4\fR / \fB-6\fR
+Bind outbound socket IPv4-only / IPv6-only.
+.TP
+\fB--timeout\fR=\fIMS\fR
+Per-query timeout in milliseconds (default 5000).
+.TP
+\fB--retry\fR=\fIN\fR
+Retries on UDP timeout (default 2; UDP only).
+.TP
+\fB--tls-servername\fR=\fINAME\fR
+SNI / expected certificate name override. Defaults to the server host.
+.TP
+\fB--tls-insecure\fR
+Skip TLS certificate verification. Debugging only.
+.TP
+\fB--tls-ca\fR=\fIFILE\fR
+PEM file with additional trust roots. Repeatable.
+.TP
+\fB--doh-method\fR=\fIMETHOD\fR
+DoH HTTP method: \fBPOST\fR (default) or \fBGET\fR.
+.TP
+\fB--doh-path\fR=\fIPATH\fR
+DoH URL path (default \fB/dns-query\fR).
+
+.SH EDNS(0)
+.TP
+\fB--edns\fR / \fB--no-edns\fR
+Enable / disable OPT record.
+.TP
+\fB--edns-bufsize\fR=\fIBYTES\fR
+Advertised UDP payload size (default 1232).
+.TP
+\fB--subnet\fR=\fIPREFIX\fR
+EDNS Client Subnet (RFC 7871), e.g. \fI192.0.2.0/24\fR.
+.TP
+\fB--nsid\fR
+Request NSID (RFC 5001).
+.TP
+\fB--cookie\fR
+Send DNS Cookie (RFC 7873) with 8 random bytes.
+.TP
+\fB--cookie-hex\fR=\fIHEX\fR
+Send DNS Cookie with an explicit hex value.
+.TP
+\fB--pad\fR
+Enable EDNS Padding (RFC 7830), rounding wire size to a 128-byte block.
+.TP
+\fB--pad-size\fR=\fISIZE\fR
+Custom padding block size in bytes.
+.TP
+\fB--edge\fR
+Decode Extended DNS Errors (RFC 8914) in the ADDITIONAL section.
+
+.SH DNSSEC
+.TP
+\fB--validate\fR
+Classify response as SECURE, INSECURE, or BOGUS. Implies \fB--dnssec\fR.
+.TP
+\fB--trust-anchor\fR=\fIFILE\fR
+BIND-style trust-anchor file with DNSKEY records. Repeatable.
+
+.SH BATCH / SCRIPTING
+.TP
+\fB-f\fR, \fB--file\fR=\fIPATH\fR
+Read domains from a file, one per line. Use \fB-\fR for stdin. Blank lines
+and lines starting with \fB#\fR are ignored.
+.TP
+\fB-j\fR, \fB--concurrency\fR=\fIN\fR
+Max concurrent in-flight queries. Default: min(cpus, 32).
+.TP
+\fB--stats\fR
+Print per-response query time on stdout AND an end-of-run summary
+(min/avg/p50/p95/max/error rate) on stderr.
+
+.SH OUTPUT
+.TP
+\fB--text\fR
+Dig-style text (default).
+.TP
+\fB--json\fR
+NDJSON — one JSON object per response.
+.TP
+\fB-q\fR, \fB--short\fR
+Only RDATA, one per line (like \fBdig +short\fR).
+.TP
+\fB--color\fR=\fIWHEN\fR
+\fBauto\fR (default), \fBalways\fR, \fBnever\fR.
+.TP
+\fB--hex\fR
+Print raw response wire bytes as an xxd-style dump.
+
+.SH META
+.TP
+\fB-v\fR, \fB--verbose\fR
+Increase log verbosity. Repeatable: \fB-v\fR info, \fB-vv\fR debug, \fB-vvv\fR trace.
+.TP
+\fB--config\fR=\fIFILE\fR
+TOML config file. See \fBCONFIG FILE\fR below.
+.TP
+\fB-h\fR, \fB--help\fR
+Print help and exit.
+.TP
+\fB-V\fR, \fB--version\fR
+Print version and exit.
+
+.SH DIG-STYLE SHORTCUTS
+Rewritten before parsing:
+.PP
+.RS 4
+\fB+short\fR   → \fB--short\fR
+.br
+\fB+dnssec\fR  → \fB--dnssec\fR
+.br
+\fB+tcp\fR     → \fB--tcp\fR
+.br
+\fB+nord\fR    → \fB--no-rd\fR
+.br
+\fB+adflag\fR  → \fB--ad\fR
+.br
+\fB+cdflag\fR  → \fB--cd\fR
+.RE
+
+.SH CONFIG FILE
+Path resolution: \fB--config\fR > \fB$XDG_CONFIG_HOME/digaard/config.toml\fR >
+\fB~/.config/digaard/config.toml\fR. Missing files are ignored unless
+\fB--config\fR was explicit.
+
+.PP
+.EX
+default_server    = "https://dns.quad9.net/dns-query"
+default_transport = "https"
+default_format    = "pretty"
+color             = "auto"
+timeout_ms        = 3000
+retry             = 2
+concurrency       = 16
+.EE
+
+CLI flags always override config values.
+
+.SH EXIT STATUS
+.TP
+\fB0\fR
+All queries succeeded.
+.TP
+\fB1\fR
+One or more queries failed at runtime.
+.TP
+\fB2\fR
+Argument parsing failed.
+
+.SH EXAMPLES
+.PP
+.EX
+digaard example.com @1.1.1.1
+digaard -t MX gmail.com @1.1.1.1 --stats
+digaard example.com --https @cloudflare-dns.com --doh-method GET
+digaard --tls example.com @dns.google
+digaard -x 8.8.8.8
+digaard -s 1.1.1.1 -s 9.9.9.9 --server-strategy race example.com
+cat domains.txt | digaard -f - --json -j 32
+digaard cloudflare.com --validate --https @cloudflare-dns.com
+digaard example.com +short +dnssec
+.EE
+
+.SH SEE ALSO
+.BR dig (1),
+.BR host (1),
+.BR delv (1).
+
+.SH AUTHOR
+Written for the dgaard workspace by Sébastien LUNDI. Source:
+https://codeberg.org/slundi/dgaard.

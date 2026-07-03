@@ -57,6 +57,9 @@ serde_json.workspace = true
 env_logger.workspace = true
 log.workspace = true
 
+# Config file
+toml-span.workspace = true
+
 [dev-dependencies]
 rcgen = "0.13"
 tokio = { workspace = true, features = ["process"] }
