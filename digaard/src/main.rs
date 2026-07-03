@@ -6,10 +6,14 @@ use hickory_proto::op::Message;
 use hickory_proto::rr::RecordType;
 use tokio::sync::Semaphore;
 
+use digaard::cli::{DohMethod as CliDohMethod, TlsOpts};
 use digaard::error::{Error, Result};
 use digaard::output::{RenderOpts, Rendered};
 use digaard::query::{QueryFlags, build_query, pad_message, resolve_name};
-use digaard::transport::{TransportConfig, TransportKind};
+use digaard::transport::{
+    DohMethod, DohSettings, ServerPicker, ServerStrategy, TlsSettings, TransportConfig,
+    TransportKind,
+};
 use digaard::{cli, output, transport};
 
 const MAX_CONCURRENCY: usize = 32;
@@ -27,6 +31,10 @@ async fn run() -> Result<()> {
 
     init_logger(args.verbose);
 
+    // rustls needs a global CryptoProvider before first ClientConfig build.
+    let _ =
+        rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider());
+
     let mut targets: Vec<String> = args.names.clone();
     if let Some(path) = &args.file {
         targets.extend(read_targets_from(path)?);
@@ -37,18 +45,7 @@ async fn run() -> Result<()> {
         ));
     }
 
-    let server = args.server.as_deref().unwrap_or("8.8.8.8").to_owned();
-    let port = args.port.unwrap_or_else(|| args.transport.default_port());
-
-    let cfg = Arc::new(TransportConfig {
-        server,
-        port,
-        timeout_ms: args.timeout_ms,
-        retry: args.retry,
-        ipv4_only: args.ipv4,
-        ipv6_only: args.ipv6,
-    });
-
+    let picker = Arc::new(build_server_picker(&args)?);
     let batch = targets.len() > 1;
     let concurrency = args
         .concurrency
@@ -65,20 +62,18 @@ async fn run() -> Result<()> {
         hex: args.hex,
     };
 
-    // Fan out with bounded concurrency, preserving input order in the result Vec.
     let mut handles = Vec::with_capacity(targets.len());
     for target in &targets {
         let target = target.clone();
-        let cfg = Arc::clone(&cfg);
+        let picker = Arc::clone(&picker);
         let semaphore = Arc::clone(&semaphore);
         let args = args.clone();
         handles.push(tokio::spawn(async move {
             let _permit = semaphore.acquire_owned().await.expect("semaphore closed");
-            do_one(&target, &args, &cfg).await
+            do_one(&target, &args, &picker).await
         }));
     }
 
-    // Emit results in submission order.
     let stdout = std::io::stdout();
     let mut lock = stdout.lock();
     let mut first_error: Option<Error> = None;
@@ -114,13 +109,60 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
+fn build_server_picker(args: &cli::Args) -> Result<ServerPicker> {
+    let servers = if args.servers.is_empty() {
+        vec!["8.8.8.8".to_string()]
+    } else {
+        args.servers.clone()
+    };
+
+    let mut configs = Vec::with_capacity(servers.len());
+    for host in servers {
+        let port = args.port.unwrap_or_else(|| args.transport.default_port());
+        let tls = build_tls_settings(&args.tls)?;
+        let doh = DohSettings {
+            method: match args.doh.method {
+                CliDohMethod::Get => DohMethod::Get,
+                CliDohMethod::Post => DohMethod::Post,
+            },
+            path: args.doh.path.clone(),
+        };
+        configs.push(Arc::new(TransportConfig {
+            server: host,
+            port,
+            timeout_ms: args.timeout_ms,
+            retry: args.retry,
+            ipv4_only: args.ipv4,
+            ipv6_only: args.ipv6,
+            tls,
+            doh,
+        }));
+    }
+
+    Ok(ServerPicker::new(configs, args.server_strategy))
+}
+
+fn build_tls_settings(opts: &TlsOpts) -> Result<TlsSettings> {
+    let mut extra_ca_pem = Vec::with_capacity(opts.ca_files.len());
+    for path in &opts.ca_files {
+        let bytes = std::fs::read(path)
+            .map_err(|e| Error::Transport(format!("--tls-ca: read {path}: {e}")))?;
+        extra_ca_pem.push(bytes);
+    }
+    Ok(TlsSettings {
+        servername: opts.servername.clone(),
+        insecure: opts.insecure,
+        extra_ca_pem,
+    })
+}
+
 struct QueryOutcome {
     response: Message,
     wire: Vec<u8>,
     elapsed_ms: u64,
 }
 
-async fn do_one(target: &str, args: &cli::Args, cfg: &TransportConfig) -> Result<QueryOutcome> {
+async fn do_one(target: &str, args: &cli::Args, picker: &ServerPicker) -> Result<QueryOutcome> {
     let name = resolve_name(target, args.reverse)?;
     let qtype = if args.reverse {
         RecordType::PTR
@@ -141,16 +183,10 @@ async fn do_one(target: &str, args: &cli::Args, cfg: &TransportConfig) -> Result
         pad_message(&mut query, block)?;
     }
 
-    let mut kind = args.transport;
     let start = Instant::now();
-    let (response, wire) = match transport::send_with_wire(kind, cfg, &query).await {
-        Ok(v) => v,
-        Err(Error::Truncated) if kind == TransportKind::Udp => {
-            log::info!("response truncated over UDP, retrying with TCP");
-            kind = TransportKind::Tcp;
-            transport::send_with_wire(kind, cfg, &query).await?
-        }
-        Err(e) => return Err(e),
+    let (response, wire) = match picker.strategy() {
+        ServerStrategy::Race => race_send(picker, args.transport, &query).await?,
+        _ => send_with_fallback(picker.next(), args.transport, &query).await?,
     };
     let elapsed_ms = start.elapsed().as_millis() as u64;
 
@@ -159,6 +195,49 @@ async fn do_one(target: &str, args: &cli::Args, cfg: &TransportConfig) -> Result
         wire,
         elapsed_ms,
     })
+}
+
+async fn send_with_fallback(
+    cfg: Arc<TransportConfig>,
+    initial_kind: TransportKind,
+    query: &Message,
+) -> Result<(Message, Vec<u8>)> {
+    let mut kind = initial_kind;
+    match transport::send_with_wire(kind, &cfg, query).await {
+        Ok(v) => Ok(v),
+        Err(Error::Truncated) if kind == TransportKind::Udp => {
+            log::info!("response truncated over UDP, retrying with TCP");
+            kind = TransportKind::Tcp;
+            transport::send_with_wire(kind, &cfg, query).await
+        }
+        Err(e) => Err(e),
+    }
+}
+
+async fn race_send(
+    picker: &ServerPicker,
+    kind: TransportKind,
+    query: &Message,
+) -> Result<(Message, Vec<u8>)> {
+    let mut set = tokio::task::JoinSet::new();
+    for cfg in picker.all() {
+        let cfg = Arc::clone(cfg);
+        let query = query.clone();
+        set.spawn(async move { send_with_fallback(cfg, kind, &query).await });
+    }
+    let mut last_err: Option<Error> = None;
+    while let Some(res) = set.join_next().await {
+        match res.expect("join") {
+            Ok(v) => {
+                set.abort_all();
+                return Ok(v);
+            }
+            Err(e) => {
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap_or(Error::Timeout))
 }
 
 fn read_targets_from(path: &str) -> Result<Vec<String>> {

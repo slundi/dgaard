@@ -73,9 +73,7 @@ fn cfg_for(port: u16) -> TransportConfig {
         server: "127.0.0.1".to_string(),
         port,
         timeout_ms: 500,
-        retry: 0,
-        ipv4_only: false,
-        ipv6_only: false,
+        ..TransportConfig::default()
     }
 }
 

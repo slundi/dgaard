@@ -1,6 +1,7 @@
 pub mod https;
 pub mod tcp;
 pub mod tls;
+pub mod tls_config;
 pub mod udp;
 
 use crate::error::Result;
@@ -29,6 +30,50 @@ impl TransportKind {
     }
 }
 
+/// How to pick among multiple `-s` servers when batching queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerStrategy {
+    /// Always use the first server; other servers are ignored.
+    First,
+    /// Fire every query at every server in parallel; take the first response.
+    Race,
+    /// Round-robin queries across the server list.
+    RoundRobin,
+}
+
+/// TLS/PKI knobs shared by DoT and DoH.
+#[derive(Debug, Clone, Default)]
+pub struct TlsSettings {
+    /// SNI + expected certificate name. `None` = derive from server host.
+    pub servername: Option<String>,
+    /// Skip certificate verification (debugging only).
+    pub insecure: bool,
+    /// PEM-formatted trust roots on top of the webpki bundle.
+    pub extra_ca_pem: Vec<Vec<u8>>,
+}
+
+/// DoH-only settings.
+#[derive(Debug, Clone)]
+pub struct DohSettings {
+    pub method: DohMethod,
+    pub path: String,
+}
+
+impl Default for DohSettings {
+    fn default() -> Self {
+        Self {
+            method: DohMethod::Post,
+            path: "/dns-query".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DohMethod {
+    Get,
+    Post,
+}
+
 /// Configuration shared by every transport.
 #[derive(Debug, Clone)]
 pub struct TransportConfig {
@@ -41,6 +86,25 @@ pub struct TransportConfig {
     pub ipv4_only: bool,
     /// Force IPv6-only outbound socket.
     pub ipv6_only: bool,
+    /// Shared TLS knobs. Ignored by UDP / TCP.
+    pub tls: TlsSettings,
+    /// DoH knobs. Ignored by UDP / TCP / DoT.
+    pub doh: DohSettings,
+}
+
+impl Default for TransportConfig {
+    fn default() -> Self {
+        Self {
+            server: String::new(),
+            port: 53,
+            timeout_ms: 5000,
+            retry: 0,
+            ipv4_only: false,
+            ipv6_only: false,
+            tls: TlsSettings::default(),
+            doh: DohSettings::default(),
+        }
+    }
 }
 
 /// Send a single DNS query and return the decoded response.
@@ -68,4 +132,89 @@ pub async fn send_with_wire(
         return Err(crate::error::Error::Truncated);
     }
     Ok((msg, wire))
+}
+
+/// Picks one of many pre-built `TransportConfig`s per query.
+///
+/// - `First`: always returns index 0.
+/// - `RoundRobin`: cycles across the list.
+/// - `Race`: caller races all configs concurrently; not handled here.
+#[derive(Debug)]
+pub struct ServerPicker {
+    configs: Vec<std::sync::Arc<TransportConfig>>,
+    strategy: ServerStrategy,
+    counter: std::sync::atomic::AtomicUsize,
+}
+
+impl ServerPicker {
+    pub fn new(configs: Vec<std::sync::Arc<TransportConfig>>, strategy: ServerStrategy) -> Self {
+        assert!(!configs.is_empty(), "at least one server required");
+        Self {
+            configs,
+            strategy,
+            counter: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    pub fn strategy(&self) -> ServerStrategy {
+        self.strategy
+    }
+
+    /// Return the config to use for the next query.
+    ///
+    /// For `Race`, callers should use `all()` instead and race the futures.
+    pub fn next(&self) -> std::sync::Arc<TransportConfig> {
+        match self.strategy {
+            ServerStrategy::First => self.configs[0].clone(),
+            ServerStrategy::Race => self.configs[0].clone(),
+            ServerStrategy::RoundRobin => {
+                let idx = self
+                    .counter
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.configs[idx % self.configs.len()].clone()
+            }
+        }
+    }
+
+    pub fn all(&self) -> &[std::sync::Arc<TransportConfig>] {
+        &self.configs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn cfg(s: &str) -> Arc<TransportConfig> {
+        Arc::new(TransportConfig {
+            server: s.to_string(),
+            ..TransportConfig::default()
+        })
+    }
+
+    #[test]
+    fn first_strategy_pins_to_index_zero() {
+        let picker = ServerPicker::new(vec![cfg("a"), cfg("b"), cfg("c")], ServerStrategy::First);
+        assert_eq!(picker.next().server, "a");
+        assert_eq!(picker.next().server, "a");
+    }
+
+    #[test]
+    fn round_robin_cycles() {
+        let picker = ServerPicker::new(
+            vec![cfg("a"), cfg("b"), cfg("c")],
+            ServerStrategy::RoundRobin,
+        );
+        assert_eq!(picker.next().server, "a");
+        assert_eq!(picker.next().server, "b");
+        assert_eq!(picker.next().server, "c");
+        assert_eq!(picker.next().server, "a");
+    }
+
+    #[test]
+    fn race_exposes_all_configs() {
+        let picker = ServerPicker::new(vec![cfg("a"), cfg("b")], ServerStrategy::Race);
+        assert_eq!(picker.all().len(), 2);
+    }
 }

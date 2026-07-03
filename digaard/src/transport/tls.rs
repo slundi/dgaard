@@ -6,12 +6,15 @@ use tokio::{
 };
 use tokio_rustls::TlsConnector;
 
-use super::TransportConfig;
+use super::{TransportConfig, tls_config};
 use crate::error::{Error, Result};
+
+const ALPN_DOT: &[u8] = b"dot";
 
 /// DNS over TLS (DoT) — RFC 7858.
 ///
-/// Same 2-byte length-prefix framing as plain TCP, wrapped in TLS.
+/// Same 2-byte length-prefix framing as plain TCP, wrapped in TLS. Advertises
+/// ALPN token `dot` per RFC 7858 §3.2.
 pub async fn send(cfg: &TransportConfig, query: &Message) -> Result<Message> {
     let bytes = send_raw(cfg, query).await?;
     Ok(Message::from_bytes(&bytes)?)
@@ -27,11 +30,9 @@ pub async fn send_raw(cfg: &TransportConfig, query: &Message) -> Result<Vec<u8>>
         .map_err(|_| Error::Timeout)?
         .map_err(|e| Error::Transport(format!("connect {addr}: {e}")))?;
 
-    let tls_cfg = std::sync::Arc::new(client_tls_config()?);
+    let tls_cfg = tls_config::build_client_config(&cfg.tls, &[ALPN_DOT])?;
     let connector = TlsConnector::from(tls_cfg);
-    let server_name = rustls::pki_types::ServerName::try_from(cfg.server.as_str())
-        .map_err(|e| Error::Transport(format!("invalid server name '{}': {e}", cfg.server)))?
-        .to_owned();
+    let server_name = tls_config::server_name(&cfg.tls, &cfg.server)?;
 
     let mut stream = time::timeout(timeout, connector.connect(server_name, tcp))
         .await
@@ -62,20 +63,3 @@ pub async fn send_raw(cfg: &TransportConfig, query: &Message) -> Result<Vec<u8>>
 
     Ok(resp_buf)
 }
-
-fn client_tls_config() -> Result<rustls::ClientConfig> {
-    let roots = rustls::RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-    };
-    rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth()
-        .pipe(Ok)
-}
-
-trait Pipe: Sized {
-    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
-        f(self)
-    }
-}
-impl<T> Pipe for T {}

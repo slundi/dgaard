@@ -2,7 +2,7 @@ use bpaf::*;
 use hickory_proto::rr::{DNSClass, RecordType};
 
 use crate::output::{ColorMode, OutputFormat};
-use crate::transport::TransportKind;
+use crate::transport::{ServerStrategy, TransportKind};
 
 /// EDNS(0) OPT options that shape the outgoing query.
 #[derive(Debug, Clone)]
@@ -16,11 +16,38 @@ pub struct EdnsOpts {
     pub pad: Option<u16>,
 }
 
+/// TLS/PKI options shared by DoT and DoH.
+#[derive(Debug, Clone)]
+pub struct TlsOpts {
+    /// Override SNI / expected certificate name. Defaults to the server host.
+    pub servername: Option<String>,
+    /// Skip certificate verification. Debugging-only.
+    pub insecure: bool,
+    /// Path(s) to PEM files of additional trust roots.
+    pub ca_files: Vec<String>,
+}
+
+/// DoH-only options.
+#[derive(Debug, Clone)]
+pub struct DohOpts {
+    /// HTTP method (GET or POST). Default POST.
+    pub method: DohMethod,
+    /// URL path. Default "/dns-query".
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DohMethod {
+    Get,
+    Post,
+}
+
 #[derive(Debug, Clone)]
 pub struct Args {
     pub qtype: RecordType,
     pub qclass: DNSClass,
-    pub server: Option<String>,
+    pub servers: Vec<String>,
+    pub server_strategy: ServerStrategy,
     pub port: Option<u16>,
     pub transport: TransportKind,
     pub format: OutputFormat,
@@ -41,6 +68,8 @@ pub struct Args {
     pub file: Option<String>,
     pub concurrency: Option<usize>,
     pub edns: EdnsOpts,
+    pub tls: TlsOpts,
+    pub doh: DohOpts,
     pub edge: bool,
     pub hex: bool,
     pub names: Vec<String>,
@@ -77,23 +106,39 @@ fn qclass() -> impl Parser<DNSClass> {
         .fallback(DNSClass::IN)
 }
 
-// ── server ────────────────────────────────────────────────────────────────────
+// ── servers ───────────────────────────────────────────────────────────────────
 
-fn server() -> impl Parser<Option<String>> {
+fn servers() -> impl Parser<Vec<String>> {
     let flag = short('s')
         .long("server")
-        .help("Nameserver address (IP or hostname)")
+        .help("Nameserver address (IP or hostname). Repeatable.")
         .argument::<String>("SERVER")
-        .optional();
+        .many();
 
-    // Accept a bare token that starts with '@', e.g. @8.8.8.8, anywhere on the command line.
+    // Accept `@server` bare tokens too (multi allowed via .many()).
     let at_token = any::<String, _, _>("@SERVER", |s: String| {
         s.strip_prefix('@').map(str::to_owned)
     })
     .anywhere()
-    .optional();
+    .many();
 
-    construct!([flag, at_token])
+    construct!(flag, at_token).map(|(mut a, b)| {
+        a.extend(b);
+        a
+    })
+}
+
+fn server_strategy() -> impl Parser<ServerStrategy> {
+    long("server-strategy")
+        .help("How to select among multiple servers: first (default), race, round-robin")
+        .argument::<String>("MODE")
+        .parse(|s| match s.to_ascii_lowercase().as_str() {
+            "first" | "" => Ok(ServerStrategy::First),
+            "race" => Ok(ServerStrategy::Race),
+            "round-robin" | "rr" | "roundrobin" => Ok(ServerStrategy::RoundRobin),
+            other => Err(format!("unknown --server-strategy '{other}'")),
+        })
+        .fallback(ServerStrategy::First)
 }
 
 // ── transport ─────────────────────────────────────────────────────────────────
@@ -142,7 +187,6 @@ fn color() -> impl Parser<ColorMode> {
 // ── EDNS(0) ──────────────────────────────────────────────────────────────────
 
 fn edns_opts() -> impl Parser<EdnsOpts> {
-    // --edns / --no-edns pair. Default enabled.
     let enable = long("edns")
         .help("Enable EDNS(0) OPT record (default)")
         .req_flag(true);
@@ -163,8 +207,6 @@ fn edns_opts() -> impl Parser<EdnsOpts> {
 
     let nsid = long("nsid").help("Request NSID (RFC 5001)").switch();
 
-    // Two knobs: `--cookie` (switch, random 8-byte client cookie) and
-    // `--cookie-hex HEX` (explicit value). Explicit value wins.
     let cookie_hex = long("cookie-hex")
         .help("Send DNS Cookie (RFC 7873) with an explicit hex value")
         .argument::<String>("HEX")
@@ -183,8 +225,6 @@ fn edns_opts() -> impl Parser<EdnsOpts> {
         .map(|on| if on { Some(random_cookie()) } else { None });
     let cookie = construct!(cookie_hex, cookie_switch).map(|(a, b)| a.or(b));
 
-    // Two knobs: `--pad` (switch, default 128-byte block) and `--pad-size N`
-    // (explicit block size). Explicit size wins.
     let pad_size = long("pad-size")
         .help("EDNS Padding block size in bytes")
         .argument::<u16>("SIZE")
@@ -203,6 +243,51 @@ fn edns_opts() -> impl Parser<EdnsOpts> {
         cookie,
         pad,
     })
+}
+
+// ── TLS opts ──────────────────────────────────────────────────────────────────
+
+fn tls_opts() -> impl Parser<TlsOpts> {
+    let servername = long("tls-servername")
+        .help("SNI / expected certificate name (defaults to server host)")
+        .argument::<String>("NAME")
+        .optional();
+
+    let insecure = long("tls-insecure")
+        .help("Skip TLS certificate verification (debugging only)")
+        .switch();
+
+    let ca_files = long("tls-ca")
+        .help("PEM file with additional trust roots. Repeatable.")
+        .argument::<String>("FILE")
+        .many();
+
+    construct!(TlsOpts {
+        servername,
+        insecure,
+        ca_files,
+    })
+}
+
+// ── DoH opts ──────────────────────────────────────────────────────────────────
+
+fn doh_opts() -> impl Parser<DohOpts> {
+    let method = long("doh-method")
+        .help("DoH HTTP method: POST (default) or GET")
+        .argument::<String>("METHOD")
+        .parse(|s| match s.to_ascii_uppercase().as_str() {
+            "POST" => Ok(DohMethod::Post),
+            "GET" => Ok(DohMethod::Get),
+            other => Err(format!("--doh-method must be GET or POST, got '{other}'")),
+        })
+        .fallback(DohMethod::Post);
+
+    let path = long("doh-path")
+        .help("DoH URL path [default: /dns-query]")
+        .argument::<String>("PATH")
+        .fallback_with(|| -> std::result::Result<_, String> { Ok("/dns-query".to_string()) });
+
+    construct!(DohOpts { method, path })
 }
 
 fn parse_hex(s: &str) -> std::result::Result<Vec<u8>, String> {
@@ -236,7 +321,8 @@ pub fn parse() -> Args {
         .many();
     let qtype = qtype();
     let qclass = qclass();
-    let server = server();
+    let servers = servers();
+    let server_strategy = server_strategy();
 
     let port = short('p')
         .long("port")
@@ -309,6 +395,8 @@ pub fn parse() -> Args {
         .optional();
 
     let edns = edns_opts();
+    let tls = tls_opts();
+    let doh = doh_opts();
 
     let edge = long("edge")
         .help("Decode Extended DNS Errors (RFC 8914) into ADDITIONAL section")
@@ -321,7 +409,8 @@ pub fn parse() -> Args {
     construct!(Args {
         qtype,
         qclass,
-        server,
+        servers,
+        server_strategy,
         port,
         transport,
         format,
@@ -342,6 +431,8 @@ pub fn parse() -> Args {
         file,
         concurrency,
         edns,
+        tls,
+        doh,
         edge,
         hex,
         names,
@@ -352,11 +443,11 @@ pub fn parse() -> Args {
         "Examples:\n  \
          digaard example.com\n  \
          digaard -t MX gmail.com @8.8.8.8\n  \
-         digaard -x 1.1.1.1\n  \
          digaard --tls example.com @1.1.1.1\n  \
-         digaard -f domains.txt -j 16 --json\n  \
-         digaard --subnet 192.0.2.0/24 --nsid example.com\n  \
-         digaard --hex example.com",
+         digaard --https example.com @1.1.1.1 --doh-method GET\n  \
+         digaard -s 1.1.1.1 -s 9.9.9.9 --server-strategy race example.com\n  \
+         digaard --tls-insecure --tls-servername dns.example --tls dot.example.com\n  \
+         digaard -x 1.1.1.1",
     )
     .version(env!("CARGO_PKG_VERSION"))
     .run()

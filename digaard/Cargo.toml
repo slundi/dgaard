@@ -42,6 +42,7 @@ hyper-util = { workspace = true }
 rustls.workspace = true
 
 # DoT transport
+rustls-pemfile = "2"
 tokio-rustls = "0.26"
 webpki-roots = "0.26"
 

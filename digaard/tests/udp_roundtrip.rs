@@ -60,8 +60,7 @@ fn config_for(port: u16, timeout_ms: u64, retry: u32) -> TransportConfig {
         port,
         timeout_ms,
         retry,
-        ipv4_only: false,
-        ipv6_only: false,
+        ..TransportConfig::default()
     }
 }
 
