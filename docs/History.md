@@ -67,7 +67,11 @@ Two tools in the workspace never touch the DNS runtime — they exist for the bl
 
 Both stay in the same workspace as the DNS runtime because they share code with it — list parsers and list-format handling in particular. Splitting them into separate repos would mean publishing intermediate crates just to keep those shared bits in lockstep.
 
-## 6. What's next
+## 8. digaard
+
+Heavily inspired from `q`, it is a `dig` like CLI. There was no tool like this in Rust from my searches so, here is one.
+
+## 7. What's next
 
 `dgaard` has grown a recursive DNS resolver — that part still needs testing. A word list for lexical analysis (the `list-stats` follow-up from Section 5) also still needs to be created.
 

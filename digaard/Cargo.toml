@@ -1,0 +1,44 @@
+[package]
+name = "digaard"
+version = "0.1.0"
+authors = ["Sébastien LUNDI"]
+categories = ["network-programming", "command-line-utilities"]
+edition = "2024"
+keywords = ["dns", "dig", "lookup", "cli"]
+license = "GPLv3"
+readme = "README.md"
+repository = "https://codeberg.org/slundi/dgaard"
+description = "A modern DNS lookup CLI — dig done right."
+
+[[bin]]
+name = "digaard"
+path = "src/main.rs"
+
+[dependencies]
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "time"] }
+
+# CLI
+bpaf.workspace = true
+
+# DNS protocol primitives
+hickory-proto = { workspace = true, features = ["dnssec-ring"] }
+
+# DoH transport (reuses workspace HTTP stack)
+http-body-util.workspace = true
+hyper = { workspace = true }
+hyper-rustls = { workspace = true }
+hyper-util = { workspace = true }
+rustls.workspace = true
+
+# DoT transport
+tokio-rustls = "0.26"
+webpki-roots = "0.26"
+
+# Structured output
+serde.workspace = true
+serde_json.workspace = true
+
+# Logging
+env_logger.workspace = true
+log.workspace = true
