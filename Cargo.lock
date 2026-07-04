@@ -1005,6 +1005,7 @@ dependencies = [
  "hyper-util",
  "idna",
  "log",
+ "maxminddb",
  "quinn",
  "rcgen",
  "rustls",

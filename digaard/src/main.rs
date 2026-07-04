@@ -9,6 +9,7 @@ use tokio::sync::Semaphore;
 use digaard::cli::{DohMethod as CliDohMethod, TlsOpts};
 use digaard::dnssec::{TrustAnchors, Verdict, classify, parse_trust_anchor_file};
 use digaard::error::{Error, Result};
+use digaard::geoip::GeoIpDb;
 use digaard::output::{RenderOpts, Rendered};
 use digaard::query::{QueryFlags, build_query, pad_message, resolve_name};
 use digaard::stats::Stats;
@@ -56,6 +57,18 @@ async fn run() -> Result<()> {
         .max(1);
     let semaphore = Arc::new(Semaphore::new(concurrency));
 
+    let geoip = if let Some(path) = &args.mmdb {
+        match GeoIpDb::open(path) {
+            Ok(db) => Some(Arc::new(db)),
+            Err(e) => {
+                eprintln!("warning: --mmdb {path}: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let opts = RenderOpts {
         format: args.format,
         short: args.short,
@@ -63,6 +76,8 @@ async fn run() -> Result<()> {
         batch,
         edge: args.edge,
         hex: args.hex,
+        geoip,
+        country_format: args.country_format,
     };
 
     let mut handles = Vec::with_capacity(targets.len());
@@ -98,7 +113,7 @@ async fn run() -> Result<()> {
                     },
                     verdict: one.verdict.as_ref(),
                 };
-                let rendered = output::render_batch(opts, std::slice::from_ref(&item));
+                let rendered = output::render_batch(&opts, std::slice::from_ref(&item));
                 lock.write_all(rendered.as_bytes()).map_err(Error::Io)?;
             }
             Err(e) => {

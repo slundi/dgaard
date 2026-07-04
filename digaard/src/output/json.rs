@@ -4,14 +4,18 @@ use serde_json::{Value, json};
 
 use super::edge;
 use crate::dnssec::Verdict;
+use crate::geoip::{CountryFormat, GeoIpDb};
 use crate::idn;
 
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     msg: &Message,
     elapsed_ms: Option<u64>,
     query_label: &str,
     edge: bool,
     verdict: Option<&Verdict>,
+    geoip: Option<&GeoIpDb>,
+    country_format: CountryFormat,
 ) -> String {
     let m = &msg.metadata;
 
@@ -43,9 +47,9 @@ pub fn render(
             "cd": m.checking_disabled,
         },
         "question":   questions,
-        "answer":     rr_to_json(&msg.answers),
-        "authority":  rr_to_json(&msg.authorities),
-        "additional": rr_to_json(&msg.additionals),
+        "answer":     rr_to_json(&msg.answers, geoip, country_format),
+        "authority":  rr_to_json(&msg.authorities, None, country_format),
+        "additional": rr_to_json(&msg.additionals, None, country_format),
     });
 
     if edge {
@@ -79,19 +83,29 @@ pub fn render(
     obj.to_string()
 }
 
-fn rr_to_json(records: &[Record]) -> Value {
+fn rr_to_json(records: &[Record], geoip: Option<&GeoIpDb>, fmt: CountryFormat) -> Value {
     records
         .iter()
         .map(|rr| {
             let ascii = rr.name.to_ascii();
-            json!({
+            let data = rr.data.to_string();
+            let country: Option<String> = geoip.and_then(|db| {
+                data.parse::<std::net::IpAddr>()
+                    .ok()
+                    .and_then(|ip| db.lookup_country(ip, fmt))
+            });
+            let mut obj = json!({
                 "name":         ascii,
                 "unicode_name": maybe_unicode(&ascii),
                 "ttl":          rr.ttl,
                 "type":         rr.record_type().to_string(),
                 "class":        rr.dns_class.to_string(),
-                "data":         rr.data.to_string(),
-            })
+                "data":         data,
+            });
+            if let Some(c) = country {
+                obj["country"] = json!(c);
+            }
+            obj
         })
         .collect()
 }

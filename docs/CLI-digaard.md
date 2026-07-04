@@ -111,6 +111,43 @@ Full recursive chain-of-trust construction is not implemented (deferred).
 | `--color=WHEN`  | `auto` (default), `always`, `never`.       |
 | `--hex`         | xxd-style hex dump of response wire bytes. |
 
+## GeoIP country annotations
+
+Annotates A and AAAA records in the answer section with country information
+from a MaxMind `.mmdb` database (e.g. GeoLite2-Country).
+No database is bundled; you must supply your own file.
+
+| Flag                   | Description                                                                                           |
+| ---------------------- | ----------------------------------------------------------------------------------------------------- |
+| `--mmdb=PATH`          | Path to a MaxMind `.mmdb` database file. Country annotations are off when omitted.                    |
+| `--country-format=FMT` | How to display the country. Comma- or `+`-separated list of components (see below). Default `alpha2`. |
+
+**Format components** (combinable):
+
+| Component          | Output example  |
+| ------------------ | --------------- |
+| `emoji`            | 🇺🇸              |
+| `alpha2` (default) | `US`            |
+| `alpha3`           | `USA`           |
+| `name`             | `United States` |
+
+Examples:
+
+```text
+# Show ISO 3166-1 alpha-2 code (default when --mmdb is set)
+digaard example.com --mmdb GeoLite2-Country.mmdb
+
+# Combine emoji and alpha-2
+digaard example.com --mmdb GeoLite2-Country.mmdb --country-format emoji,alpha2
+
+# Full name only
+digaard example.com --mmdb GeoLite2-Country.mmdb --country-format name
+```
+
+Text output appends the country as a `; <code>` comment on the record line.
+JSON output adds a `"country"` string field to each annotated record object.
+Non-IP records (MX, NS, TXT, …) are not annotated.
+
 ## Meta
 
 | Flag              | Description                                                                   |
@@ -151,6 +188,10 @@ color = "auto" # auto | always | never
 timeout_ms = 3000
 retry = 2
 concurrency = 16
+
+# GeoIP (optional)
+mmdb_path = "/usr/share/GeoIP/GeoLite2-Country.mmdb"
+country_format = "emoji,alpha2" # emoji | alpha2 | alpha3 | name; combinable with comma or '+'
 ```
 
 ## Exit codes

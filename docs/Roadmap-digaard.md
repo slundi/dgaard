@@ -393,3 +393,11 @@ Run command: `cargo nextest run -p digaard`.
 - All of the above with `--color auto` producing readable, non-garbled ANSI on a TTY and clean text when redirected.
 - `cargo nextest run -p digaard` — green.
 - `cargo clippy -p digaard -- -D warnings` — clean.
+
+---
+
+## Ideas
+
+- MaxMindDB to put a flag or 2-3 char country
+- time for the query
+- whois info

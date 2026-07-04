@@ -29,6 +29,8 @@ pub struct Config {
     pub timeout_ms: Option<u64>,
     pub retry: Option<u32>,
     pub concurrency: Option<usize>,
+    pub mmdb_path: Option<String>,
+    pub country_format: Option<String>,
 }
 
 /// Parse a config file's text. Returns a Config with only the fields the file
@@ -68,6 +70,8 @@ pub fn parse(text: &str) -> Result<Config, String> {
     cfg.timeout_ms = read_u64(root, "timeout_ms")?;
     cfg.retry = read_u32(root, "retry")?;
     cfg.concurrency = read_usize(root, "concurrency")?;
+    cfg.mmdb_path = read_string(root, "mmdb_path")?;
+    cfg.country_format = read_string(root, "country_format")?;
 
     Ok(cfg)
 }

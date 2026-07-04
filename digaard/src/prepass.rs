@@ -114,6 +114,18 @@ pub fn merge_config_defaults(argv: Vec<String>, cfg: &Config) -> Vec<String> {
         prepend.push("--concurrency".to_string());
         prepend.push(n.to_string());
     }
+    if !has(&["--mmdb"])
+        && let Some(p) = cfg.mmdb_path.as_deref()
+    {
+        prepend.push("--mmdb".to_string());
+        prepend.push(p.to_string());
+    }
+    if !has(&["--country-format"])
+        && let Some(f) = cfg.country_format.as_deref()
+    {
+        prepend.push("--country-format".to_string());
+        prepend.push(f.to_string());
+    }
 
     // Keep user tokens at the end so they override.
     prepend.extend(argv);

@@ -74,6 +74,8 @@ pub struct Args {
     pub hex: bool,
     pub validate: bool,
     pub trust_anchor_files: Vec<String>,
+    pub mmdb: Option<String>,
+    pub country_format: crate::geoip::CountryFormat,
     pub names: Vec<String>,
 }
 
@@ -422,6 +424,17 @@ fn options() -> OptionParser<Args> {
         .argument::<String>("FILE")
         .many();
 
+    let mmdb = long("mmdb")
+        .help("Path to a MaxMind .mmdb database file for country annotations on A/AAAA records")
+        .argument::<String>("PATH")
+        .optional();
+
+    let country_format = long("country-format")
+        .help("Country display format: emoji, alpha2 (default), alpha3, name; combine with comma or '+'")
+        .argument::<String>("FMT")
+        .parse(|s| crate::geoip::CountryFormat::parse(&s))
+        .fallback(crate::geoip::CountryFormat::default());
+
     construct!(Args {
         qtype,
         qclass,
@@ -453,6 +466,8 @@ fn options() -> OptionParser<Args> {
         hex,
         validate,
         trust_anchor_files,
+        mmdb,
+        country_format,
         names,
     })
     .to_options()

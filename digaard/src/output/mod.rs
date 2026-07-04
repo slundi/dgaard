@@ -32,7 +32,7 @@ pub struct Rendered<'a> {
 }
 
 /// Rendering options shared across formats.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RenderOpts {
     pub format: OutputFormat,
     pub short: bool,
@@ -43,16 +43,26 @@ pub struct RenderOpts {
     pub edge: bool,
     /// Print raw wire bytes as hex dump instead of parsed records.
     pub hex: bool,
+    /// Optional GeoIP database for country annotations on A/AAAA records.
+    pub geoip: Option<std::sync::Arc<crate::geoip::GeoIpDb>>,
+    pub country_format: crate::geoip::CountryFormat,
 }
 
 /// Render a single DNS response.
-pub fn render(opts: RenderOpts, item: &Rendered<'_>) -> String {
+pub fn render(opts: &RenderOpts, item: &Rendered<'_>) -> String {
     if opts.hex {
         return hex::render(item);
     }
 
     match opts.format {
-        OutputFormat::Text => text::render(item, opts.short, opts.color, opts.edge),
+        OutputFormat::Text => text::render(
+            item,
+            opts.short,
+            opts.color,
+            opts.edge,
+            opts.geoip.as_deref(),
+            opts.country_format,
+        ),
         OutputFormat::Json => {
             let mut out = json::render(
                 item.response,
@@ -60,6 +70,8 @@ pub fn render(opts: RenderOpts, item: &Rendered<'_>) -> String {
                 item.query,
                 opts.edge,
                 item.verdict,
+                opts.geoip.as_deref(),
+                opts.country_format,
             );
             out.push('\n');
             out
@@ -68,7 +80,7 @@ pub fn render(opts: RenderOpts, item: &Rendered<'_>) -> String {
 }
 
 /// Render a batch of responses in order.
-pub fn render_batch(opts: RenderOpts, items: &[Rendered<'_>]) -> String {
+pub fn render_batch(opts: &RenderOpts, items: &[Rendered<'_>]) -> String {
     let mut out = String::new();
     for (idx, item) in items.iter().enumerate() {
         if !opts.hex && opts.format == OutputFormat::Text && opts.batch {

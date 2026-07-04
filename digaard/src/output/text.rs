@@ -4,9 +4,17 @@ use hickory_proto::rr::Record;
 use super::Rendered;
 use super::color::{ColorMode, Palette};
 use super::edge;
+use crate::geoip::{CountryFormat, GeoIpDb};
 use crate::idn;
 
-pub fn render(item: &Rendered<'_>, short: bool, color: ColorMode, edge: bool) -> String {
+pub fn render(
+    item: &Rendered<'_>,
+    short: bool,
+    color: ColorMode,
+    edge: bool,
+    geoip: Option<&GeoIpDb>,
+    country_format: CountryFormat,
+) -> String {
     let msg = item.response;
     let palette = color.resolved();
     let mut out = String::new();
@@ -23,9 +31,17 @@ pub fn render(item: &Rendered<'_>, short: bool, color: ColorMode, edge: bool) ->
     } else {
         for rr in &msg.answers {
             if short {
-                out.push_str(&format!("{}\n", rr.data));
+                let country = country_hint(rr, geoip, country_format);
+                if country.is_empty() {
+                    out.push_str(&format!("{}\n", rr.data));
+                } else {
+                    out.push_str(&format!(
+                        "{} {} {}{}\n",
+                        rr.data, palette.comment, country, palette.reset
+                    ));
+                }
             } else {
-                out.push_str(&rr_line(rr, &palette));
+                out.push_str(&rr_line(rr, &palette, geoip, country_format));
             }
         }
     }
@@ -36,12 +52,16 @@ pub fn render(item: &Rendered<'_>, short: bool, color: ColorMode, edge: bool) ->
             ";; AUTHORITY SECTION:",
             &msg.authorities,
             &palette,
+            None,
+            country_format,
         );
         section(
             &mut out,
             ";; ADDITIONAL SECTION:",
             &msg.additionals,
             &palette,
+            None,
+            country_format,
         );
 
         if edge {
@@ -163,21 +183,39 @@ fn header(out: &mut String, msg: &Message, p: &Palette) {
     }
 }
 
-fn section(out: &mut String, title: &str, records: &[Record], p: &Palette) {
+fn section(
+    out: &mut String,
+    title: &str,
+    records: &[Record],
+    p: &Palette,
+    geoip: Option<&GeoIpDb>,
+    country_format: CountryFormat,
+) {
     if records.is_empty() {
         return;
     }
     out.push('\n');
     out.push_str(&format!("{}{title}{}\n", p.header, p.reset));
     for rr in records {
-        out.push_str(&rr_line(rr, p));
+        out.push_str(&rr_line(rr, p, geoip, country_format));
     }
 }
 
-fn rr_line(rr: &Record, p: &Palette) -> String {
+fn rr_line(
+    rr: &Record,
+    p: &Palette,
+    geoip: Option<&GeoIpDb>,
+    country_format: CountryFormat,
+) -> String {
     let name_str = rr.name.to_ascii();
+    let c = country_hint(rr, geoip, country_format);
+    let country_suffix = if c.is_empty() {
+        String::new()
+    } else {
+        format!(" {cmt}; {c}{r}", cmt = p.comment, r = p.reset)
+    };
     format!(
-        "{n}{name}{r}\t{tl}{ttl}{r}\t{cl}{class}{r}\t{ty}{rtype}{r}\t{data}{unicode}\n",
+        "{n}{name}{r}\t{tl}{ttl}{r}\t{cl}{class}{r}\t{ty}{rtype}{r}\t{data}{unicode}{country}\n",
         n = p.name,
         name = name_str,
         r = p.reset,
@@ -189,7 +227,21 @@ fn rr_line(rr: &Record, p: &Palette) -> String {
         rtype = rr.record_type(),
         data = rr.data,
         unicode = idn_hint(&name_str, p),
+        country = country_suffix,
     )
+}
+
+fn country_hint(rr: &Record, geoip: Option<&GeoIpDb>, fmt: CountryFormat) -> String {
+    let db = match geoip {
+        Some(db) => db,
+        None => return String::new(),
+    };
+    let data_str = rr.data.to_string();
+    let ip: std::net::IpAddr = match data_str.parse() {
+        Ok(ip) => ip,
+        Err(_) => return String::new(),
+    };
+    db.lookup_country(ip, fmt).unwrap_or_default()
 }
 
 fn idn_hint(name: &str, p: &Palette) -> String {

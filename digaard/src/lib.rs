@@ -4,6 +4,7 @@ pub mod cli;
 pub mod config;
 pub mod dnssec;
 pub mod error;
+pub mod geoip;
 pub mod idn;
 pub mod output;
 pub mod prepass;
