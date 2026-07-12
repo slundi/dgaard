@@ -15,7 +15,7 @@ use digaard::query::{QueryFlags, build_query, pad_message, resolve_name};
 use digaard::stats::Stats;
 use digaard::transport::{
     DohMethod, DohSettings, ServerPicker, ServerStrategy, TlsSettings, TransportConfig,
-    TransportKind,
+    TransportKind, parse_server_spec,
 };
 use digaard::{cli, output, transport};
 
@@ -158,8 +158,11 @@ fn build_server_picker(args: &cli::Args) -> Result<ServerPicker> {
     };
 
     let mut configs = Vec::with_capacity(servers.len());
-    for host in servers {
-        let port = args.port.unwrap_or_else(|| args.transport.default_port());
+    for spec in servers {
+        let (host, spec_port) = parse_server_spec(&spec).map_err(Error::Transport)?;
+        let port = spec_port
+            .or(args.port)
+            .unwrap_or_else(|| args.transport.default_port());
         let tls = build_tls_settings(&args.tls)?;
         let doh = DohSettings {
             method: match args.doh.method {

@@ -138,6 +138,60 @@ pub async fn send_with_wire(
     Ok((msg, wire))
 }
 
+/// Parse a `-s`/`@` server specification into `(host, optional_port)`.
+///
+/// Accepts:
+/// - IPv4 or hostname:               `"1.1.1.1"`, `"dns.example.com"`
+/// - IPv4 or hostname with port:     `"1.1.1.1:5353"`, `"dns.example.com:5353"`
+/// - Bare IPv6 (no port):            `"::1"`, `"2001:db8::1"`
+/// - Bracketed IPv6:                 `"[::1]"`, `"[2001:db8::1]"`
+/// - Bracketed IPv6 with port:       `"[::1]:5353"`
+///
+/// Bare IPv6 with a port is ambiguous (`::1:5353`) and is therefore rejected in
+/// favor of the bracketed form.
+pub fn parse_server_spec(spec: &str) -> std::result::Result<(String, Option<u16>), String> {
+    if spec.is_empty() {
+        return Err("empty server spec".to_string());
+    }
+
+    if let Some(rest) = spec.strip_prefix('[') {
+        let close = rest
+            .find(']')
+            .ok_or_else(|| format!("missing ']' in server '{spec}'"))?;
+        let host = &rest[..close];
+        if host.is_empty() {
+            return Err(format!("empty host in server '{spec}'"));
+        }
+        let after = &rest[close + 1..];
+        if after.is_empty() {
+            return Ok((host.to_string(), None));
+        }
+        let port_str = after.strip_prefix(':').ok_or_else(|| {
+            format!("unexpected characters after ']' in server '{spec}': '{after}'")
+        })?;
+        let port: u16 = port_str
+            .parse()
+            .map_err(|e| format!("invalid port '{port_str}' in server '{spec}': {e}"))?;
+        return Ok((host.to_string(), Some(port)));
+    }
+
+    // Bare IPv6 (two or more colons) — no port allowed without brackets.
+    if spec.matches(':').count() > 1 {
+        return Ok((spec.to_string(), None));
+    }
+
+    if let Some((host, port_str)) = spec.rsplit_once(':') {
+        if host.is_empty() {
+            return Err(format!("empty host in server '{spec}'"));
+        }
+        let port: u16 = port_str
+            .parse()
+            .map_err(|e| format!("invalid port '{port_str}' in server '{spec}': {e}"))?;
+        return Ok((host.to_string(), Some(port)));
+    }
+    Ok((spec.to_string(), None))
+}
+
 /// Picks one of many pre-built `TransportConfig`s per query.
 ///
 /// - `First`: always returns index 0.
@@ -220,5 +274,91 @@ mod tests {
     fn race_exposes_all_configs() {
         let picker = ServerPicker::new(vec![cfg("a"), cfg("b")], ServerStrategy::Race);
         assert_eq!(picker.all().len(), 2);
+    }
+
+    #[test]
+    fn parse_spec_bare_ipv4() {
+        assert_eq!(
+            parse_server_spec("1.1.1.1").unwrap(),
+            ("1.1.1.1".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn parse_spec_ipv4_with_port() {
+        assert_eq!(
+            parse_server_spec("192.168.1.1:5353").unwrap(),
+            ("192.168.1.1".to_string(), Some(5353))
+        );
+    }
+
+    #[test]
+    fn parse_spec_hostname_with_port() {
+        assert_eq!(
+            parse_server_spec("dns.example.com:8053").unwrap(),
+            ("dns.example.com".to_string(), Some(8053))
+        );
+    }
+
+    #[test]
+    fn parse_spec_hostname_without_port() {
+        assert_eq!(
+            parse_server_spec("dns.example.com").unwrap(),
+            ("dns.example.com".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn parse_spec_bare_ipv6_no_port() {
+        assert_eq!(
+            parse_server_spec("2001:db8::1").unwrap(),
+            ("2001:db8::1".to_string(), None)
+        );
+        assert_eq!(parse_server_spec("::1").unwrap(), ("::1".to_string(), None));
+    }
+
+    #[test]
+    fn parse_spec_bracketed_ipv6_no_port() {
+        assert_eq!(
+            parse_server_spec("[2001:db8::1]").unwrap(),
+            ("2001:db8::1".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn parse_spec_bracketed_ipv6_with_port() {
+        assert_eq!(
+            parse_server_spec("[2001:db8::1]:5353").unwrap(),
+            ("2001:db8::1".to_string(), Some(5353))
+        );
+        assert_eq!(
+            parse_server_spec("[::1]:53").unwrap(),
+            ("::1".to_string(), Some(53))
+        );
+    }
+
+    #[test]
+    fn parse_spec_rejects_bad_port() {
+        assert!(parse_server_spec("1.1.1.1:notaport").is_err());
+        assert!(parse_server_spec("1.1.1.1:99999").is_err());
+        assert!(parse_server_spec("[::1]:notaport").is_err());
+    }
+
+    #[test]
+    fn parse_spec_rejects_empty_host() {
+        assert!(parse_server_spec("").is_err());
+        assert!(parse_server_spec(":53").is_err());
+        assert!(parse_server_spec("[]").is_err());
+        assert!(parse_server_spec("[]:53").is_err());
+    }
+
+    #[test]
+    fn parse_spec_rejects_unterminated_bracket() {
+        assert!(parse_server_spec("[::1").is_err());
+    }
+
+    #[test]
+    fn parse_spec_rejects_trailing_garbage_after_bracket() {
+        assert!(parse_server_spec("[::1]garbage").is_err());
     }
 }

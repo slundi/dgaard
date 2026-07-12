@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use digaard::transport::{
     DohMethod, DohSettings, ServerPicker, ServerStrategy, TlsSettings, TransportConfig,
+    parse_server_spec,
 };
 
 fn cfg(server: &str) -> Arc<TransportConfig> {
@@ -78,4 +79,26 @@ fn server_picker_race_returns_all_configs() {
 #[should_panic(expected = "at least one server")]
 fn empty_server_list_is_a_hard_error() {
     let _ = ServerPicker::new(vec![], ServerStrategy::First);
+}
+
+#[test]
+fn server_spec_splits_host_and_port_from_at_syntax() {
+    // Regression: `@192.168.1.1:5353` used to become `server="192.168.1.1:5353"` +
+    // `port=53`, producing a `connect 192.168.1.1:5353:53` failure.
+    let (host, port) = parse_server_spec("192.168.1.1:5353").unwrap();
+    assert_eq!(host, "192.168.1.1");
+    assert_eq!(port, Some(5353));
+}
+
+#[test]
+fn server_spec_ipv6_requires_brackets_for_port() {
+    // Bracketed → port is parsed.
+    let (host, port) = parse_server_spec("[2001:db8::53]:5353").unwrap();
+    assert_eq!(host, "2001:db8::53");
+    assert_eq!(port, Some(5353));
+
+    // Bare IPv6 → host only, no port (ambiguous otherwise).
+    let (host, port) = parse_server_spec("2001:db8::53").unwrap();
+    assert_eq!(host, "2001:db8::53");
+    assert_eq!(port, None);
 }

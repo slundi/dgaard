@@ -1,6 +1,6 @@
 [package]
 name = "digaard"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Sébastien LUNDI"]
 categories = ["network-programming", "command-line-utilities"]
 edition = "2024"
