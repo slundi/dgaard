@@ -132,3 +132,17 @@ build-release:
 # Usage: just build-release-cross aarch64-unknown-linux-gnu
 build-release-cross TARGET:
     cross build --release --target {{TARGET}}
+
+# Cross-compile dgaard for aarch64-musl (OpenWrt on MediaTek/Filogic routers
+# such as GL-MT6000 Flint 2, Banana Pi R3). Output is at ./result/bin/dgaard.
+nix-release-build:
+    nix build .#dgaard-aarch64-musl
+    @echo "→ dgaard (aarch64-musl): $(readlink -f result)/bin/dgaard"
+
+# Cross-compile dgaard-monitor for aarch64-musl. Output at ./result/bin/dgaard-monitor.
+nix-release-build-monitor:
+    nix build .#dgaard-monitor-aarch64-musl -o result-monitor
+    @echo "→ dgaard-monitor (aarch64-musl): $(readlink -f result-monitor)/bin/dgaard-monitor"
+
+# Build both dgaard and dgaard-monitor for aarch64-musl
+nix-release-build-all: nix-release-build nix-release-build-monitor

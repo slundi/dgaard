@@ -82,6 +82,42 @@
               name
             ];
           };
+
+        # Cross-compile to aarch64-musl (for OpenWrt on MediaTek/Filogic routers
+        # such as the GL-MT6000 Flint 2, Banana Pi R3, etc.). Uses the nixpkgs
+        # aarch64-multiplatform-musl C toolchain to satisfy build.rs steps in
+        # `ring` and bundled `libsqlite3-sys`.
+        crossCC = pkgs.pkgsCross.aarch64-multiplatform-musl.stdenv.cc;
+        crossPrefix = "${crossCC}/bin/${crossCC.targetPrefix}";
+
+        rustPlatformCross = pkgs.makeRustPlatform {
+          cargo = rustToolchain;
+          rustc = rustToolchain;
+        };
+
+        mkCrateAarch64Musl =
+          name:
+          rustPlatformCross.buildRustPackage {
+            pname = "${name}-aarch64-musl";
+            version = (builtins.fromTOML (builtins.readFile ./${name}/Cargo.toml)).package.version;
+            src = ./.;
+            cargoLock.lockFile = ./Cargo.lock;
+            cargoBuildFlags = [
+              "-p"
+              name
+            ];
+
+            nativeBuildInputs = [ crossCC ];
+
+            CARGO_BUILD_TARGET = "aarch64-unknown-linux-musl";
+            CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER = "${crossPrefix}cc";
+            CC_aarch64_unknown_linux_musl = "${crossPrefix}cc";
+            CXX_aarch64_unknown_linux_musl = "${crossPrefix}c++";
+            AR_aarch64_unknown_linux_musl = "${crossPrefix}ar";
+
+            # Can't run aarch64 binaries on the x86_64 builder
+            doCheck = false;
+          };
       in
       {
         # `nix build .#dgaard` / `nix run .#dgaard`
@@ -90,6 +126,10 @@
         packages.dgaard-monitor = mkCrate "dgaard-monitor";
         packages.dgaard-rest = mkCrate "dgaard-rest";
         packages.default = self.packages.${system}.dgaard;
+
+        # OpenWrt / aarch64-musl cross builds — `nix build .#dgaard-aarch64-musl`
+        packages.dgaard-aarch64-musl = mkCrateAarch64Musl "dgaard";
+        packages.dgaard-monitor-aarch64-musl = mkCrateAarch64Musl "dgaard-monitor";
 
         # `nix run .#codium` — VSCodium with all extensions pre-installed
         packages.codium = custom-codium;
