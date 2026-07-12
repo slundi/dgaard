@@ -75,7 +75,7 @@ aho-corasick = "1.1.4"
 regex = { version = "1.12.3", default-features = false, features = ["std", "perf", "unicode-perl"] }
 
 # ── workspace crates ─────────────────────────────────────────────────────────
-dgaard-engine = { path = "dgaard-engine" }
+dgaard-engine = { path = "dgaard-engine", version = "0.2.0" }
 dgaard-monitor-core = { path = "dgaard-monitor-core" }
 dgaard-monitor-nats = { path = "dgaard-monitor-nats" }
 dgaard-monitor-rest = { path = "dgaard-monitor-rest" }
