@@ -122,7 +122,8 @@ min_word_length = 8
 
 # Consonant clustering detection
 # Ratio threshold (e.g., 0.6 blocks domains with >60% consonants like "bcdfgh")
-consonant_ratio_threshold = 0.6
+# 0.6 is very aggressive (example: codeberg → 5 consonants (c,d,b,r,g) / 8 letters = 0.625, which is > consonant_ratio_threshold = 0.6)
+consonant_ratio_threshold = 0.7
 # Max consecutive consonants (normal words rarely exceed 4, e.g., "strength")
 max_consonant_sequence = 5
 
