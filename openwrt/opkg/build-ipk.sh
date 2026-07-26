@@ -58,7 +58,7 @@ Package: $PKG_NAME
 Version: $VERSION
 Architecture: $ARCH
 Maintainer: Your Name <you@example.com>
-Description: Dgaard DNS proxy with DGA/entropy detection and parental control
+Description: Dgaard DNS with DGA/entropy detection and parental control
 Depends: libc
 EOF
 

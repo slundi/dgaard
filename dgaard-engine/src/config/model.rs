@@ -425,46 +425,6 @@ impl Default for IdnConfig {
 }
 
 // ---------------------------------------------------------------------------
-// [security.behavior]
-// ---------------------------------------------------------------------------
-
-/// Client-level behavioural anomaly detection.
-///
-/// These counters are maintained per source IP and reset on a sliding window.
-/// They detect infected hosts exhibiting botnet / C2 scanning patterns.
-///
-/// Maps to `[security.behavior]` in the configuration file.
-#[derive(Debug, PartialEq, Clone)]
-pub struct BehaviorConfig {
-    /// Number of NXDOMAIN responses a single client may receive within
-    /// [`nxdomain_window`] seconds before being flagged as a potential
-    /// botnet scanner.
-    pub nxdomain_threshold: u32,
-
-    /// Sliding window duration in seconds for the NXDOMAIN counter.
-    pub nxdomain_window: u32,
-
-    /// Maximum number of distinct subdomains under a single SLD that a client
-    /// may query within one minute before being suspected of DNS exfiltration.
-    pub max_subdomains_per_minute: u32,
-
-    /// Maximum byte-length of a single DNS label (dot-delimited segment).
-    /// Base64-encoded payloads in tunnel traffic produce very long labels.
-    pub max_label_length: u8,
-}
-
-impl Default for BehaviorConfig {
-    fn default() -> Self {
-        Self {
-            nxdomain_threshold: 15,
-            nxdomain_window: 60,
-            max_subdomains_per_minute: 50,
-            max_label_length: 60,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // [security.qtype_warden]
 // ---------------------------------------------------------------------------
 
@@ -863,8 +823,6 @@ pub struct SecurityConfig {
     pub lexical: LexicalConfig,
     /// Internationalized domain name policy.
     pub idn: IdnConfig,
-    /// Per-client behavioural anomaly thresholds.
-    pub behavior: BehaviorConfig,
     /// Query-type (QType) policy enforcement.
     pub qtype_warden: QTypeWardenConfig,
     /// DNS Rebinding Shield: reject answers resolving to private/reserved IPs.
@@ -1085,9 +1043,6 @@ pub enum NxdomainAction {
 /// NXDOMAIN hunting — detects botnet C2 beacon scanning.
 ///
 /// Maps to `[nxdomain_hunting]` in the configuration file.
-///
-/// Note: overlaps with [`BehaviorConfig`]; the top-level section is
-/// intended for operators who prefer a flat configuration layout.
 #[derive(Debug, PartialEq, Clone)]
 pub struct NxdomainHuntingConfig {
     /// Enable or disable NXDOMAIN hunting entirely.
@@ -1606,19 +1561,6 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // BehaviorConfig
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn behavior_config_defaults_match_example_toml() {
-        let b = BehaviorConfig::default();
-        assert_eq!(b.nxdomain_threshold, 15);
-        assert_eq!(b.nxdomain_window, 60);
-        assert_eq!(b.max_subdomains_per_minute, 50);
-        assert_eq!(b.max_label_length, 60);
-    }
-
-    // -----------------------------------------------------------------------
     // SecurityConfig
     // -----------------------------------------------------------------------
 
@@ -1629,7 +1571,6 @@ mod tests {
         assert_eq!(sec.intelligence, IntelligenceConfig::default());
         assert_eq!(sec.lexical, LexicalConfig::default());
         assert_eq!(sec.idn, IdnConfig::default());
-        assert_eq!(sec.behavior, BehaviorConfig::default());
         assert_eq!(sec.rebinding_shield, RebindingShieldConfig::default());
         assert_eq!(sec.low_ttl, LowTtlConfig::default());
         assert_eq!(sec.asn_filter, AsnFilterConfig::default());

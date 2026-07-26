@@ -164,14 +164,8 @@ ignore_entry_matching_entropy = false
 mode = "Smart"
 allowed_scripts = ["Latin", "WesternEuropean"]
 
-[security.behavior]
-# NXDOMAIN Hunting (Detects infected clients scanning for C2)
-nxdomain_threshold = 15
-nxdomain_window = 60
-
-# Tunneling/Exfiltration Detection
-max_subdomains_per_minute = 50
-max_label_length = 60
+# NXDOMAIN Hunting and Tunneling/Exfiltration detection are configured in the
+# top-level [nxdomain_hunting] and [tunneling_detection] sections below.
 
 # --- Response Filtering (Inbound / DPI Lite) ---
 [security.inbound]

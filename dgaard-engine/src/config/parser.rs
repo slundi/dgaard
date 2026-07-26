@@ -527,26 +527,6 @@ fn parse_idn(table: &toml_span::value::Table<'_>) -> Result<IdnConfig, ConfigErr
     Ok(cfg)
 }
 
-/// Parse `[security.behavior]` section.
-fn parse_behavior(table: &toml_span::value::Table<'_>) -> Result<BehaviorConfig, ConfigError> {
-    let mut cfg = BehaviorConfig::default();
-
-    if let Some(n) = get_typed_integer::<u32>(table, "nxdomain_threshold")? {
-        cfg.nxdomain_threshold = n;
-    }
-    if let Some(n) = get_typed_integer::<u32>(table, "nxdomain_window")? {
-        cfg.nxdomain_window = n;
-    }
-    if let Some(n) = get_typed_integer::<u32>(table, "max_subdomains_per_minute")? {
-        cfg.max_subdomains_per_minute = n;
-    }
-    if let Some(n) = get_typed_integer::<u8>(table, "max_label_length")? {
-        cfg.max_label_length = n;
-    }
-
-    Ok(cfg)
-}
-
 /// Parse `[security.qtype_warden]` section.
 fn parse_qtype_warden(
     table: &toml_span::value::Table<'_>,
@@ -796,9 +776,6 @@ fn parse_security(table: &toml_span::value::Table<'_>) -> Result<SecurityConfig,
     }
     if let Some(t) = get_table(table, "idn")? {
         cfg.idn = parse_idn(t)?;
-    }
-    if let Some(t) = get_table(table, "behavior")? {
-        cfg.behavior = parse_behavior(t)?;
     }
     if let Some(t) = get_table(table, "qtype_warden")? {
         cfg.qtype_warden = parse_qtype_warden(t)?;
@@ -1497,7 +1474,7 @@ mod tests {
     #[test]
     fn parse_negative_max_label_length_returns_error() {
         let toml = r#"
-            [security.behavior]
+            [tunneling_detection]
             max_label_length = -1
         "#;
         assert!(matches!(
@@ -1740,22 +1717,6 @@ mod tests {
         "#;
         let result = Config::parse(toml);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn parse_security_behavior() {
-        let toml = r#"
-            [security.behavior]
-            nxdomain_threshold = 20
-            nxdomain_window = 120
-            max_subdomains_per_minute = 100
-            max_label_length = 40
-        "#;
-        let cfg = Config::parse(toml).unwrap();
-        assert_eq!(cfg.security.behavior.nxdomain_threshold, 20);
-        assert_eq!(cfg.security.behavior.nxdomain_window, 120);
-        assert_eq!(cfg.security.behavior.max_subdomains_per_minute, 100);
-        assert_eq!(cfg.security.behavior.max_label_length, 40);
     }
 
     // -----------------------------------------------------------------------
@@ -2348,12 +2309,6 @@ mod tests {
             mode = "Smart"
             allowed_scripts = ["Latin", "WesternEuropean"]
 
-            [security.behavior]
-            nxdomain_threshold = 15
-            nxdomain_window = 60
-            max_subdomains_per_minute = 50
-            max_label_length = 60
-
             [forwarder]
             servers = ["1.1.1.1:53", "9.9.9.9:53"]
             timeout_ms = 2000
@@ -2407,7 +2362,7 @@ mod tests {
         assert_eq!(cfg.security.structure.max_subdomain_depth, 5);
         assert!(cfg.security.intelligence.enabled);
         assert_eq!(cfg.security.idn.mode, IdnMode::Smart);
-        assert_eq!(cfg.security.behavior.nxdomain_threshold, 15);
+        assert_eq!(cfg.nxdomain_hunting.threshold, 15);
 
         assert_eq!(cfg.forwarder.servers, vec!["1.1.1.1:53", "9.9.9.9:53"]);
         assert_eq!(cfg.tld.exclude, vec![".top", ".xyz", ".bid"]);
