@@ -166,7 +166,7 @@ ngram_probability_threshold = -4.0
 # those depend on the DNS answer, which cannot be known at load time. If in
 # doubt, leave this OFF: keep the explicit blacklist entry and let the score
 # add to it at query time.
-ignore_entry_matching_entropy = false
+drop_entries_hard_blocked_at_load = false
 
 [security.idn]
 # IDN filtering mode: "Off", "Strict" (block everything), "Smart" (european accent only)

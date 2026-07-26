@@ -304,7 +304,7 @@ pub struct IntelligenceConfig {
     ///
     /// Whitelist entries are never dropped by this optimisation.
     /// Default: `false` (keep every entry).
-    pub ignore_entry_matching_entropy: bool,
+    pub drop_entries_hard_blocked_at_load: bool,
 }
 
 impl Default for IntelligenceConfig {
@@ -324,7 +324,7 @@ impl Default for IntelligenceConfig {
                 String::from("/etc/dgaard/models/french.bin"),
             ],
             ngram_probability_threshold: -4.0,
-            ignore_entry_matching_entropy: false,
+            drop_entries_hard_blocked_at_load: false,
         }
     }
 }

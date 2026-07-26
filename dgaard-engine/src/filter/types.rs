@@ -36,7 +36,7 @@ pub enum ListFormat {
 /// `blocking_threshold` of 10). Dropping a blacklist entry here therefore
 /// **silently un-blocks it** unless other, answer-dependent signals push the
 /// score over the threshold at query time — signals that cannot be evaluated
-/// at load time. This is why `ignore_entry_matching_entropy` defaults to
+/// at load time. This is why `drop_entries_hard_blocked_at_load` defaults to
 /// `false`; see the warning in `config.example.toml`.
 #[derive(Debug, Clone)]
 pub struct EntropyThresholds {
@@ -66,7 +66,7 @@ pub struct LoadFilter {
     /// Precomputed hashes of `tld.exclude` entries (lower-cased, no leading dot).
     pub tld_exclude_hashes: HashSet<u64>,
     /// Only `Some` when `intelligence.enabled` and
-    /// `intelligence.ignore_entry_matching_entropy` are both true.
+    /// `intelligence.drop_entries_hard_blocked_at_load` are both true.
     ///
     /// ⚠️ Enabling this can silently un-block explicitly listed domains,
     /// because entropy is a soft score contributor, not a hard query-time
@@ -99,14 +99,15 @@ impl LoadFilter {
             })
             .collect();
 
-        let entropy_check =
-            (intel.enabled && intel.ignore_entry_matching_entropy).then_some(EntropyThresholds {
+        let entropy_check = (intel.enabled && intel.drop_entries_hard_blocked_at_load).then_some(
+            EntropyThresholds {
                 threshold: intel.entropy_threshold,
                 fast: intel.entropy_fast,
                 min_word_length: intel.min_word_length,
                 consonant_ratio_threshold: intel.consonant_ratio_threshold,
                 max_consonant_sequence: intel.max_consonant_sequence,
-            });
+            },
+        );
 
         let skip_idn = config.server.block_idn || config.security.idn.mode != IdnMode::Off;
 

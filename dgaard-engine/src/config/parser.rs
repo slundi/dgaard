@@ -495,8 +495,8 @@ fn parse_intelligence(
     if let Some(f) = get_float(table, "ngram_probability_threshold")? {
         cfg.ngram_probability_threshold = f;
     }
-    if let Some(b) = get_bool(table, "ignore_entry_matching_entropy")? {
-        cfg.ignore_entry_matching_entropy = b;
+    if let Some(b) = get_bool(table, "drop_entries_hard_blocked_at_load")? {
+        cfg.drop_entries_hard_blocked_at_load = b;
     }
 
     Ok(cfg)
