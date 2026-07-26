@@ -426,6 +426,12 @@ enabled = false
 
 # GeoIP country-based suspicion scoring.
 #
+# Requires a build with the `geoip` feature (`cargo build --features geoip`).
+# The default build omits maxminddb entirely; enabling `geo_ip.enabled` on such
+# a build is rejected at startup. GeoIP is off by default because CDN edge IPs
+# make country signals noisy — a legitimate domain can resolve into a
+# "suspicious" country and be scored up.
+#
 # After a successful DNS resolve, checks each A/AAAA address against a
 # MaxMind-compatible MMDB database. IPs from listed countries add
 # `suspicious_country_score` points to the domain's suspicion total.

@@ -69,6 +69,12 @@ async-trait.workspace = true
 bitflags.workspace = true
 dashmap.workspace = true
 
+[features]
+default = []
+# Forward GeoIP country-based suspicion scoring to the engine. Off by default;
+# see dgaard-engine's `geoip` feature.
+geoip = ["dgaard-engine/geoip"]
+
 [dev-dependencies]
 serde_json.workspace = true
 tempfile.workspace = true

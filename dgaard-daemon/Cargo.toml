@@ -25,6 +25,12 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "time"] }
 toml-span.workspace = true
 
+[features]
+default = []
+# Forward GeoIP country-based suspicion scoring to the engine. Off by default;
+# see dgaard-engine's `geoip` feature.
+geoip = ["dgaard-engine/geoip"]
+
 [dev-dependencies]
 tempfile.workspace = true
 twox-hash.workspace = true

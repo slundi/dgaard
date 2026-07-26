@@ -49,11 +49,13 @@ impl CountryFormat {
     }
 }
 
+#[cfg(feature = "geoip")]
 #[derive(serde::Deserialize)]
 struct MmRecord {
     country: Option<MmCountry>,
 }
 
+#[cfg(feature = "geoip")]
 #[derive(serde::Deserialize)]
 struct MmCountry {
     iso_code: Option<String>,
@@ -61,7 +63,13 @@ struct MmCountry {
 }
 
 /// Loaded MaxMind database used to annotate A/AAAA records with country info.
+#[cfg(feature = "geoip")]
 pub struct GeoIpDb(maxminddb::Reader<Vec<u8>>);
+
+/// Placeholder when built without the `geoip` feature. Never constructed —
+/// [`GeoIpDb::open`] returns an error explaining that GeoIP was compiled out.
+#[cfg(not(feature = "geoip"))]
+pub struct GeoIpDb;
 
 impl std::fmt::Debug for GeoIpDb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -70,14 +78,22 @@ impl std::fmt::Debug for GeoIpDb {
 }
 
 impl GeoIpDb {
+    #[cfg(feature = "geoip")]
     pub fn open(path: &str) -> Result<Self, String> {
         maxminddb::Reader::open_readfile(path)
             .map(GeoIpDb)
             .map_err(|e| e.to_string())
     }
 
+    /// Always errors: this binary was built without the `geoip` feature.
+    #[cfg(not(feature = "geoip"))]
+    pub fn open(_path: &str) -> Result<Self, String> {
+        Err("built without GeoIP support (rebuild with `--features geoip`)".to_string())
+    }
+
     /// Look up the country for `ip` and format it according to `fmt`.
     /// Returns `None` when the IP is not in the database or the entry has no country.
+    #[cfg(feature = "geoip")]
     pub fn lookup_country(&self, ip: IpAddr, fmt: CountryFormat) -> Option<String> {
         let result = self.0.lookup(ip).ok()?;
         let record: MmRecord = result.decode().ok()??;
@@ -108,8 +124,15 @@ impl GeoIpDb {
             Some(parts.join(" "))
         }
     }
+
+    /// Always `None`: this binary was built without the `geoip` feature.
+    #[cfg(not(feature = "geoip"))]
+    pub fn lookup_country(&self, _ip: IpAddr, _fmt: CountryFormat) -> Option<String> {
+        None
+    }
 }
 
+#[cfg(feature = "geoip")]
 fn alpha2_to_emoji(alpha2: &str) -> String {
     let mut chars = alpha2.chars();
     let a = chars.next().unwrap_or('?') as u32;
@@ -121,6 +144,7 @@ fn alpha2_to_emoji(alpha2: &str) -> String {
     }
 }
 
+#[cfg(feature = "geoip")]
 fn alpha2_to_alpha3(code: &str) -> Option<&'static str> {
     static TABLE: &[(&str, &str)] = &[
         ("AD", "AND"),
@@ -381,16 +405,19 @@ fn alpha2_to_alpha3(code: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "geoip")]
     #[test]
     fn emoji_us() {
         assert_eq!(alpha2_to_emoji("US"), "🇺🇸");
     }
 
+    #[cfg(feature = "geoip")]
     #[test]
     fn emoji_fr() {
         assert_eq!(alpha2_to_emoji("FR"), "🇫🇷");
     }
 
+    #[cfg(feature = "geoip")]
     #[test]
     fn alpha3_lookup() {
         assert_eq!(alpha2_to_alpha3("US"), Some("USA"));

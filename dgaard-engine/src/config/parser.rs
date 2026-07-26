@@ -1301,6 +1301,23 @@ impl Config {
             }
         }
 
+        // GeoIP scoring requires the `geoip` build feature (which pulls in
+        // maxminddb and the mmap reader). When the binary is compiled without
+        // it, a config that switches GeoIP on would silently score nothing —
+        // refuse to start rather than pretend the policy is in effect.
+        #[cfg(not(feature = "geoip"))]
+        if self.security.geo_ip.enabled {
+            return Err(ConfigError::InvalidValue {
+                key: "security.geo_ip.enabled".to_string(),
+                message: "GeoIP scoring is enabled but this binary was built \
+                          without the `geoip` feature, so maxminddb is not \
+                          compiled in. Rebuild with `--features geoip`, or set \
+                          security.geo_ip.enabled = false."
+                    .to_string(),
+                span: toml_span::Span::default(),
+            });
+        }
+
         if self.security.asn_filter.enabled {
             for range in &self.security.asn_filter.blocked_ranges {
                 let valid = if range.contains(':') {
@@ -1930,6 +1947,27 @@ mod tests {
         );
         assert!(cfg.security.geo_ip.suspicious_countries.is_empty());
         assert_eq!(cfg.security.geo_ip.suspicious_country_score, 3);
+    }
+
+    #[cfg(not(feature = "geoip"))]
+    #[test]
+    fn validate_rejects_geo_ip_enabled_without_feature() {
+        let mut cfg = Config::default();
+        cfg.security.geo_ip.enabled = true;
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::InvalidValue { key, .. } if key == "security.geo_ip.enabled"),
+            "unexpected error: {err}"
+        );
+        assert!(err.to_string().contains("geoip"));
+    }
+
+    #[cfg(feature = "geoip")]
+    #[test]
+    fn validate_accepts_geo_ip_enabled_with_feature() {
+        let mut cfg = Config::default();
+        cfg.security.geo_ip.enabled = true;
+        assert!(cfg.validate().is_ok());
     }
 
     // -----------------------------------------------------------------------

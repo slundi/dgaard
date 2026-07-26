@@ -1,3 +1,4 @@
+#[cfg(feature = "geoip")]
 use std::net::IpAddr;
 
 use aho_corasick::AhoCorasick;
@@ -47,7 +48,11 @@ pub struct FilterEngine {
     pub blocked_asn_v6: Vec<([u8; 16], [u8; 16])>,
 
     // GeoIP country-based suspicion scoring
+    #[cfg(feature = "geoip")]
     pub geoip_reader: Option<maxminddb::Reader<maxminddb::Mmap>>,
+    /// Placeholder when built without the `geoip` feature; always `None`.
+    #[cfg(not(feature = "geoip"))]
+    pub geoip_reader: Option<()>,
     pub suspicious_country_codes: HashSet<String>,
     pub suspicious_country_score: u8,
 
@@ -313,6 +318,7 @@ impl FilterEngine {
     ///
     /// Opens the database with mmap — no heap copy of the file contents.
     /// Country codes in `suspicious_countries` are normalised to uppercase.
+    #[cfg(feature = "geoip")]
     pub fn load_geoip_filter(&mut self, config: &Config) {
         let geo = &config.security.geo_ip;
 
@@ -384,6 +390,14 @@ impl FilterEngine {
         }
     }
 
+    /// No-op stand-in when built without the `geoip` feature.
+    ///
+    /// A config with `security.geo_ip.enabled = true` is rejected by
+    /// [`Config::validate`] before startup, so if this variant is reached at
+    /// all, GeoIP is disabled and there is nothing to load.
+    #[cfg(not(feature = "geoip"))]
+    pub fn load_geoip_filter(&mut self, _config: &Config) {}
+
     /// Load user-defined custom flag domain lists from configuration.
     ///
     /// For each `[[security.custom_flags]]` entry, reads every `list_path` file
@@ -427,16 +441,19 @@ impl FilterEngine {
 
     /// Return the ISO 3166-1 alpha-2 country code if `ip` is in a suspicious
     /// country, or `None` if the IP is unknown or the country is not suspicious.
+    #[cfg(feature = "geoip")]
     pub fn geoip_country_suspicious_v4(&self, ip: std::net::Ipv4Addr) -> Option<String> {
         self.geoip_country_suspicious(IpAddr::V4(ip))
     }
 
     /// Return the ISO 3166-1 alpha-2 country code if `ip` is in a suspicious
     /// country, or `None` if the IP is unknown or the country is not suspicious.
+    #[cfg(feature = "geoip")]
     pub fn geoip_country_suspicious_v6(&self, ip: std::net::Ipv6Addr) -> Option<String> {
         self.geoip_country_suspicious(IpAddr::V6(ip))
     }
 
+    #[cfg(feature = "geoip")]
     fn geoip_country_suspicious(&self, ip: IpAddr) -> Option<String> {
         let reader = self.geoip_reader.as_ref()?;
         let result = reader.lookup(ip).ok()?;
@@ -594,6 +611,7 @@ mod tests {
         assert!(engine.geoip_reader.is_none());
     }
 
+    #[cfg(feature = "geoip")]
     #[test]
     fn test_geoip_suspicious_with_no_reader() {
         let engine = make_engine();

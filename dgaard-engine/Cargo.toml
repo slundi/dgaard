@@ -36,7 +36,19 @@ aho-corasick.workspace = true
 log.workspace = true
 
 bitflags.workspace = true
-maxminddb.workspace = true
+
+# GeoIP country lookup — optional, enabled by the `geoip` feature.
+maxminddb = { workspace = true, optional = true }
+
+[features]
+default = []
+# GeoIP country-based suspicion scoring. Pulls in `maxminddb` and its
+# memory-mapped reader. Off by default: CDN edge IPs make country signals
+# noisy (a legitimate domain can resolve into a "suspicious" country), and the
+# dependency plus mmap machinery are dead weight on the common OpenWrt build
+# where GeoIP is not used. When disabled, `Config::validate` rejects any config
+# that sets `security.geo_ip.enabled = true`.
+geoip = ["dep:maxminddb"]
 
 [dev-dependencies]
 tempfile.workspace = true

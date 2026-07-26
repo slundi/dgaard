@@ -202,6 +202,7 @@ pub fn score_answer(
         }
     }
 
+    #[cfg(feature = "geoip")]
     if config.security.geo_ip.enabled && filter.geoip_reader.is_some() {
         for ip in &answer.a_records {
             if let Some(code) = filter.geoip_country_suspicious_v4(*ip) {
