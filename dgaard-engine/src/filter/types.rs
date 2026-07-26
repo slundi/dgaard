@@ -94,7 +94,9 @@ impl LoadFilter {
             .exclude
             .iter()
             .map(|tld| {
-                let clean = tld.strip_prefix('.').unwrap_or(tld).to_ascii_lowercase();
+                // TLDs are validated lowercase & dotless at parse time; the
+                // fold is a defensive no-op.
+                let clean = tld.to_ascii_lowercase();
                 twox_hash::XxHash64::oneshot(seed, clean.as_bytes())
             })
             .collect();

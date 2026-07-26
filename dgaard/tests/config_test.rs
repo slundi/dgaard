@@ -402,7 +402,7 @@ fn lexical_banned_keyword_blocks_domain() {
 
 #[test]
 fn tld_exclude_blocks_matching_tld() {
-    let config = format!("{BASE_CONFIG}\n[tld]\nexclude = [\".xyz\"]\n");
+    let config = format!("{BASE_CONFIG}\n[tld]\nexclude = [\"xyz\"]\n");
     let srv = FlexServer::start(&config);
     let resp = srv.query("example.xyz", QTYPE_A);
     assert_eq!(

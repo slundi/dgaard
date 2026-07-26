@@ -47,9 +47,10 @@ pub fn is_special_use_domain(domain: &str, config: &Config) -> bool {
         return true;
     }
 
+    // Extra TLDs are validated lowercase & dotless at parse time; the
+    // case-insensitive compare tolerates programmatically-built configs.
     for extra in &config.security.special_use.extra_local_tlds {
-        let extra_clean = extra.strip_prefix('.').unwrap_or(extra);
-        if extra_clean.eq_ignore_ascii_case(tld_lower) {
+        if extra.eq_ignore_ascii_case(tld_lower) {
             return true;
         }
     }
@@ -143,30 +144,26 @@ mod tests {
 
     // --- extra TLDs ---
 
+    // Extra TLDs reach this function already normalized (dotless) by the
+    // config parser, so the tests configure them in canonical dotless form.
+
     #[test]
-    fn blocks_extra_tld_with_dot_prefix() {
-        let c = config_with_extras(&[".corp", ".lan"]);
+    fn blocks_configured_extra_tld() {
+        let c = config_with_extras(&["corp", "lan"]);
         assert!(is_special_use_domain("dc1.corp", &c));
         assert!(is_special_use_domain("router.lan", &c));
     }
 
     #[test]
-    fn blocks_extra_tld_without_dot_prefix() {
-        let c = config_with_extras(&["internal", "home"]);
-        assert!(is_special_use_domain("server.internal", &c));
-        assert!(is_special_use_domain("nas.home", &c));
-    }
-
-    #[test]
     fn extra_tld_matching_is_case_insensitive() {
-        let c = config_with_extras(&[".CORP"]);
+        let c = config_with_extras(&["CORP"]);
         assert!(is_special_use_domain("dc1.corp", &c));
         assert!(is_special_use_domain("dc1.CORP", &c));
     }
 
     #[test]
     fn extra_tld_does_not_block_partial_match() {
-        let c = config_with_extras(&[".corp"]);
+        let c = config_with_extras(&["corp"]);
         // "corporation.com" TLD is "com", not "corp"
         assert!(!is_special_use_domain("my.corporation.com", &c));
     }

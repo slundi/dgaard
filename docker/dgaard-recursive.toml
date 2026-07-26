@@ -61,7 +61,7 @@ save_interval_secs = 0
 decay_half_life_secs = 86400
 
 [tld]
-exclude = [".top", ".xyz", ".bid", ".country", ".stream", ".gdn"]
+exclude = ["top", "xyz", "bid", "country", "stream", "gdn"]
 
 [sources]
 blacklists = ["/etc/dgaard/blocklist.txt"]

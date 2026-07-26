@@ -246,12 +246,9 @@ impl FilterEngine {
     /// Load TLD exclusion filters from configuration.
     pub fn load_tld_filters(&mut self, config: &Config) {
         for tld in &config.tld.exclude {
-            let tld_clean = tld.strip_prefix('.').unwrap_or(tld);
+            // TLDs are validated lowercase & dotless at parse time.
             self.hierarchical_list.push(DomainEntry {
-                hash: twox_hash::XxHash64::oneshot(
-                    self.seed,
-                    tld_clean.to_ascii_lowercase().as_bytes(),
-                ),
+                hash: twox_hash::XxHash64::oneshot(self.seed, tld.to_ascii_lowercase().as_bytes()),
                 depth: 0,
                 data_idx: 0,
                 flags: DomainEntryFlags::WILDCARD,
@@ -280,7 +277,8 @@ impl FilterEngine {
             .suspicious_tlds
             .iter()
             .map(|tld| {
-                let tld_clean = tld.strip_prefix('.').unwrap_or(tld).to_ascii_lowercase();
+                // TLDs are validated lowercase & dotless at parse time.
+                let tld_clean = tld.to_ascii_lowercase();
                 twox_hash::XxHash64::oneshot(self.seed, tld_clean.as_bytes())
             })
             .collect();
@@ -505,7 +503,8 @@ mod tests {
     fn test_load_tld_filters_adds_entries() {
         let mut engine = make_engine();
         let mut cfg = Config::default();
-        cfg.tld.exclude = vec![String::from(".xyz"), String::from(".top")];
+        // TLDs are stored dotless (normalized at parse time).
+        cfg.tld.exclude = vec![String::from("xyz"), String::from("top")];
 
         engine.load_tld_filters(&cfg);
 
@@ -517,10 +516,11 @@ mod tests {
     }
 
     #[test]
-    fn test_load_tld_filters_strips_leading_dot() {
+    fn test_load_tld_filters_hashes_dotless_lowercase() {
         let mut engine = make_engine();
         let mut cfg = Config::default();
-        cfg.tld.exclude = vec![String::from(".xyz")];
+        // Case is folded at load; the dot is already gone (parse-time invariant).
+        cfg.tld.exclude = vec![String::from("XyZ")];
         engine.load_tld_filters(&cfg);
 
         let expected_hash = twox_hash::XxHash64::oneshot(SEED, "xyz".as_bytes());

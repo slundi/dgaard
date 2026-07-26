@@ -291,24 +291,25 @@ ttl_remaining_trigger_secs = 30
 # TLD Filtering
 # -----------------------------------------------------------------------------
 [tld]
+# TLDs must be canonical: lowercase and without a leading dot (e.g. "com").
+# A non-canonical entry (".com" or "COM") aborts startup with an error.
 # If not empty, only these TLDs are resolved.
-# allow_only = [".com", ".net", ".org", ".io"]
+# allow_only = ["com", "net", "org", "io"]
 # Block high-risk TLDs common in malware/DGA
-exclude = [".top", ".xyz", ".bid", ".country", ".stream", ".gdn"]
+exclude = ["top", "xyz", "bid", "country", "stream", "gdn"]
 
 # Conditional blocking: blocks if it contains a banned_keyword AND this TLD
 suspicious_tlds = [
-  ".biz",
-  ".bible",
-  ".top",
-  ".su",
-  ".li",
-  ".es",
-  ".sbs",
-  ".cfd",
-  ".ru",
-  ".pub",
-  # also works without dots
+  "biz",
+  "bible",
+  "top",
+  "su",
+  "li",
+  "es",
+  "sbs",
+  "cfd",
+  "ru",
+  "pub",
   "so",
   "icu",
   "re",
@@ -366,7 +367,8 @@ suspicious_tlds = [
 enabled = true
 # Additional TLDs to isolate beyond the RFC 6761 defaults.
 # Common in split-horizon / corporate deployments.
-# extra_local_tlds = [".corp", ".lan", ".internal", ".home", ".intranet"]
+# Must be canonical: lowercase, no leading dot.
+# extra_local_tlds = ["corp", "lan", "internal", "home", "intranet"]
 
 [security.rebinding_shield]
 enabled = true

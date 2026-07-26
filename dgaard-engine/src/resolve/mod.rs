@@ -541,7 +541,8 @@ pub mod tests {
     fn test_resolve_special_use_extra_tld_blocked() {
         let engine = init_test_engine();
         let mut config = Config::default();
-        config.security.special_use.extra_local_tlds = vec![".corp".to_string(), "lan".to_string()];
+        // TLDs are stored dotless (normalized at parse time).
+        config.security.special_use.extra_local_tlds = vec!["corp".to_string(), "lan".to_string()];
 
         assert!(matches!(
             resolve_with_score("dc1.corp", &engine, &config).action,

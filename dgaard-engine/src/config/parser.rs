@@ -606,7 +606,7 @@ fn parse_special_use(table: &toml_span::value::Table<'_>) -> Result<SpecialUseCo
     if let Some(b) = get_bool(table, "enabled")? {
         cfg.enabled = b;
     }
-    if let Some(arr) = get_string_array(table, "extra_local_tlds")? {
+    if let Some(arr) = get_tld_array(table, "extra_local_tlds")? {
         cfg.extra_local_tlds = arr;
     }
 
@@ -897,17 +897,88 @@ fn parse_recursive(table: &toml_span::value::Table<'_>) -> Result<RecursiveConfi
     Ok(cfg)
 }
 
+/// Return a human-readable reason if `tld` is not in canonical form, or `None`
+/// if it is already normalized.
+///
+/// A canonical TLD is lowercase ASCII and carries no leading dot (`com`, not
+/// `.com` or `COM`). Config values are required to be canonical rather than
+/// silently normalized, so an offending entry aborts startup with a clear,
+/// span-pointed error.
+fn tld_canonicalization_error(tld: &str) -> Option<String> {
+    if tld.starts_with('.') {
+        return Some(format!(
+            "TLD '{tld}' must not start with a dot; write it as '{}'",
+            tld.trim_start_matches('.').to_ascii_lowercase()
+        ));
+    }
+    if tld.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return Some(format!(
+            "TLD '{tld}' must be lowercase; write it as '{}'",
+            tld.to_ascii_lowercase()
+        ));
+    }
+    None
+}
+
+/// Extract an optional array of TLD strings, requiring every entry to already
+/// be canonical (lowercase, no leading dot).
+///
+/// Behaves like [`get_string_array`] but rejects any non-canonical entry with a
+/// [`ConfigError::InvalidValue`] pointing at the offending element, so dgaard
+/// refuses to start on a non-normalized TLD list.
+fn get_tld_array(
+    table: &toml_span::value::Table<'_>,
+    key: &str,
+) -> Result<Option<Vec<String>>, ConfigError> {
+    match table.get(key) {
+        Some(v) => match v.as_ref() {
+            ValueInner::Array(arr) => {
+                let mut result = Vec::with_capacity(arr.len());
+                for item in arr.iter() {
+                    match item.as_ref() {
+                        ValueInner::String(s) => {
+                            let tld = s.as_ref();
+                            if let Some(message) = tld_canonicalization_error(tld) {
+                                return Err(ConfigError::InvalidValue {
+                                    key: format!("{}[]", key),
+                                    message,
+                                    span: item.span,
+                                });
+                            }
+                            result.push(tld.to_string());
+                        }
+                        _ => {
+                            return Err(ConfigError::InvalidType {
+                                key: format!("{}[]", key),
+                                expected: "string",
+                                span: item.span,
+                            });
+                        }
+                    }
+                }
+                Ok(Some(result))
+            }
+            _ => Err(ConfigError::InvalidType {
+                key: key.to_string(),
+                expected: "array",
+                span: v.span,
+            }),
+        },
+        None => Ok(None),
+    }
+}
+
 /// Parse `[tld]` section.
 fn parse_tld(table: &toml_span::value::Table<'_>) -> Result<TldConfig, ConfigError> {
     let mut cfg = TldConfig::default();
 
-    if let Some(arr) = get_string_array(table, "allow_only")? {
+    if let Some(arr) = get_tld_array(table, "allow_only")? {
         cfg.allow_only = arr;
     }
-    if let Some(arr) = get_string_array(table, "exclude")? {
+    if let Some(arr) = get_tld_array(table, "exclude")? {
         cfg.exclude = arr;
     }
-    if let Some(arr) = get_string_array(table, "suspicious_tlds")? {
+    if let Some(arr) = get_tld_array(table, "suspicious_tlds")? {
         cfg.suspicious_tlds = arr;
     }
     Ok(cfg)
@@ -1671,7 +1742,7 @@ mod tests {
             banned_keywords = ["porno", "casino", "drogue"]
             strict_keyword_matching = false
             [tld]
-            suspicious_tlds = [".biz", ".top", ".xyz"]
+            suspicious_tlds = ["biz", "top", "xyz"]
         "#;
         let cfg = Config::parse(toml).unwrap();
         assert!(cfg.security.lexical.enabled);
@@ -1680,7 +1751,7 @@ mod tests {
             vec!["porno", "casino", "drogue"]
         );
         assert!(!cfg.security.lexical.strict_keyword_matching);
-        assert_eq!(cfg.tld.suspicious_tlds, vec![".biz", ".top", ".xyz"]);
+        assert_eq!(cfg.tld.suspicious_tlds, vec!["biz", "top", "xyz"]);
     }
 
     #[test]
@@ -1795,13 +1866,13 @@ mod tests {
         let toml = r#"
             [security.special_use]
             enabled = true
-            extra_local_tlds = [".corp", ".lan", "internal"]
+            extra_local_tlds = ["corp", "lan", "internal"]
         "#;
         let cfg = Config::parse(toml).unwrap();
         assert!(cfg.security.special_use.enabled);
         assert_eq!(
             cfg.security.special_use.extra_local_tlds,
-            vec![".corp", ".lan", "internal"]
+            vec!["corp", "lan", "internal"]
         );
     }
 
@@ -2085,12 +2156,82 @@ mod tests {
     fn parse_tld() {
         let toml = r#"
             [tld]
-            allow_only = [".com", ".org"]
-            exclude = [".top", ".xyz"]
+            allow_only = ["com", "org"]
+            exclude = ["top", "xyz"]
         "#;
         let cfg = Config::parse(toml).unwrap();
-        assert_eq!(cfg.tld.allow_only, vec![".com", ".org"]);
-        assert_eq!(cfg.tld.exclude, vec![".top", ".xyz"]);
+        assert_eq!(cfg.tld.allow_only, vec!["com", "org"]);
+        assert_eq!(cfg.tld.exclude, vec!["top", "xyz"]);
+    }
+
+    #[test]
+    fn tld_canonicalization_error_flags_non_canonical() {
+        // Leading dot and uppercase are rejected; canonical entries pass.
+        assert!(tld_canonicalization_error(".com").is_some());
+        assert!(tld_canonicalization_error("Com").is_some());
+        assert!(tld_canonicalization_error("COM").is_some());
+        assert!(tld_canonicalization_error("com").is_none());
+        assert!(tld_canonicalization_error("co.uk").is_none());
+    }
+
+    #[test]
+    fn parse_tld_rejects_leading_dot() {
+        let toml = r#"
+            [tld]
+            exclude = [".xyz"]
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_tld_rejects_uppercase() {
+        let toml = r#"
+            [tld]
+            suspicious_tlds = ["XYZ"]
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_tld_rejects_non_canonical_allow_only() {
+        let toml = r#"
+            [tld]
+            allow_only = ["com", ".org"]
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_special_use_rejects_leading_dot() {
+        let toml = r#"
+            [security.special_use]
+            extra_local_tlds = [".corp"]
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_special_use_rejects_uppercase() {
+        let toml = r#"
+            [security.special_use]
+            extra_local_tlds = ["Corp"]
+        "#;
+        assert!(matches!(
+            Config::parse(toml),
+            Err(ConfigError::InvalidValue { .. })
+        ));
     }
 
     // -----------------------------------------------------------------------
@@ -2301,7 +2442,7 @@ mod tests {
             timeout_ms = 2000
 
             [tld]
-            exclude = [".top", ".xyz", ".bid"]
+            exclude = ["top", "xyz", "bid"]
 
             [nxdomain_hunting]
             enabled = true
@@ -2346,7 +2487,7 @@ mod tests {
         assert_eq!(cfg.nxdomain_hunting.threshold, 15);
 
         assert_eq!(cfg.forwarder.servers, vec!["1.1.1.1:53", "9.9.9.9:53"]);
-        assert_eq!(cfg.tld.exclude, vec![".top", ".xyz", ".bid"]);
+        assert_eq!(cfg.tld.exclude, vec!["top", "xyz", "bid"]);
 
         assert!(cfg.nxdomain_hunting.enabled);
         assert!(cfg.tunneling_detection.enabled);

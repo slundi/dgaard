@@ -34,7 +34,7 @@ mode = "Off"
 allowed_scripts = ["Latin"]
 
 [tld]
-exclude = [".top", ".xyz", ".bid", ".country", ".stream", ".gdn"]
+exclude = ["top", "xyz", "bid", "country", "stream", "gdn"]
 
 [sources]
 blacklists = ["/etc/dgaard/blocklist.txt"]

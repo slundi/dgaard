@@ -672,10 +672,11 @@ pub struct SpecialUseConfig {
 
     /// Additional TLDs to isolate beyond the RFC 6761 defaults.
     ///
-    /// Entries may include or omit a leading dot — both `.corp` and `corp`
-    /// are accepted. Matching is case-insensitive.
+    /// Each entry must be canonical: lowercase and without a leading dot
+    /// (`corp`, never `.corp` or `CORP`). A non-canonical entry aborts startup
+    /// with a `ConfigError::InvalidValue`.
     ///
-    /// Common values: `[".corp", ".lan", ".internal", ".home", ".intranet"]`
+    /// Common values: `["corp", "lan", "internal", "home", "intranet"]`
     pub extra_local_tlds: Vec<String>,
 }
 
@@ -1009,11 +1010,16 @@ impl Default for ForwarderConfig {
 /// Top-Level Domain (TLD) filtering rules.
 ///
 /// Maps to `[tld]` in the configuration file.
+///
+/// Every entry in every field below must already be in canonical form:
+/// lowercase and without a leading dot (`com`, never `.com` or `COM`).
+/// A non-canonical entry aborts startup with a `ConfigError::InvalidValue`
+/// pointing at the offending value.
 #[derive(Debug, PartialEq, Default, Clone)]
 pub struct TldConfig {
     /// If non-empty, **only** these TLDs are resolved; all others are blocked.
     /// Leave empty to allow all TLDs (then use `exclude` for targeted blocks).
-    /// Example: `[".com", ".net", ".org", ".io"]`.
+    /// Example: `["com", "net", "org", "io"]`.
     pub allow_only: Vec<String>,
 
     /// TLDs that are always blocked regardless of other filters.
@@ -1024,10 +1030,10 @@ pub struct TldConfig {
     /// Conditional blocking: block only if domain contains a banned keyword
     /// AND uses one of these TLDs.
     ///
-    /// This is useful for "grey-zone" filtering where common TLDs like `.com`
+    /// This is useful for "grey-zone" filtering where common TLDs like `com`
     /// might have legitimate uses of certain keywords.
     ///
-    /// Example: `[".biz", ".top", ".xyz"]`
+    /// Example: `["biz", "top", "xyz"]`
     pub suspicious_tlds: Vec<String>,
 }
 
@@ -1580,7 +1586,7 @@ mod tests {
     fn special_use_config_extra_tlds_can_be_set() {
         let s = SpecialUseConfig {
             enabled: true,
-            extra_local_tlds: vec![".corp".to_string(), "lan".to_string()],
+            extra_local_tlds: vec!["corp".to_string(), "lan".to_string()],
         };
         assert_eq!(s.extra_local_tlds.len(), 2);
     }
