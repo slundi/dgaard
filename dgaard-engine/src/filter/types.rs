@@ -29,6 +29,15 @@ pub enum ListFormat {
 ///
 /// Values mirror the subset of [`crate::config::IntelligenceConfig`] required
 /// to evaluate a domain's SLD at parse time.
+///
+/// ⚠️ Unlike the other [`LoadFilter`] drops, entropy has **no** hard
+/// query-time block: it only contributes points to the suspicion score
+/// (`ENTROPY_HIGH` + `CONSONANT_CLUSTER` ≤ 7, below the default
+/// `blocking_threshold` of 10). Dropping a blacklist entry here therefore
+/// **silently un-blocks it** unless other, answer-dependent signals push the
+/// score over the threshold at query time — signals that cannot be evaluated
+/// at load time. This is why `ignore_entry_matching_entropy` defaults to
+/// `false`; see the warning in `config.example.toml`.
 #[derive(Debug, Clone)]
 pub struct EntropyThresholds {
     pub threshold: f32,
@@ -40,7 +49,12 @@ pub struct EntropyThresholds {
 
 /// Constraints applied at list-load time to drop blacklist entries that are
 /// already covered by cheaper query-time filters (structural sanity, TLD
-/// exclusion, entropy heuristics).
+/// exclusion, IDN blocking) — each of which is a *hard* query-time block, so
+/// dropping the stored entry is safe.
+///
+/// The `entropy_check` drop is the exception: entropy is only a soft score
+/// contributor at query time, not a hard block, so enabling it can silently
+/// un-block explicitly listed domains. See [`EntropyThresholds`].
 ///
 /// The filter is **only** applied to non-whitelist entries — legitimate
 /// whitelist entries that happen to trip a heuristic must still be kept so
@@ -53,6 +67,10 @@ pub struct LoadFilter {
     pub tld_exclude_hashes: HashSet<u64>,
     /// Only `Some` when `intelligence.enabled` and
     /// `intelligence.ignore_entry_matching_entropy` are both true.
+    ///
+    /// ⚠️ Enabling this can silently un-block explicitly listed domains,
+    /// because entropy is a soft score contributor, not a hard query-time
+    /// block — see [`EntropyThresholds`].
     pub entropy_check: Option<EntropyThresholds>,
     /// Drop blacklist entries whose domain contains Punycode (`xn--`) labels
     /// or non-ASCII characters at load time, because the query-time IDN filter

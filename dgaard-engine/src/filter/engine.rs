@@ -144,10 +144,12 @@ impl FilterEngine {
         let mut host_index: HashMap<u64, String> = HashMap::new();
         let mut browser_rules: Vec<String> = Vec::new();
 
-        // Load-time filter: drop blacklist / NRD entries that a cheaper
-        // query-time filter (structural sanity, TLD exclude, entropy) would
-        // already cover. Whitelists pass `None` — legitimate whitelist entries
-        // must survive regardless.
+        // Load-time filter: drop blacklist / NRD entries that a hard query-time
+        // block (structural sanity, TLD exclude, IDN) would already cover.
+        // NOTE: the optional entropy drop is NOT such a case — entropy is only a
+        // soft score at query time, so `ignore_entry_matching_entropy` can
+        // silently un-block listed domains (see `LoadFilter`/`EntropyThresholds`).
+        // Whitelists pass `None` — legitimate whitelist entries must survive.
         let load_filter = LoadFilter::from_config(config, seed);
 
         // Load blacklists
