@@ -1246,47 +1246,6 @@ impl Default for CacheConfig {
 }
 
 // ---------------------------------------------------------------------------
-// [memory]
-// ---------------------------------------------------------------------------
-
-/// In-process memory structure tuning.
-///
-/// Controls the LRU hot cache and the optional Bloom filter used to avoid
-/// deserializing the full rkyv blocklist for every miss.
-///
-/// Maps to `[memory]` in the configuration file.
-#[derive(Debug, PartialEq, Clone)]
-pub struct MemoryConfig {
-    /// Enable the LRU hot cache for the most-frequently queried domains.
-    pub cache_enabled: bool,
-
-    /// LRU cache capacity in number of entries.
-    pub cache_size: usize,
-
-    /// Enable a Bloom filter in front of the static blocklist.
-    /// The Bloom filter provides a probabilistic "quick no" that prevents
-    /// the rkyv zero-copy lookup for domains that are definitely not blocked,
-    /// saving CPU cycles on embedded targets.
-    pub use_bloom_filter: bool,
-
-    /// Expected total number of domains in the blocklist.
-    /// Used to size the Bloom filter bit-array; under-sizing increases the
-    /// false-positive rate while over-sizing wastes RAM.
-    pub expected_total_domains: usize,
-}
-
-impl Default for MemoryConfig {
-    fn default() -> Self {
-        Self {
-            cache_enabled: true,
-            cache_size: 5_000,
-            use_bloom_filter: true,
-            expected_total_domains: 1_000_000,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // [prefetch]
 // ---------------------------------------------------------------------------
 
@@ -1380,8 +1339,6 @@ pub struct Config {
     pub abp: AbpConfig,
     /// DNS response cache.
     pub cache: CacheConfig,
-    /// In-process memory structure tuning.
-    pub memory: MemoryConfig,
     /// Background prefetch worker.
     pub prefetch: PrefetchConfig,
     /// Inline domain overrides — bypass all filters and return a fixed IP.
@@ -1763,19 +1720,6 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // MemoryConfig
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn memory_config_defaults_match_example_toml() {
-        let m = MemoryConfig::default();
-        assert!(m.cache_enabled);
-        assert_eq!(m.cache_size, 5_000);
-        assert!(m.use_bloom_filter);
-        assert_eq!(m.expected_total_domains, 1_000_000);
-    }
-
-    // -----------------------------------------------------------------------
     // Top-level Config
     // -----------------------------------------------------------------------
 
@@ -1797,10 +1741,9 @@ mod tests {
     }
 
     #[test]
-    fn config_default_cache_and_memory_enabled() {
+    fn config_default_cache_enabled() {
         let cfg = Config::default();
         assert!(cfg.cache.enabled);
-        assert!(cfg.memory.cache_enabled);
-        assert!(cfg.memory.use_bloom_filter);
+        assert_eq!(cfg.cache.max_entries, 10_000);
     }
 }

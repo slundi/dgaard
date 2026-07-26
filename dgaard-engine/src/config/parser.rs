@@ -1047,26 +1047,6 @@ fn parse_prefetch(table: &toml_span::value::Table<'_>) -> Result<PrefetchConfig,
     Ok(cfg)
 }
 
-/// Parse `[memory]` section.
-fn parse_memory(table: &toml_span::value::Table<'_>) -> Result<MemoryConfig, ConfigError> {
-    let mut cfg = MemoryConfig::default();
-
-    if let Some(b) = get_bool(table, "cache_enabled")? {
-        cfg.cache_enabled = b;
-    }
-    if let Some(n) = get_typed_integer::<usize>(table, "cache_size")? {
-        cfg.cache_size = n;
-    }
-    if let Some(b) = get_bool(table, "use_bloom_filter")? {
-        cfg.use_bloom_filter = b;
-    }
-    if let Some(n) = get_typed_integer::<usize>(table, "expected_total_domains")? {
-        cfg.expected_total_domains = n;
-    }
-
-    Ok(cfg)
-}
-
 /// Parse the top-level `[[overrides]]` array of inline-table entries.
 fn parse_overrides(
     tables: Vec<&toml_span::value::Table<'_>>,
@@ -1162,9 +1142,6 @@ impl Config {
         }
         if let Some(t) = get_table(root, "cache")? {
             cfg.cache = parse_cache(t)?;
-        }
-        if let Some(t) = get_table(root, "memory")? {
-            cfg.memory = parse_memory(t)?;
         }
         if let Some(t) = get_table(root, "prefetch")? {
             cfg.prefetch = parse_prefetch(t)?;
@@ -1558,8 +1535,8 @@ mod tests {
     #[test]
     fn parse_negative_cache_size_returns_error() {
         let toml = r#"
-            [memory]
-            cache_size = -1
+            [cache]
+            max_entries = -1
         "#;
         assert!(matches!(
             Config::parse(toml),
@@ -2246,26 +2223,6 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Memory section
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn parse_memory() {
-        let toml = r#"
-            [memory]
-            cache_enabled = false
-            cache_size = 10000
-            use_bloom_filter = false
-            expected_total_domains = 500000
-        "#;
-        let cfg = Config::parse(toml).unwrap();
-        assert!(!cfg.memory.cache_enabled);
-        assert_eq!(cfg.memory.cache_size, 10000);
-        assert!(!cfg.memory.use_bloom_filter);
-        assert_eq!(cfg.memory.expected_total_domains, 500000);
-    }
-
-    // -----------------------------------------------------------------------
     // Full example config
     // -----------------------------------------------------------------------
 
@@ -2342,12 +2299,6 @@ mod tests {
             enabled = true
             max_entries = 10000
             ttl_override = 0
-
-            [memory]
-            cache_enabled = true
-            cache_size = 5000
-            use_bloom_filter = true
-            expected_total_domains = 1000000
         "#,
         );
 
@@ -2373,7 +2324,7 @@ mod tests {
         assert_eq!(cfg.sources.blacklists.len(), 2);
         assert!(cfg.abp.extract_domain_only);
         assert!(cfg.cache.enabled);
-        assert!(cfg.memory.use_bloom_filter);
+        assert_eq!(cfg.cache.max_entries, 10000);
 
         cleanup(&path);
     }

@@ -553,18 +553,6 @@ max_entries = 10000
 # 0 = use the TTL returned by the upstream resolver (recommended).
 ttl_override = 0
 
-[memory]
-# LRU Cache for frequent queries
-cache_enabled = true
-# LRU cache size in input count
-cache_size = 5000
-
-# Bloom filter
-# Optimization for OpenWrt (use Bloom Filters for large lists)
-use_bloom_filter = true
-# Estimated entries for Bloom Filter (influences RAM usage)
-expected_total_domains = 1000000
-
 # Suspicion score thresholds and logging policy.
 
 # Controls at what score level domains are blocked, flagged as highly
