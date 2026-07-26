@@ -160,8 +160,12 @@ ignore_entry_matching_entropy = false
 
 [security.idn]
 # IDN filtering mode: "Off", "Strict" (block everything), "Smart" (european accent only)
-# force_lowercase_ascii must be false to use it
-mode = "Smart"
+# NOTE: any mode other than "Off" requires BOTH server.block_idn = false AND
+# security.structure.force_lowercase_ascii = false, otherwise every non-ASCII
+# label is dropped before this filter runs and startup is refused as a
+# contradictory configuration. The shipped defaults keep the coarse blocks on,
+# so this filter is off by default; opt in by relaxing those two settings.
+mode = "Off"
 allowed_scripts = ["Latin", "WesternEuropean"]
 
 # NXDOMAIN Hunting and Tunneling/Exfiltration detection are configured in the

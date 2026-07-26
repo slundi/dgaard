@@ -1200,6 +1200,36 @@ impl Config {
             });
         }
 
+        // Fine-grained IDN filtering ([security.idn] mode = "Strict" | "Smart")
+        // only receives traffic when non-ASCII labels survive the earlier
+        // structural gates. Both `server.block_idn` and
+        // `security.structure.force_lowercase_ascii` drop every non-ASCII label
+        // before the IDN filter runs, silently neutralising the configured mode.
+        // Refuse to start on this contradiction rather than pretend the policy
+        // is in effect.
+        if self.security.idn.mode != IdnMode::Off {
+            let mut neutralisers = Vec::new();
+            if self.server.block_idn {
+                neutralisers.push("server.block_idn = true");
+            }
+            if self.security.structure.force_lowercase_ascii {
+                neutralisers.push("security.structure.force_lowercase_ascii = true");
+            }
+            if !neutralisers.is_empty() {
+                return Err(ConfigError::InvalidValue {
+                    key: "security.idn.mode".to_string(),
+                    message: format!(
+                        "IDN filtering is active but {} strips every non-ASCII label \
+                         before it runs, so the mode has no effect. Set \
+                         security.idn.mode = \"Off\", or disable the conflicting \
+                         setting(s).",
+                        neutralisers.join(" and ")
+                    ),
+                    span: toml_span::Span::default(),
+                });
+            }
+        }
+
         if self.security.asn_filter.enabled {
             for range in &self.security.asn_filter.blocked_ranges {
                 let valid = if range.contains(':') {
@@ -2924,6 +2954,75 @@ list_path = []
         let mut cfg = Config::default();
         cfg.security.asn_filter.enabled = true;
         cfg.security.asn_filter.blocked_ranges = vec!["2001:db8::/32".into()];
+        assert!(cfg.validate().is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // IDN mode vs. coarse blocking conflict
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_accepts_default_idn_off_with_coarse_blocks() {
+        // Shipped defaults: block_idn = true, force_lowercase_ascii = true,
+        // idn.mode = Off. No conflict.
+        let cfg = Config::default();
+        assert_eq!(cfg.security.idn.mode, IdnMode::Off);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_idn_mode_when_block_idn_enabled() {
+        let mut cfg = Config::default();
+        cfg.security.structure.force_lowercase_ascii = false;
+        cfg.server.block_idn = true;
+        cfg.security.idn.mode = IdnMode::Smart;
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::InvalidValue { key, .. } if key == "security.idn.mode"),
+            "unexpected error: {err}"
+        );
+        assert!(err.to_string().contains("server.block_idn = true"));
+    }
+
+    #[test]
+    fn validate_rejects_idn_mode_when_force_lowercase_ascii_enabled() {
+        let mut cfg = Config::default();
+        cfg.server.block_idn = false;
+        cfg.security.structure.force_lowercase_ascii = true;
+        cfg.security.idn.mode = IdnMode::Strict;
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::InvalidValue { key, .. } if key == "security.idn.mode"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.to_string()
+                .contains("security.structure.force_lowercase_ascii = true")
+        );
+    }
+
+    #[test]
+    fn validate_idn_conflict_message_lists_both_neutralisers() {
+        let mut cfg = Config::default();
+        cfg.server.block_idn = true;
+        cfg.security.structure.force_lowercase_ascii = true;
+        cfg.security.idn.mode = IdnMode::Smart;
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("server.block_idn = true"), "{msg}");
+        assert!(
+            msg.contains("security.structure.force_lowercase_ascii = true"),
+            "{msg}"
+        );
+        assert!(msg.contains(" and "), "{msg}");
+    }
+
+    #[test]
+    fn validate_accepts_idn_mode_when_both_coarse_blocks_relaxed() {
+        let mut cfg = Config::default();
+        cfg.server.block_idn = false;
+        cfg.security.structure.force_lowercase_ascii = false;
+        cfg.security.idn.mode = IdnMode::Smart;
         assert!(cfg.validate().is_ok());
     }
 

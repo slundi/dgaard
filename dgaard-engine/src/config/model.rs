@@ -391,13 +391,19 @@ impl Default for LexicalConfig {
 #[derive(Debug, Default, PartialEq, Clone)]
 pub enum IdnMode {
     /// IDN filtering is disabled; all Unicode labels pass through.
+    ///
+    /// This is the default because the shipped defaults block IDN labels
+    /// upstream via [`ServerConfig::block_idn`] and
+    /// [`StructureConfig::force_lowercase_ascii`]. The fine-grained filter is
+    /// opt-in: enabling a non-`Off` mode requires disabling both of those
+    /// coarse gates, otherwise startup is refused (see `Config::validate`).
+    #[default]
     Off,
     /// Block every non-ASCII label unconditionally (recommended for embedded
     /// deployments with no multilingual users).
     Strict,
     /// Allow scripts listed in [`IdnConfig::allowed_scripts`] and block the
     /// rest.  Balances security with usability for European users.
-    #[default]
     Smart,
 }
 
@@ -418,7 +424,7 @@ pub struct IdnConfig {
 impl Default for IdnConfig {
     fn default() -> Self {
         Self {
-            mode: IdnMode::Smart,
+            mode: IdnMode::Off,
             allowed_scripts: vec![String::from("Latin"), String::from("WesternEuropean")],
         }
     }
@@ -1439,14 +1445,14 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn idn_mode_default_is_smart() {
-        assert_eq!(IdnMode::default(), IdnMode::Smart);
+    fn idn_mode_default_is_off() {
+        assert_eq!(IdnMode::default(), IdnMode::Off);
     }
 
     #[test]
     fn idn_config_defaults() {
         let idn = IdnConfig::default();
-        assert_eq!(idn.mode, IdnMode::Smart);
+        assert_eq!(idn.mode, IdnMode::Off);
         assert_eq!(idn.allowed_scripts, vec!["Latin", "WesternEuropean"]);
     }
 
