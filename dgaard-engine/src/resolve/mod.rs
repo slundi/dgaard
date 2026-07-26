@@ -30,9 +30,15 @@ pub fn is_structure_invalid(domain: &str, config: &Config) -> bool {
         return true;
     }
 
-    let depth = domain.bytes().filter(|&b| b == b'.').count();
-    if depth > structure.max_subdomain_depth as usize {
-        return true;
+    // Reverse-DNS (PTR) names carry a protocol-mandated label count: a full
+    // IPv6 PTR under `ip6.arpa` has 32 nibble labels (33+ dots) and every IPv4
+    // PTR under `in-addr.arpa` has up to 5. These are legitimate queries, not
+    // DNS-tunnel payloads, so the subdomain-depth limit must not apply to them.
+    if !is_reverse_dns_name(domain) {
+        let depth = domain.bytes().filter(|&b| b == b'.').count();
+        if depth > structure.max_subdomain_depth as usize {
+            return true;
+        }
     }
 
     if structure.force_lowercase_ascii && !domain.is_ascii() {
@@ -40,6 +46,23 @@ pub fn is_structure_invalid(domain: &str, config: &Config) -> bool {
     }
 
     false
+}
+
+/// Return `true` if `domain` is a reverse-DNS (PTR) name under `in-addr.arpa`
+/// or `ip6.arpa`. Matching is case-insensitive and tolerates a trailing dot.
+fn is_reverse_dns_name(domain: &str) -> bool {
+    let domain = domain.strip_suffix('.').unwrap_or(domain);
+    ends_with_ignore_ascii_case(domain, ".in-addr.arpa")
+        || ends_with_ignore_ascii_case(domain, ".ip6.arpa")
+        || domain.eq_ignore_ascii_case("in-addr.arpa")
+        || domain.eq_ignore_ascii_case("ip6.arpa")
+}
+
+/// Case-insensitive `str::ends_with` for ASCII suffixes, without allocating.
+fn ends_with_ignore_ascii_case(haystack: &str, suffix: &str) -> bool {
+    let (haystack, suffix) = (haystack.as_bytes(), suffix.as_bytes());
+    haystack.len() >= suffix.len()
+        && haystack[haystack.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
 }
 
 /// Return the override IP for `domain` if it matches any entry in `overrides`.
@@ -359,6 +382,50 @@ pub mod tests {
         let config = Config::default();
         let long_domain = format!("{}.com", "a".repeat(200));
         assert!(is_structure_invalid(&long_domain, &config));
+    }
+
+    #[test]
+    fn test_is_structure_invalid_exempts_ipv6_ptr_depth() {
+        // A full IPv6 PTR name has 32 nibble labels (33 dots) and would trip a
+        // max_subdomain_depth of 5 — but reverse-DNS names must be exempt.
+        let config = Config::default();
+        let ptr = "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa";
+        assert!(
+            !is_structure_invalid(ptr, &config),
+            "public IPv6 PTR must not be blocked as invalid structure"
+        );
+    }
+
+    #[test]
+    fn test_is_structure_invalid_exempts_ipv4_ptr_depth() {
+        // Under a strict depth limit an ordinary 5-label IPv4 PTR would be
+        // blocked; the reverse-DNS exemption must keep it valid.
+        let mut config = Config::default();
+        config.security.structure.max_subdomain_depth = 2;
+        assert!(
+            !is_structure_invalid("1.1.1.1.in-addr.arpa", &config),
+            "IPv4 PTR must be exempt from the subdomain-depth limit"
+        );
+    }
+
+    #[test]
+    fn test_is_structure_invalid_ptr_still_enforces_length() {
+        // The depth exemption must not weaken the length check.
+        let mut config = Config::default();
+        config.security.structure.max_domain_length = 10;
+        assert!(is_structure_invalid("1.1.1.1.in-addr.arpa", &config));
+    }
+
+    #[test]
+    fn test_is_reverse_dns_name() {
+        assert!(is_reverse_dns_name("1.1.1.1.in-addr.arpa"));
+        assert!(is_reverse_dns_name("1.1.1.1.IN-ADDR.ARPA"));
+        assert!(is_reverse_dns_name("in-addr.arpa"));
+        assert!(is_reverse_dns_name("a.b.c.ip6.arpa."));
+        assert!(is_reverse_dns_name("ip6.arpa"));
+        assert!(!is_reverse_dns_name("example.com"));
+        // A hostname that merely embeds the suffix without a label boundary.
+        assert!(!is_reverse_dns_name("notip6.arpa"));
     }
 
     #[test]
