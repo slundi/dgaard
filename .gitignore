@@ -35,3 +35,8 @@ lcov.info
 result
 result-*
 .envrc
+
+config.toml
+
+# Web configurator: generated single-file build (just configurator-build)
+dgaard-web-configurator/dist/

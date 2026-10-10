@@ -1,0 +1,7 @@
+{
+  "name": "dgaard-web-configurator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Static, dependency-free generator for config.toml and dgaard-monitor.toml"
+}

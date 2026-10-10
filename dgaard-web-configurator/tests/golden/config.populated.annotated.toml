@@ -1,0 +1,602 @@
+# -----------------------------------------------------------------------------
+# Dgaard Configuration File
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# [server] — Server
+# -----------------------------------------------------------------------------
+# Listener address, client ACL and the order of the filter pipeline.
+[server]
+# Address and port the proxy listens on (53 in production, an
+# unprivileged port for development).
+listen_addr = "192.168.1.1:53"
+
+# Resolution backend for queries that survive the filter pipeline.
+# "forwarder" delegates to the servers in [forwarder];
+# "recursive" resolves iteratively from the root hints.
+mode = "recursive"
+
+# Networks allowed to use this proxy. Queries from addresses outside
+# this list are dropped.
+allowed_networks = ["127.0.0.1/32", "10.0.0.0/8", "192.168.1.0/24"]
+
+# Unix socket used to stream telemetry to the dashboard / TUI.
+# Must match input.socket in dgaard-monitor.toml.
+stats_socket_path = "/tmp/dgaard_stats.sock"
+
+# Block every domain containing non-ASCII (Punycode / IDN) labels
+# before any other filter runs. Must be false to use [security.idn].
+block_idn = false
+
+# Optional Prometheus scrape endpoint exposing /metrics in OpenMetrics
+# text format. 9153 is the conventional port for DNS exporters (CoreDNS).
+# Use 0.0.0.0:9153 to allow scraping from a remote Prometheus on the LAN.
+# Counters: dgaard_queries_total, _blocked, _allowed, _proxied.
+metrics_listen = "0.0.0.0:9153"
+
+# Ordered processing stages. The first stage producing a verdict
+# short-circuits the rest. The default order is tuned for OpenWrt:
+# instant pass, memory hits, exact match, wildcards, maths, network.
+pipeline = ["Whitelist", "HotCache", "StaticBlock", "SuffixMatch", "Upstream"]
+
+# -----------------------------------------------------------------------------
+# [server.runtime] — Runtime
+# -----------------------------------------------------------------------------
+# Tokio runtime tuning. The defaults target embedded hardware.
+[server.runtime]
+# "auto" uses one thread per logical CPU core (desktop/server).
+# An integer forces a specific count — pin to 1 on OpenWrt.
+worker_threads = 1
+
+# Stack size per worker thread, in bytes. 8388608 (8 MiB) matches the
+# usual desktop default; 2097152 (2 MiB) saves RAM on OpenWrt.
+stack_size = 2097152
+
+# Depth of the per-worker blocking task queue before requests are
+# rejected with a backpressure error.
+max_blocking_threads = 512
+
+# Maximum DNS queries in flight simultaneously. Beyond this limit new
+# queries get an immediate SERVFAIL instead of spawning a task, which
+# prevents OOM under a UDP flood. Use 128–256 on constrained devices.
+max_concurrent_queries = 256
+
+# -----------------------------------------------------------------------------
+# [security.structure] — Structure
+# -----------------------------------------------------------------------------
+# Cheapest filters in the pipeline: syntactic sanity checks on labels,
+# run first to drop malformed or tunneling traffic early.
+[security.structure]
+# Maximum number of dot-separated labels. More than 5 often indicates
+# tunneling (data.part1.bin.zone.attacker.com).
+max_subdomain_depth = 5
+
+# Maximum FQDN length in bytes. RFC 1035 allows 253; tighten for
+# embedded use.
+max_domain_length = 128
+
+# Reject domains containing anything outside [a-z0-9.\-_].
+# Must be false to use [security.idn].
+force_lowercase_ascii = false
+
+# Answer DNS CHAOS class (qclass=3) queries with REFUSED instead of
+# forwarding them. `dig CH TXT version.bind` fingerprints the resolver —
+# a forwarding proxy should never answer these for its upstream.
+block_chaos_class = true
+
+# Maximum byte length of a single TXT value. SPF/DKIM records are
+# typically under 200 bytes; exfiltration tools use the 255-byte maximum.
+max_txt_record_length = 128
+
+# Block responses carrying more answer records than this.
+max_answers_per_query = 10
+
+# -----------------------------------------------------------------------------
+# [security.lexical] — Lexical
+# -----------------------------------------------------------------------------
+# Keyword filtering for parental control. Blocks whole content categories
+# without loading a blocklist of millions of records into RAM.
+[security.lexical]
+# Master switch for keyword filtering.
+enabled = true
+
+# Keywords to block. Tailor them to the language(s) you want to filter.
+# Example: casino, gambling, porn, sex.
+banned_keywords = ["casino", "gambling", "porn"]
+
+# true — the keyword must be a complete label or a hyphen-separated
+# segment (avoids the Scunthorpe problem). false — plain substring
+# matching: more aggressive, more false positives.
+strict_keyword_matching = true
+
+# -----------------------------------------------------------------------------
+# [security.intelligence] — Intelligence (DGA)
+# -----------------------------------------------------------------------------
+# Lexical and statistical analysis of domain names — the "brain".
+# Detects algorithmically generated domains that blocklists miss.
+[security.intelligence]
+# Master switch for all heuristic checks.
+enabled = true
+
+# Shannon entropy threshold for the second-level domain. Typical range
+# 3.5 (strict) to 4.5 (lenient). Higher is more tolerant.
+entropy_threshold = 4.2
+
+# Fast ASCII-only entropy (zero heap allocation, ideal for OpenWrt)
+# rather than the HashMap-based full Unicode implementation.
+entropy_fast = true
+
+# Minimum SLD length before entropy and n-gram analysis apply.
+# Short labels such as t.co are skipped to avoid false positives.
+min_word_length = 8
+
+# Maximum consonant ratio before a label counts as unpronounceable.
+# 0.6 is very aggressive: codeberg is 5 consonants / 8 letters = 0.625.
+consonant_ratio_threshold = 0.6
+
+# Maximum consecutive consonants. Normal words rarely exceed 4
+# ("strength").
+max_consonant_sequence = 5
+
+# Score domains against language models. A domain must pass at least
+# ONE model to be allowed (OR logic).
+use_ngram_model = false
+
+# true — embedded Markov matrices (~2.7 KB per language, zero-alloc,
+# no external files; best for OpenWrt).
+# false — load full n-gram tables from the .bin files below (2–5 MB per
+# language, higher accuracy, file I/O at startup).
+ngram_use_embedded = true
+
+# Languages for embedded mode. Add the language(s) your users speak to
+# avoid false positives.
+ngram_embedded_languages = ["english", "french", "german"]
+
+# External model files, used only when ngram_use_embedded = false.
+ngram_models = ["/etc/dgaard/models/english.bin", "/etc/dgaard/models/french.bin"]
+
+# Log-probability threshold. Domains scoring below this in ALL models
+# are blocked. Typical range -6.0 (strict) to -3.0 (lenient).
+ngram_probability_threshold = -4.0
+
+# Drop blacklist entries whose SLD already trips the entropy / consonant
+# heuristics at LOAD time, to save memory. Whitelists are never dropped.
+#
+# WARNING: this can silently UN-BLOCK explicitly listed domains. Entropy
+# is not a query-time block — it only adds points (at most 7) to the
+# suspicion score, below the default blocking_threshold of 10. A dropped
+# blacklist entry is re-blocked only if other signals push it over the
+# threshold. If in doubt, leave this off.
+drop_entries_hard_blocked_at_load = false
+
+# -----------------------------------------------------------------------------
+# [security.idn] — IDN
+# -----------------------------------------------------------------------------
+# Internationalized domain name policy. Any mode other than "Off"
+# requires server.block_idn = false AND
+# security.structure.force_lowercase_ascii = false, otherwise every
+# non-ASCII label is dropped before this filter runs and dgaard refuses
+# to start on the contradiction.
+[security.idn]
+# Off — no IDN filtering (the coarse gates above handle it).
+# Strict — block every non-ASCII label.
+# Smart — allow the scripts listed below, block the rest.
+mode = "Smart"
+
+# Unicode scripts permitted in Smart mode.
+allowed_scripts = ["Latin"]
+
+# -----------------------------------------------------------------------------
+# [security.qtype_warden] — QType warden
+# -----------------------------------------------------------------------------
+# Blocks queries by record type before any domain processing — the
+# cheapest possible filter (a u16 lookup, no string comparison).
+[security.qtype_warden]
+# Master switch for query-type policy enforcement.
+enabled = true
+
+# DNS record type numbers (RFC 1035 §3.2.2) to block.
+# NULL (10) — tunneling (iodine, dnscat2).
+# HINFO (13) — host info leakage.
+# ANY (255) — amplification attacks.
+# AXFR (252) — zone transfer, never legitimate from a client.
+blocked_types = [10, 13, 252, 255]
+
+# -----------------------------------------------------------------------------
+# [security.rebinding_shield] — Rebinding shield
+# -----------------------------------------------------------------------------
+# Rejects upstream answers mapping a public domain to a private or
+# reserved IP — the DNS rebinding attack vector. Covers RFC 1918, 1122,
+# 6598, 3927, 4291 and 4193 ranges in both address families.
+[security.rebinding_shield]
+# Master switch for the rebinding shield.
+enabled = true
+
+# Answer PTR queries (*.in-addr.arpa, *.ip6.arpa) for private, loopback
+# and link-local ranges locally instead of forwarding them to a public
+# resolver, which would expose internal host names and LAN topology.
+block_ptr_leak = true
+
+# -----------------------------------------------------------------------------
+# [security.low_ttl] — Low TTL
+# -----------------------------------------------------------------------------
+# Very short TTLs are characteristic of fast-flux malware. Legitimate
+# CDNs use them too, so this adds suspicion points rather than blocking.
+[security.low_ttl]
+# Master switch for TTL-based scoring.
+enabled = true
+
+# Responses with min_ttl below this add LOW_TTL suspicion points.
+threshold_secs = 10
+
+# Optional cache TTL floor. Any TTL below this value is clamped upward
+# before caching, preventing fast-flux domains from bypassing the cache
+# with near-zero TTLs. Unset leaves observed TTLs unchanged.
+min_ttl_floor_secs = 30
+
+# -----------------------------------------------------------------------------
+# [security.asn_filter] — ASN filter
+# -----------------------------------------------------------------------------
+# Blocks answers resolving into operator-supplied CIDR ranges — mining
+# pools, bulletproof hosting, known C2 networks. Catches fast-flux
+# campaigns that rotate domains but keep a stable hosting footprint.
+# Ranges are pre-parsed at startup; matching is O(1) per IP.
+[security.asn_filter]
+# Master switch. Requires explicit threat-intelligence input.
+enabled = true
+
+# IPv4 and IPv6 CIDR ranges to block, in one list.
+# Source them from feeds such as the Spamhaus ASN DROP list or abuse.ch.
+blocked_ranges = ["203.0.113.0/24", "198.51.100.0/24", "2001:db8::/32"]
+
+# -----------------------------------------------------------------------------
+# [security.scoring] — Scoring
+# -----------------------------------------------------------------------------
+# Suspicion score thresholds. The two lower tiers only affect telemetry
+# emitted on the stats socket, not blocking behaviour.
+[security.scoring]
+# Score at or above which a domain is blocked.
+blocking_threshold = 10
+
+# Score at or above which a domain is forwarded but always emitted as a
+# HighlySuspicious event.
+highly_suspicious_threshold = 7
+
+# Score at or above which a domain is emitted as a Suspicious event —
+# only when log_suspicious is true.
+suspicious_threshold = 4
+
+# Emit Suspicious events for domains between suspicious_threshold and
+# highly_suspicious_threshold.
+log_suspicious = false
+
+# -----------------------------------------------------------------------------
+# [security.geo_ip] — GeoIP
+# -----------------------------------------------------------------------------
+# Country-based suspicion scoring against a MaxMind-format database,
+# opened with mmap to minimise RAM. Requires a build with the `geoip`
+# feature (cargo build --features geoip); enabling it on a default build
+# is rejected at startup. Off by default because CDN edge IPs make
+# country signals noisy.
+[security.geo_ip]
+# Master switch for GeoIP scoring.
+enabled = false
+
+# Path to a MaxMind-format MMDB file (GeoLite2-Country, GeoIP2-Country,
+# DB-IP or ip2location equivalents). Empty disables the check.
+database_path = "/etc/dgaard/GeoLite2-Country.mmdb"
+
+# ISO 3166-1 alpha-2 country codes considered suspicious, e.g. RU, CN.
+suspicious_countries = []
+
+# Suspicion points added per matching IP. 10 hard-blocks on its own.
+suspicious_country_score = 3
+
+# -----------------------------------------------------------------------------
+# [security.special_use] — Special-use domains
+# -----------------------------------------------------------------------------
+# RFC 6761 isolation: never forward reserved or internal TLDs to a public
+# resolver. Always enforced when enabled: .local, .localhost, .invalid,
+# .test, .example.
+[security.special_use]
+# Master switch for special-use domain isolation.
+enabled = true
+
+# Additional TLDs to isolate, common in split-horizon deployments:
+# corp, lan, internal, home, intranet. Lowercase, no leading dot.
+extra_local_tlds = ["corp", "lan", "home"]
+
+# -----------------------------------------------------------------------------
+# [security.dnssec] — DNSSEC
+# -----------------------------------------------------------------------------
+# Validation through a side-channel hickory resolver running in parallel
+# with the forwarded query, so the added latency is only the difference
+# between the two response times. Unsigned zones and unreachable
+# validators fail open. Note: this doubles outgoing queries.
+[security.dnssec]
+# Master switch for DNSSEC validation.
+enabled = true
+
+# What to do on a BOGUS result.
+# block — return SERVFAIL (the RFC-standard DNSSEC failure response).
+# log — forward the response unchanged and log the event; useful during
+# a trial period to measure the false-positive rate.
+action = "log"
+
+# -----------------------------------------------------------------------------
+# [[security.custom_flags]] — Custom flags
+# -----------------------------------------------------------------------------
+
+# User-defined threat-intelligence feeds, each bound to one bit of the
+# upper half of StatBlockReason. A hit adds suspicious_score to the
+# query total and sets the bit in telemetry. At most 16 entries.
+
+[[security.custom_flags]]
+bit = 16
+code = "AI_GENERATED"
+name = "AI generated domains"
+description = "Domains flagged by an LLM-assisted feed"
+suspicious_score = 4
+list_path = ["/etc/dgaard/lists/ai_generated.txt"]
+
+[[security.custom_flags]]
+bit = 17
+code = "HONEYPOT"
+name = "Honeypot hits"
+description = ""
+suspicious_score = 6
+list_path = ["/etc/dgaard/lists/honeypot.txt"]
+
+# -----------------------------------------------------------------------------
+# [forwarder] — Forwarder
+# -----------------------------------------------------------------------------
+# Resolvers used when server.mode = "forwarder".
+# Renamed from [upstream]; the parser rejects the old name outright.
+[forwarder]
+# Ordered resolver addresses in ip:port form.
+servers = ["1.1.1.1:53", "9.9.9.9:53"]
+
+# Per-query timeout. Unanswered queries are retried on the next server.
+timeout_ms = 2000
+
+# DNS0x20 case randomization (Dagon et al., 2008). Randomly flips the
+# case of ASCII letters in the outgoing QNAME; a compliant upstream
+# echoes it back verbatim, so mismatched responses are rejected as
+# forged. Hardens against Kaminsky-style poisoning at zero cost.
+# Set false if your upstreams normalize case — some non-compliant
+# servers do, which would time out every query.
+use_0x20_randomization = true
+
+# -----------------------------------------------------------------------------
+# [recursive] — Recursive resolver
+# -----------------------------------------------------------------------------
+# Iterative resolver tuning, used when server.mode = "recursive".
+[recursive]
+# Optional BIND-style root hints file. Unset uses the compiled-in IANA
+# root server set, which is diffed against named.root weekly.
+root_hints_path = "/etc/dgaard/root.hints"
+
+# Hard ceiling on delegation hops; defence in depth on top of the
+# cycle detector.
+max_delegation_depth = 8
+
+# Cap on total upstream queries per client resolution. CNAME chase and
+# out-of-zone NS lookups are amortised against the same budget so an
+# amplifying chain cannot escape it.
+max_queries_per_resolution = 64
+
+# Maximum CNAME chain length before returning SERVFAIL.
+max_cname_depth = 10
+
+# Per-nameserver UDP query timeout.
+query_timeout_ms = 3000
+
+# RFC 9156 QNAME minimization. Accepted today; the loop still sends the
+# full QNAME until the Phase 2 follow-up lands.
+qname_minimization = true
+
+# true — refuse out-of-bailiwick referrals up front (a referral that
+# widens the zone is a classic cache-poisoning vector).
+# false — lenient, more tolerant of misconfigured zones.
+strict_bailiwick = true
+
+# How queries fan out across a zone's nameservers. Only "sequential" is
+# implemented today; the others are accepted for forward compatibility.
+ns_concurrency = "staggered"
+
+# Extra launches for staggered mode, total for parallel mode. Kept small
+# to avoid antisocial behaviour towards root and TLD operators.
+max_concurrent_queries = 2
+
+# Gap between staggered launches.
+ns_stagger_ms = 200
+
+# Advertise an EDNS0 OPT record on outgoing queries (RFC 6891).
+edns0_enabled = true
+
+# Buffer size advertised in the OPT record. 1232 is the DNS Flag Day
+# 2020 fragmentation-safe value.
+edns0_udp_payload_size = 1232
+
+# Top-N most popular domains persisted to disk.
+save_top_domains = 2048
+
+# Where popularity snapshots are written (rkyv binary with an 8-byte
+# header). Identical writes are skipped to spare flash on idle routers.
+# Empty disables persistence.
+save_path = "/var/dgaard/top-domains.bin"
+
+# How often the popularity snapshot is written. 0 disables persistence.
+save_interval_secs = 600
+
+# Half-life of the popularity score.
+decay_half_life_secs = 86400
+
+# -----------------------------------------------------------------------------
+# [prefetch] — Prefetch
+# -----------------------------------------------------------------------------
+# When a cache hit is about to expire, a refresh is queued on a bounded
+# channel and a worker rewrites the cache entry before a client has to
+# wait for a fresh upstream round-trip.
+[prefetch]
+# Master switch. When false the worker is never spawned.
+enabled = true
+
+# Minimum gap between two prefetch resolutions. Smooths the spike when
+# many cache entries near their TTL ceiling on the same tick.
+interval_ms = 200
+
+# Bounded channel depth. Excess requests are dropped and counted in
+# prefetch_dropped_total rather than blocking the query path.
+queue_capacity = 256
+
+# Fire the prefetch when remaining TTL falls below this. 0 disables it.
+ttl_remaining_trigger_secs = 30
+
+# -----------------------------------------------------------------------------
+# [tld] — TLD filtering
+# -----------------------------------------------------------------------------
+# Every entry must be canonical — lowercase, no leading dot. A
+# non-canonical entry aborts startup.
+[tld]
+# If non-empty, ONLY these TLDs resolve. Leave empty to allow all and
+# use exclude for targeted blocks.
+allow_only = []
+
+# TLDs always blocked. A generic starting point for high-risk TLDs:
+# top, xyz, bid, country, stream, gdn.
+exclude = ["top", "xyz", "bid", "country", "stream", "gdn"]
+
+# Conditional blocking: blocks only when the domain also contains a
+# banned keyword. Which ccTLDs you treat as suspicious is a regional
+# choice — adjust for the countries you do or do not expect traffic from.
+suspicious_tlds = ["biz", "click", "vip"]
+
+# -----------------------------------------------------------------------------
+# [nxdomain_hunting] — NXDOMAIN hunting
+# -----------------------------------------------------------------------------
+# Detects botnet C2 beacon scanning by counting NXDOMAIN responses per
+# client in a sliding window.
+[nxdomain_hunting]
+# Master switch for NXDOMAIN hunting.
+enabled = true
+
+# NXDOMAIN responses in the window before a client is flagged.
+threshold = 15
+
+# Sliding window duration.
+window_seconds = 60
+
+# log — record the event only.
+# block_client — drop the client's traffic via firewall integration for
+# the remainder of the window.
+action = "block_client"
+
+# -----------------------------------------------------------------------------
+# [tunneling_detection] — Tunneling detection
+# -----------------------------------------------------------------------------
+# Monitors the rate and structure of subdomains to detect covert channels
+# that encode data in DNS labels (aGVsbG8=.attacker.com).
+[tunneling_detection]
+# Master switch for tunneling detection.
+enabled = true
+
+# Maximum unique subdomains under one SLD per client per minute.
+max_subdomains_per_minute = 50
+
+# Maximum byte length of a single label. Base64 and hex payloads produce
+# labels much longer than legitimate names.
+max_label_length = 60
+
+# -----------------------------------------------------------------------------
+# [sources] — Sources
+# -----------------------------------------------------------------------------
+# Domain list sources and refresh schedule. Entries may be local paths or
+# http(s) URLs. Find lists at https://filterlists.com/
+[sources]
+# Newly Registered Domains list, refreshed daily via cron.
+nrd_list_path = "/tmp/nrd_daily.txt"
+
+# Blocklists, in hosts or bare-domain format. Add region- or
+# language-specific lists for your users.
+blacklists = [
+  "https://easylist.to/easylist/easylist.txt",
+  "/etc/dgaard/lists/malware_domains.txt",
+]
+
+# Whitelists. Entries here override every other filter, heuristics
+# included.
+whitelists = ["/etc/dgaard/lists/personal_whitelist.txt"]
+
+# How often lists are re-fetched.
+update_interval_hours = 24
+
+# How long to wait before retrying a failed download.
+retry_delay_mins = 30
+
+# Binary index mapping each xxh3_64 hash to its source domain, so tools
+# can resolve a hash without loading the full blocklist. Empty disables.
+# Must match input.index in dgaard-monitor.toml.
+host_index_path = "/var/dgaard/host_mapping.bin"
+
+# Collects the ABP cosmetic / element-hiding / scriptlet rules the DNS
+# filter cannot apply. Import this file into uBlock Origin for full
+# ad blocking. Empty disables.
+browser_rules_path = "/var/dgaard/browser_rules.txt"
+
+# Maximum seconds for a full list reload. On timeout the operation is
+# aborted and the previously loaded engine stays active. 0 disables the
+# timeout.
+reload_timeout_secs = 15
+
+# -----------------------------------------------------------------------------
+# [abp] — AdBlock Plus lists
+# -----------------------------------------------------------------------------
+# ABP lists mix cosmetic (CSS) and network rules; dgaard extracts only
+# what a DNS filter can act on.
+[abp]
+# Extract only plain domain-level rules, skipping CSS cosmetic rules.
+extract_domain_only = true
+
+# Refresh interval for ABP lists, in hours.
+update_interval = 24
+
+# -----------------------------------------------------------------------------
+# [cache] — Response cache
+# -----------------------------------------------------------------------------
+# TTL-aware LRU cache keyed by (domain, qtype). Response bytes are stored
+# verbatim and the transaction ID is patched per query. Only answers with
+# at least one record are cached — never SERVFAIL or blocked responses.
+[cache]
+# Master switch for response caching.
+enabled = true
+
+# LRU capacity. 10 000 entries is roughly 5–50 MiB depending on
+# response size.
+max_entries = 10000
+
+# Replace the upstream TTL for every cached entry. 0 uses the TTL
+# returned by the resolver (recommended).
+ttl_override = 0
+
+# -----------------------------------------------------------------------------
+# [[overrides]] — Overrides
+# -----------------------------------------------------------------------------
+
+# Force a fixed IP for a domain, bypassing every filter. Useful for
+# split-horizon DNS, trusted domains that keep tripping heuristics, and
+# redirecting a domain to a local service. Events are emitted with action
+# "Override". A query for the other address family returns NOERROR with
+# an empty answer so the client falls back gracefully.
+
+[[overrides]]
+domain = "nas.home"
+to = "192.168.1.50"
+
+[[overrides]]
+domain = "*.internal.corp"
+to = "10.0.0.1"
+
+[[overrides]]
+domain = "metrics.internal"
+to = "fd00::1"

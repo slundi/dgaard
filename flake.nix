@@ -163,6 +163,13 @@
             nixfmt-rfc-style # Nix formatter (RFC 166)
             yamlfmt # YAML formatter
             nil # Nix language server (referenced in .vscode/settings.json)
+            # Web configurator (dgaard-web-configurator/): a dependency-free
+            # static page. node is only needed for `node --test`, biome for
+            # JS/CSS format+lint (dprint handles json/toml/md only), and
+            # python3 for `just configurator-serve`.
+            nodejs_22
+            biome
+            python3
             # DNS utilities
             dig
             host

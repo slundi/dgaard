@@ -32,7 +32,8 @@ lint:
     cargo clippy --all-targets --all-features -- -D warnings
 
 # Format all code
-fmt:
+# dprint only handles json/toml/md; biome covers the configurator's JS and CSS.
+fmt: configurator-fmt
     cargo fmt --all
     dprint fmt
     find . -name '*.nix' -not -path './target/*' | xargs --no-run-if-empty nixfmt
@@ -61,6 +62,35 @@ coverage-check BASE="master":
     cargo llvm-cov --lcov --output-path lcov.info
     cargo llvm-cov report --fail-under-lines 80
 
+# --- Web configurator ---
+
+# Serve the configurator at http://127.0.0.1:8000
+# (ES modules need HTTP; for file:// use `just configurator-build` instead)
+configurator-serve:
+    python3 -m http.server 8000 --directory dgaard-web-configurator
+
+# Build dist/dgaard-configurator.html — one self-contained file, works offline
+configurator-build:
+    ./dgaard-web-configurator/scripts/build.sh
+
+# Run the configurator unit tests (node --test, no npm dependencies)
+configurator-test:
+    cd dgaard-web-configurator && node --test 'tests/*.test.js'
+
+# Regenerate the golden configs that dgaard-engine/tests/configurator_golden.rs
+# parses and validates with the real Rust parser. Run after changing the
+# emitter or a schema default, then re-run `just test`.
+configurator-golden:
+    cd dgaard-web-configurator && node scripts/gen-golden.js
+
+# Format and lint the configurator sources
+configurator-fmt:
+    cd dgaard-web-configurator && biome check --write .
+
+# Lint the configurator sources without writing (CI)
+configurator-lint:
+    cd dgaard-web-configurator && biome check .
+
 # --- Operational ---
 
 # Verify the compiled-in root-server hints still match IANA's published
@@ -87,7 +117,7 @@ check-features:
     @echo "All feature combinations OK"
 
 # Run the complete CI pipeline (use this when already inside `nix develop`)
-ci-all: fmt lint test check-features health-check scan-secrets
+ci-all: fmt lint test check-features configurator-lint configurator-test health-check scan-secrets
 
 # Run the complete CI pipeline via Nix devshell — no docker/podman needed
 # Equivalent to what Woodpecker and Forgejo Actions run in containers
@@ -95,12 +125,14 @@ ci-local:
     nix develop --command just fmt
     nix develop --command just lint
     nix develop --command just test
+    nix develop --command just configurator-lint
+    nix develop --command just configurator-test
     nix develop --command just health-check
     nix develop --command just scan-secrets
     @echo "All CI checks passed!"
 
 # Run a quick subset (format + lint + test) — fast feedback loop
-ci: fmt lint test
+ci: fmt lint test configurator-test
     @echo "Quick checks passed!"
 
 # --- Changelog ---

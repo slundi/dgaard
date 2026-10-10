@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>dgaard configurator</title>
+  <link rel="stylesheet" href="css/style.css">
+  <!-- Apply stored theme before first paint to prevent a flash of the wrong theme. -->
+  <script>
+    (function () {
+      var stored = localStorage.getItem('dgaard-theme') || 'system';
+      if (stored === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+      if (stored === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    })();
+  </script>
+</head>
+<body>
+
+  <header>
+    <div class="brand">dgaard<span>configurator</span></div>
+
+    <nav class="tab-bar" id="tab-bar">
+      <button class="tab active" type="button" data-file="engine">config.toml</button>
+      <button class="tab" type="button" data-file="monitor">dgaard-monitor.toml</button>
+    </nav>
+
+    <div class="header-actions">
+      <input type="search" id="field-search" placeholder="filter fields…" aria-label="Filter fields">
+      <button type="button" id="theme-toggle" class="btn" aria-label="Toggle theme">
+        <span id="theme-label">system</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="side-nav" id="side-nav" aria-label="Configuration sections"></aside>
+
+    <main class="form-host" id="form-host"></main>
+
+    <section class="preview" id="preview" aria-label="Generated TOML">
+      <div class="preview-head">
+        <strong id="preview-title">config.toml</strong>
+        <div class="mode-switch" role="group" aria-label="Output mode">
+          <button type="button" class="btn mode active" data-mode="annotated">annotated</button>
+          <button type="button" class="btn mode" data-mode="minimal">minimal</button>
+        </div>
+        <span class="spacer"></span>
+        <span class="muted" id="modified-count"></span>
+        <button type="button" class="btn" id="copy-btn">copy</button>
+        <button type="button" class="btn primary" id="download-btn">download</button>
+      </div>
+      <pre class="preview-body" id="preview-body" tabindex="0"></pre>
+    </section>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

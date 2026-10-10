@@ -1,0 +1,176 @@
+# -----------------------------------------------------------------------------
+# dgaard-monitor — telemetry agent configuration
+# Pass to the binary with:  dgaard-monitor -c /path/to/dgaard-monitor.toml
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# [input] — Input
+# -----------------------------------------------------------------------------
+# Where the monitor reads events and domain names from.
+[input]
+# Unix domain socket exposed by the dgaard DNS proxy.
+# Must match server.stats_socket_path in config.toml.
+socket = "/var/run/dgaard/stats.sock"
+
+# Binary host-index file produced by dgaard (hash → domain mapping).
+# Must match sources.host_index_path in config.toml.
+index = "/var/dgaard/host_mapping.bin"
+
+# Optional path to the dgaard engine config. When set, the monitor reads
+# [[security.custom_flags]] from it to resolve custom bits (16–31) to their
+# configured code labels. Bits with no entry render as CUSTOM_BIT_<n>.
+engine_config_path = "/etc/dgaard/config.toml"
+
+# -----------------------------------------------------------------------------
+# [persistence] — Persistence
+# -----------------------------------------------------------------------------
+# Local SQLite storage: a rolling event log plus hourly aggregates.
+[persistence]
+# SQLite database file (opened in WAL mode).
+db = "/var/dgaard/stats.sqlite"
+
+# Tier 1 — rolling event log retention, in hours.
+events_retention_hours = 72
+
+# Tier 2 — hourly aggregates retention, in days.
+aggregates_retention_days = 90
+
+# -----------------------------------------------------------------------------
+# [tui] — TUI
+# -----------------------------------------------------------------------------
+# Terminal user interface. Requires a build with the `tui` feature.
+[tui]
+# Terminal refresh rate in milliseconds.
+tick_ms = 250
+
+# Key binding: quit. Single character or a named key.
+key_quit = "q"
+
+# Key binding: pause the live feed.
+key_pause = "space"
+
+# Key binding: scroll up.
+key_scroll_up = "up"
+
+# Key binding: scroll down.
+key_scroll_down = "down"
+
+# -----------------------------------------------------------------------------
+# [forwarding] — Forwarding
+# -----------------------------------------------------------------------------
+# Route enriched events to external sinks (file, stdout, HTTP endpoint).
+[forwarding]
+# Append formatted lines to this file. Unset writes to stdout.
+file = "/var/log/dgaard/dns.log"
+
+# Line template used when format = "template".
+# Placeholders: {timestamp}, {client_ip}, {action}, {domain}.
+template = "{timestamp} {client_ip} {action} {domain}"
+
+# Wire format for both file/stdout and HTTP POST output.
+# syslog is RFC 5424, cef is ArcSight CEF:0, elasticsearch is Bulk API NDJSON.
+format = "json"
+
+# HTTP(S) endpoint for POSTing events (SOAR, Slack incoming webhook, …).
+forward_url = "https://soar.internal/api/v1/dns-alert"
+
+# Which action variants to forward. Empty list forwards every event.
+filter = ["Blocked", "Suspicious", "HighlySuspicious"]
+
+# -----------------------------------------------------------------------------
+# [server] — Server
+# -----------------------------------------------------------------------------
+# Shared listener settings inherited by every REST module below.
+# Each module binds its own port but shares this address and bearer token.
+[server]
+# Listen address shared by [api], [websocket], [mcp] and [web].
+listen = "127.0.0.1"
+
+# Static bearer token required on every authenticated request.
+token = "a-real-token"
+
+# -----------------------------------------------------------------------------
+# [api] — REST API
+# -----------------------------------------------------------------------------
+# JSON REST endpoints.
+[api]
+# Enable the REST API module.
+enabled = true
+
+# TCP port for the REST API.
+port = 8080
+
+# URL prefix the API is mounted under.
+root_path = "/api/v1"
+
+# -----------------------------------------------------------------------------
+# [websocket] — WebSocket
+# -----------------------------------------------------------------------------
+# Live event stream over WebSocket.
+[websocket]
+# Enable the WebSocket module.
+enabled = true
+
+# TCP port for the WebSocket stream.
+port = 8081
+
+# URL prefix the stream is mounted under.
+root_path = "/ws"
+
+# -----------------------------------------------------------------------------
+# [mcp] — MCP
+# -----------------------------------------------------------------------------
+# Model Context Protocol endpoint.
+[mcp]
+# Enable the MCP module.
+enabled = false
+
+# TCP port for the MCP endpoint.
+port = 8082
+
+# URL prefix the endpoint is mounted under.
+root_path = "/mcp"
+
+# -----------------------------------------------------------------------------
+# [web] — Web UI
+# -----------------------------------------------------------------------------
+# Embedded single-page dashboard, mounted at "/".
+[web]
+# Enable the embedded web UI.
+enabled = true
+
+# TCP port for the web UI.
+port = 8083
+
+# Maximum number of DNS events kept in the in-memory rolling log.
+history_size = 1000
+
+# Minimum queries from one client to the same domain before the pair is
+# eligible for beaconing analysis (GET /api/v1/beaconing).
+beaconing_min_observations = 5
+
+# Coefficient of variation (std_dev / mean of inter-arrival times) below
+# which a client/domain pair is flagged as a potential beacon. Lower is
+# stricter; 0.15 catches regular C2 beacons while avoiding most false
+# positives from bursty background traffic.
+beaconing_cov_threshold = 0.15
+
+# -----------------------------------------------------------------------------
+# [nats] — NATS
+# -----------------------------------------------------------------------------
+# Optional pub/sub federation. When enabled the local Unix socket input
+# still runs in parallel. Requires a build with the `nats` feature.
+[nats]
+# Enable the NATS publisher and subscriber.
+enabled = true
+
+# NATS server URL.
+url = "nats://127.0.0.1:4222"
+
+# Subject enriched events are published on. Empty disables publishing.
+publish_subject = "dgaard.events"
+
+# Subject the monitor subscribes to. Set to "dgaard.events" to relay a peer
+# monitor, or "dgaard.scores" to consume a daemon scoring feed.
+# Empty disables subscription.
+subscribe_subject = "dgaard.events"
