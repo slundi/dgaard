@@ -91,6 +91,42 @@ configurator-fmt:
 configurator-lint:
     cd dgaard-web-configurator && biome check .
 
+# --- C FFI (dgaard-ffi) ---
+
+# Regenerate dgaard-ffi/include/dgaard.h from the Rust sources.
+# The header is committed, so run this after touching dgaard-ffi/src and
+# commit the result. `cbindgen` comes from the devShell, not from Cargo.toml —
+# it stays off the dependency graph so `cargo deny` never sees it.
+ffi-header:
+    cbindgen --config dgaard-ffi/cbindgen.toml --crate dgaard-ffi --output dgaard-ffi/include/dgaard.h
+    @echo "→ dgaard-ffi/include/dgaard.h"
+
+# Fail if the committed header no longer matches the Rust sources (CI).
+ffi-header-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    generated=$(mktemp)
+    trap 'rm -f "$generated"' EXIT
+    cbindgen --config dgaard-ffi/cbindgen.toml --crate dgaard-ffi --output "$generated"
+    if ! diff -u dgaard-ffi/include/dgaard.h "$generated"; then
+        echo "dgaard.h is stale — run 'just ffi-header' and commit the result" >&2
+        exit 1
+    fi
+    echo "dgaard.h is up to date"
+
+# Compile and run examples/demo.c against the freshly built shared library.
+# Proves the generated header, the C ABI and the linker all agree.
+ffi-demo *domains:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build -p dgaard-ffi
+    binary=$(mktemp -u)
+    trap 'rm -f "$binary"' EXIT
+    cc -std=c11 -Wall -Wextra -Werror \
+        -I dgaard-ffi/include dgaard-ffi/examples/demo.c \
+        -L target/debug -ldgaard -o "$binary"
+    LD_LIBRARY_PATH=target/debug "$binary" {{domains}}
+
 # --- Operational ---
 
 # Verify the compiled-in root-server hints still match IANA's published
@@ -117,7 +153,7 @@ check-features:
     @echo "All feature combinations OK"
 
 # Run the complete CI pipeline (use this when already inside `nix develop`)
-ci-all: fmt lint test check-features configurator-lint configurator-test health-check scan-secrets
+ci-all: fmt lint test check-features ffi-header-check configurator-lint configurator-test health-check scan-secrets
 
 # Run the complete CI pipeline via Nix devshell — no docker/podman needed
 # Equivalent to what Woodpecker and Forgejo Actions run in containers
@@ -125,6 +161,7 @@ ci-local:
     nix develop --command just fmt
     nix develop --command just lint
     nix develop --command just test
+    nix develop --command just ffi-header-check
     nix develop --command just configurator-lint
     nix develop --command just configurator-test
     nix develop --command just health-check

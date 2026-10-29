@@ -1,0 +1,26 @@
+[package]
+name = "dgaard-ffi"
+version = "0.2.0"
+authors = ["Sébastien LUNDI"]
+categories = ["network-programming", "external-ffi-bindings"]
+edition = "2024"
+keywords = ["dns", "filter", "security", "dga", "ffi"]
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://codeberg.org/slundi/dgaard"
+description = "C ABI for the dgaard domain filtering engine (C, C++, cgo, ctypes, …)"
+
+[lib]
+name = "dgaard"
+# `lib` keeps the crate usable from Rust tests; `cdylib`/`staticlib` are the
+# artefacts C consumers link against. These live here and NOT in
+# `dgaard-engine` so the router build never pays for the extra link steps.
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[dependencies]
+dgaard-engine = { path = "../dgaard-engine", version = "0.2.0" }
+
+# NOTE: no build-dependency on cbindgen. `include/dgaard.h` is committed and
+# regenerated out-of-band by `just ffi-header`, which drives the cbindgen CLI
+# from the dev shell. Keeping it off the dependency graph means neither
+# `cargo build --workspace` nor `cargo deny` pays for it.

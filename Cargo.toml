@@ -4,6 +4,7 @@ members = [
   "dgaard",
   "dgaard-daemon",
   "dgaard-engine",
+  "dgaard-ffi",
   "dgaard-monitor",
   "dgaard-monitor-core",
   "dgaard-monitor-nats",

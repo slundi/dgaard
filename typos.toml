@@ -1,2 +1,4 @@
 [default.extend-words]
 ratatui = "ratatui"
+# Small and Medium Enterprise (README.md), not a misspelling of SOME/SAME.
+SME = "SME"

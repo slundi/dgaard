@@ -1,0 +1,29 @@
+language = "C"
+include_guard = "DGAARD_H"
+cpp_compat = true
+style = "type"
+tab_width = 4
+documentation_style = "doxy"
+# `usize` is the natural width of a C buffer length; emit `size_t`, not `uintptr_t`.
+usize_is_size_t = true
+sys_includes = ["stdint.h", "stddef.h"]
+no_includes = true
+
+header = """
+/*
+ * dgaard — C ABI for the dgaard domain filtering engine.
+ *
+ * GENERATED FILE — do not edit by hand.
+ * Regenerate with `just ffi-header` after changing dgaard-ffi/src.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */"""
+
+[export]
+prefix = ""
+
+[enum]
+prefix_with_name = false
+
+[parse]
+parse_deps = false
