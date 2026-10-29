@@ -7,7 +7,9 @@
 //! - Shannon entropy calculation
 //! - Consonant ratio and clustering detection
 //! - N-gram language model analysis (embedded and external)
+//! - Public-suffix-aware extraction of the registrable label
 
 pub mod entropy;
 pub mod lexical;
 pub mod ngram;
+pub mod structure;

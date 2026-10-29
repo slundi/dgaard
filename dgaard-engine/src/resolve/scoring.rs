@@ -6,6 +6,7 @@ use crate::config::Config;
 use crate::dga::entropy::{
     calculate_entropy, calculate_entropy_fast, is_consonant_suspicious, is_low_entropy_suspicious,
 };
+use crate::dga::structure::effective_sld;
 use crate::filter::engine::FilterEngine;
 use crate::model::{BlockReason, InspectedAnswer, SuspicionScore, score_points};
 use twox_hash::XxHash64;
@@ -72,7 +73,7 @@ pub fn compute_score(domain: &str, filter: &FilterEngine, config: &Config) -> Su
     // 6. Entropy and consonant clustering
     let intel = &config.security.intelligence;
     if intel.enabled
-        && let Some(sld) = extract_sld(domain)
+        && let Some(sld) = effective_sld(domain)
     {
         // Repetitive / counter-padded labels. Gated on its own minimum length
         // so it still fires on SLDs too short for the checks below.
@@ -270,16 +271,6 @@ pub(crate) fn is_private_ipv6(ip: std::net::Ipv6Addr) -> bool {
         || s[0] == 0x2002 // 2002::/16 6to4
 }
 
-/// Extract the second-level domain (SLD) from a domain name.
-fn extract_sld(domain: &str) -> Option<&str> {
-    let parts: Vec<&str> = domain.split('.').collect();
-    if parts.len() >= 2 {
-        Some(parts[parts.len() - 2])
-    } else {
-        None
-    }
-}
-
 /// Check if domain contains suspicious IDN/Punycode patterns.
 fn is_idn_suspicious(domain: &str) -> bool {
     if domain.split('.').any(|part| part.starts_with("xn--")) {
@@ -362,6 +353,27 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_score_uses_registrable_label_under_cc_tld() {
+        let engine = create_test_engine(&[], &[], &[]);
+        let config = default_config();
+        let score = compute_score("a1b2c3d4e5f6g7h8i9j0.co.uk", &engine, &config);
+        assert!(score.total >= score_points::ENTROPY_HIGH);
+        assert!(
+            score
+                .reasons
+                .iter()
+                .any(|r| matches!(r, BlockReason::HighEntropy(_)))
+        );
+    }
+
+    #[test]
+    fn test_compute_score_legitimate_cc_tld_domain() {
+        let engine = create_test_engine(&[], &[], &[]);
+        let config = default_config();
+        assert_eq!(compute_score("news.bbc.co.uk", &engine, &config).total, 0);
+    }
+
+    #[test]
     fn test_compute_score_low_entropy() {
         let engine = create_test_engine(&[], &[], &[]);
         let config = default_config();
@@ -387,13 +399,6 @@ mod tests {
                 .iter()
                 .any(|r| matches!(r, BlockReason::LowEntropy(_)))
         );
-    }
-
-    #[test]
-    fn test_extract_sld() {
-        assert_eq!(extract_sld("sub.example.com"), Some("example"));
-        assert_eq!(extract_sld("example.com"), Some("example"));
-        assert_eq!(extract_sld("com"), None);
     }
 
     #[test]

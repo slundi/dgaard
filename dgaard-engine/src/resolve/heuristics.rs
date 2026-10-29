@@ -5,6 +5,7 @@ use crate::dga::{
         is_low_entropy_suspicious,
     },
     ngram::{NgramLanguage, ngram_check_embedded},
+    structure::effective_sld,
 };
 use crate::filter::engine::FilterEngine;
 use crate::model::BlockReason;
@@ -59,12 +60,7 @@ pub fn check_dga_heuristics(domain: &str, config: &Config) -> Option<BlockReason
         return None;
     }
 
-    let parts: Vec<&str> = domain.split('.').collect();
-    if parts.len() < 2 {
-        return None;
-    }
-
-    let sld = parts[parts.len() - 2];
+    let sld = effective_sld(domain)?;
 
     // 1. Low-entropy check. Gated on its own minimum length, so it runs even
     //    when the SLD is too short for the entropy and n-gram checks below.
@@ -235,5 +231,35 @@ mod tests {
                 domain
             );
         }
+    }
+
+    #[test]
+    fn check_dga_heuristics_analyses_the_registrable_label_under_a_cc_tld() {
+        // Before public-suffix awareness this analysed `co`, which is shorter
+        // than min_word_length — so every DGA under a two-label ccTLD was
+        // invisible to all four heuristics.
+        let config = Config::default();
+        assert!(matches!(
+            check_dga_heuristics("0000000000000000001.co.uk", &config),
+            Some(BlockReason::LowEntropy(19))
+        ));
+        assert!(matches!(
+            check_dga_heuristics("a1b2c3d4e5f6g7h8i9j0.com.au", &config),
+            Some(BlockReason::HighEntropy(_))
+        ));
+    }
+
+    #[test]
+    fn check_dga_heuristics_leaves_legitimate_cc_tld_domains_alone() {
+        let config = Config::default();
+        assert!(check_dga_heuristics("news.bbc.co.uk", &config).is_none());
+        assert!(check_dga_heuristics("www.toyota.co.jp", &config).is_none());
+    }
+
+    #[test]
+    fn check_dga_heuristics_skips_names_without_a_registrable_label() {
+        let config = Config::default();
+        assert!(check_dga_heuristics("co.uk", &config).is_none());
+        assert!(check_dga_heuristics("com", &config).is_none());
     }
 }
