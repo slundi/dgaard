@@ -137,6 +137,17 @@ entropy_fast = true
 # Short labels such as t.co are skipped to avoid false positives.
 min_word_length = 8
 
+# Detect repetitive / counter-padded labels (0000000000000000001,
+# 0-0-0-0-0-0-0-0, aaaaaaaaaaaaaaaa). Shannon entropy scores these low,
+# so entropy_threshold never fires on them.
+# Known false positives: all-digit SLDs at or above the length below.
+detect_low_entropy = true
+
+# Minimum SLD length before the low-entropy check applies. Separate
+# from min_word_length so the repetition rules can be tuned without
+# moving the entropy / n-gram gate.
+low_entropy_min_length = 8
+
 # Maximum consonant ratio before a label counts as unpronounceable.
 # 0.6 is very aggressive: codeberg is 5 consonants / 8 letters = 0.625.
 consonant_ratio_threshold = 0.6

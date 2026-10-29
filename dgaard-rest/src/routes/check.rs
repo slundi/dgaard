@@ -40,6 +40,7 @@ pub fn format_reason(reason: &BlockReason) -> String {
         BlockReason::StaticBlacklist(list) => format!("StaticBlacklist({list})"),
         BlockReason::AbpRule(rule) => format!("AbpRule({rule})"),
         BlockReason::HighEntropy(score) => format!("HighEntropy({score:.2})"),
+        BlockReason::LowEntropy(len) => format!("LowEntropy({len})"),
         BlockReason::LexicalAnalysis => String::from("LexicalAnalysis"),
         BlockReason::BannedKeyword(kw) => format!("BannedKeyword({kw})"),
         BlockReason::InvalidStructure => String::from("InvalidStructure"),

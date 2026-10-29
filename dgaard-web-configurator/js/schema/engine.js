@@ -211,6 +211,19 @@ export const ENGINE_SCHEMA = {
           doc: 'Minimum SLD length before entropy and n-gram analysis apply.\nShort labels such as t.co are skipped to avoid false positives.',
         },
         {
+          key: 'detect_low_entropy',
+          type: 'bool',
+          default: true,
+          doc: 'Detect repetitive / counter-padded labels (0000000000000000001,\n0-0-0-0-0-0-0-0, aaaaaaaaaaaaaaaa). Shannon entropy scores these low,\nso entropy_threshold never fires on them.\nKnown false positives: all-digit SLDs at or above the length below.',
+        },
+        {
+          key: 'low_entropy_min_length',
+          type: 'int',
+          rust: 'usize',
+          default: 8,
+          doc: 'Minimum SLD length before the low-entropy check applies. Separate\nfrom min_word_length so the repetition rules can be tuned without\nmoving the entropy / n-gram gate.',
+        },
+        {
           key: 'consonant_ratio_threshold',
           type: 'float',
           default: 0.6,

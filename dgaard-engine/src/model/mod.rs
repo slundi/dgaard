@@ -21,6 +21,12 @@ pub enum BlockReason {
     /// High Shannon Entropy detected (DGA). Carries the calculated score.
     HighEntropy(f32),
 
+    /// Repetitive / counter-padded label detected (DGA). Shannon entropy
+    /// scores these *low*, so `HighEntropy` misses the whole family
+    /// (`0000000000000000001`, `0-0-0-0-0-0-0-0`, `aaaaaaaaaaaaaaaa`).
+    /// Carries the length of the offending label.
+    LowEntropy(usize),
+
     /// Failed lexical analysis (Consonant ratio or N-Gram probability).
     LexicalAnalysis,
 
@@ -267,6 +273,7 @@ pub struct SuspicionScore {
 /// Score points for various heuristic signals.
 pub mod score_points {
     pub const ENTROPY_HIGH: u8 = 4;
+    pub const ENTROPY_LOW: u8 = 4;
     pub const CONSONANT_CLUSTER: u8 = 3;
     pub const DEEP_SUBDOMAIN: u8 = 3;
     pub const LONG_DOMAIN: u8 = 3;

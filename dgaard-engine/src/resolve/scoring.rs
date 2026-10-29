@@ -3,7 +3,9 @@
 use super::heuristics::check_lexical;
 use super::matcher::{is_blocked, is_nrd, is_suffix_blocked};
 use crate::config::Config;
-use crate::dga::entropy::{calculate_entropy, calculate_entropy_fast, is_consonant_suspicious};
+use crate::dga::entropy::{
+    calculate_entropy, calculate_entropy_fast, is_consonant_suspicious, is_low_entropy_suspicious,
+};
 use crate::filter::engine::FilterEngine;
 use crate::model::{BlockReason, InspectedAnswer, SuspicionScore, score_points};
 use twox_hash::XxHash64;
@@ -71,33 +73,47 @@ pub fn compute_score(domain: &str, filter: &FilterEngine, config: &Config) -> Su
     let intel = &config.security.intelligence;
     if intel.enabled
         && let Some(sld) = extract_sld(domain)
-        && sld.len() >= intel.min_word_length
     {
-        let entropy = if intel.entropy_fast {
-            calculate_entropy_fast(sld)
-        } else {
-            calculate_entropy(sld)
-        };
-
-        if entropy > intel.entropy_threshold {
+        // Repetitive / counter-padded labels. Gated on its own minimum length
+        // so it still fires on SLDs too short for the checks below.
+        if intel.detect_low_entropy && is_low_entropy_suspicious(sld, intel.low_entropy_min_length)
+        {
             score.add(
-                score_points::ENTROPY_HIGH,
-                BlockReason::HighEntropy(entropy),
+                score_points::ENTROPY_LOW,
+                BlockReason::LowEntropy(sld.len()),
             );
             if score.total >= blocking_threshold {
                 return score;
             }
         }
 
-        if is_consonant_suspicious(
-            sld,
-            intel.consonant_ratio_threshold,
-            intel.max_consonant_sequence,
-        ) {
-            score.add(
-                score_points::CONSONANT_CLUSTER,
-                BlockReason::LexicalAnalysis,
-            );
+        if sld.len() >= intel.min_word_length {
+            let entropy = if intel.entropy_fast {
+                calculate_entropy_fast(sld)
+            } else {
+                calculate_entropy(sld)
+            };
+
+            if entropy > intel.entropy_threshold {
+                score.add(
+                    score_points::ENTROPY_HIGH,
+                    BlockReason::HighEntropy(entropy),
+                );
+                if score.total >= blocking_threshold {
+                    return score;
+                }
+            }
+
+            if is_consonant_suspicious(
+                sld,
+                intel.consonant_ratio_threshold,
+                intel.max_consonant_sequence,
+            ) {
+                score.add(
+                    score_points::CONSONANT_CLUSTER,
+                    BlockReason::LexicalAnalysis,
+                );
+            }
         }
     }
 
@@ -293,9 +309,26 @@ mod tests {
     fn test_compute_score_long_domain() {
         let engine = create_test_engine(&[], &[], &[]);
         let config = default_config();
+        // 65 identical characters is both over-long and a counter-padded
+        // label, so the low-entropy rule fires alongside the length rule.
         let long_domain = format!("{}.com", "a".repeat(65));
         let score = compute_score(&long_domain, &engine, &config);
-        assert_eq!(score.total, score_points::LONG_DOMAIN);
+        assert_eq!(
+            score.total,
+            score_points::LONG_DOMAIN + score_points::ENTROPY_LOW
+        );
+        assert!(
+            score
+                .reasons
+                .iter()
+                .any(|r| matches!(r, BlockReason::InvalidStructure))
+        );
+        assert!(
+            score
+                .reasons
+                .iter()
+                .any(|r| matches!(r, BlockReason::LowEntropy(65)))
+        );
     }
 
     #[test]
@@ -326,6 +359,34 @@ mod tests {
         let config = default_config();
         let score = compute_score("a1b2c3d4e5f6g7h8i9j0.com", &engine, &config);
         assert!(score.total >= score_points::ENTROPY_HIGH);
+    }
+
+    #[test]
+    fn test_compute_score_low_entropy() {
+        let engine = create_test_engine(&[], &[], &[]);
+        let config = default_config();
+        let score = compute_score("0000000000000000001.com", &engine, &config);
+        assert!(score.total >= score_points::ENTROPY_LOW);
+        assert!(
+            score
+                .reasons
+                .iter()
+                .any(|r| matches!(r, BlockReason::LowEntropy(19)))
+        );
+    }
+
+    #[test]
+    fn test_compute_score_low_entropy_disabled() {
+        let engine = create_test_engine(&[], &[], &[]);
+        let mut config = default_config();
+        config.security.intelligence.detect_low_entropy = false;
+        let score = compute_score("0000000000000000001.com", &engine, &config);
+        assert!(
+            !score
+                .reasons
+                .iter()
+                .any(|r| matches!(r, BlockReason::LowEntropy(_)))
+        );
     }
 
     #[test]

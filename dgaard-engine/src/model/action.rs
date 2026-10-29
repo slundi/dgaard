@@ -113,6 +113,11 @@ impl From<&BlockReason> for StatBlockReason {
             BlockReason::StaticBlacklist(_) => StatBlockReason::STATIC_BLACKLIST,
             BlockReason::AbpRule(_) => StatBlockReason::ABP_RULE,
             BlockReason::HighEntropy(_) => StatBlockReason::HIGH_ENTROPY,
+            // Shares the HIGH_ENTROPY bit: it is the coarse "this is a DGA"
+            // bucket dashboards already group on, and bits 0-15 are fully
+            // allocated while 16-31 are reserved for custom flags. The exact
+            // signal stays available in-process on `BlockReason::LowEntropy`.
+            BlockReason::LowEntropy(_) => StatBlockReason::HIGH_ENTROPY,
             BlockReason::LexicalAnalysis => StatBlockReason::LEXICAL_ANALYSIS,
             BlockReason::BannedKeyword(_) => StatBlockReason::BANNED_KEYWORD,
             BlockReason::InvalidStructure => StatBlockReason::INVALID_STRUCTURE,

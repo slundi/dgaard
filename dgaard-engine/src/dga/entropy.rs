@@ -156,6 +156,123 @@ pub fn calculate_entropy_fast(s: &str) -> f32 {
     entropy
 }
 
+// ---------------------------------------------------------------------------
+// Low-entropy (repetitive / counter-padded) labels
+// ---------------------------------------------------------------------------
+
+/// Distinct-character ratio at or below which a label counts as repetitive.
+/// A natural second-level domain of length L carries roughly L/3 distinct
+/// characters or more, so 30% is already well outside normal.
+const LOW_ENTROPY_DISTINCT_RATIO: f32 = 0.30;
+
+/// Share of non-letter bytes (digits, hyphens) at or above which a repetitive
+/// label counts as machine-padded. Legitimate SLDs are overwhelmingly `a-z`
+/// with the occasional hyphen or digit.
+const LOW_ENTROPY_NON_LETTER_RATIO: f32 = 0.50;
+
+/// Length of a single-character run that no natural domain name reaches.
+const LOW_ENTROPY_MAX_RUN: usize = 8;
+
+/// Minimum length for the all-letter repetition rule. Below this, a label
+/// built from a handful of letters is more likely a short generated slug than
+/// a DGA seed.
+const LOW_ENTROPY_ALPHA_MIN_LENGTH: usize = 16;
+
+/// Maximum distinct letters for the all-letter repetition rule.
+const LOW_ENTROPY_ALPHA_MAX_DISTINCT: usize = 4;
+
+/// Length of the longest run of identical bytes in `s`.
+///
+/// Returns 0 for the empty string. Single pass, no allocation.
+pub fn longest_run(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        return 0;
+    }
+
+    let mut best = 1usize;
+    let mut current = 1usize;
+    for pair in bytes.windows(2) {
+        if pair[0] == pair[1] {
+            current += 1;
+            if current > best {
+                best = current;
+            }
+        } else {
+            current = 1;
+        }
+    }
+
+    best
+}
+
+/// Detects labels that are machine-generated through *too little* randomness.
+///
+/// [`calculate_entropy`] covers random-looking strings such as `a1b2c3d4e5f6`.
+/// It is blind to the opposite shape — repetitive, digit-heavy or symbol-padded
+/// noise such as `0000000000000000001`, `0-0-0-0-0-0-0-0`, `aaaaaaaaaaaaaaaa`
+/// or `1234567890` — because a distribution skewed onto one character scores
+/// *low*. Counter-padded and fixed-seed DGA families (Matsnu, Gozi, QakBot)
+/// live in that blind spot.
+///
+/// A label is flagged when it is at least `min_length` bytes long and matches
+/// one of:
+///
+/// 1. No letters at all (`1234567890`, `0-0-0-0-0-0-0-0`).
+/// 2. A run of [`LOW_ENTROPY_MAX_RUN`] identical bytes or more
+///    (`000000000shop`, `shop000000000`).
+/// 3. Few distinct characters *and* mostly non-letters (`aaaa1111----`).
+/// 4. A long all-letter label built from at most
+///    [`LOW_ENTROPY_ALPHA_MAX_DISTINCT`] letters (`aaaabbbbccccdddd`).
+///
+/// Non-ASCII labels return `false`: the ratios below count bytes, which is
+/// meaningless for multi-byte input. Those names are covered by the IDN
+/// homograph check instead.
+pub fn is_low_entropy_suspicious(label: &str, min_length: usize) -> bool {
+    if label.len() < min_length || !label.is_ascii() {
+        return false;
+    }
+
+    let mut seen = [false; 256];
+    let mut distinct = 0usize;
+    let mut letters = 0usize;
+
+    for &byte in label.as_bytes() {
+        if !seen[byte as usize] {
+            seen[byte as usize] = true;
+            distinct += 1;
+        }
+        if byte.is_ascii_alphabetic() {
+            letters += 1;
+        }
+    }
+
+    // 1. Pure non-letter label. Real SLDs carry letters.
+    if letters == 0 {
+        return true;
+    }
+
+    // 2. Long monotonic run — the signature of counter padding.
+    if longest_run(label) >= LOW_ENTROPY_MAX_RUN {
+        return true;
+    }
+
+    let length = label.len();
+    if distinct as f32 / length as f32 > LOW_ENTROPY_DISTINCT_RATIO {
+        return false;
+    }
+
+    // 3. Repetition plus digit/symbol domination.
+    if (length - letters) as f32 / length as f32 >= LOW_ENTROPY_NON_LETTER_RATIO {
+        return true;
+    }
+
+    // 4. Long all-letter label drawn from a handful of characters.
+    letters == length
+        && distinct <= LOW_ENTROPY_ALPHA_MAX_DISTINCT
+        && length >= LOW_ENTROPY_ALPHA_MIN_LENGTH
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,5 +365,118 @@ mod tests {
                 domain
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Low-entropy detection (repetitive / counter-padded DGA families)
+    // -----------------------------------------------------------------------
+
+    /// The default `low_entropy_min_length`.
+    const MIN: usize = 8;
+
+    #[test]
+    fn longest_run_counts_identical_bytes() {
+        assert_eq!(longest_run(""), 0);
+        assert_eq!(longest_run("a"), 1);
+        assert_eq!(longest_run("abc"), 1);
+        assert_eq!(longest_run("aabbbcc"), 3);
+        assert_eq!(longest_run("000000000shop"), 9);
+        assert_eq!(longest_run("shop000000000"), 9);
+    }
+
+    #[test]
+    fn low_entropy_skips_labels_below_min_length() {
+        assert!(!is_low_entropy_suspicious("", MIN));
+        assert!(!is_low_entropy_suspicious("aaaa", MIN));
+        assert!(!is_low_entropy_suspicious("0000", MIN));
+        assert!(!is_low_entropy_suspicious("1234567", MIN));
+    }
+
+    #[test]
+    fn low_entropy_flags_pure_non_letter_labels() {
+        assert!(is_low_entropy_suspicious("0000000000000000001", MIN));
+        assert!(is_low_entropy_suspicious("00000000000", MIN));
+        assert!(is_low_entropy_suspicious("11111111111111", MIN));
+        assert!(is_low_entropy_suspicious("1234567890", MIN));
+        // The `0-0-0-0-…` and all-zero-UUID shapes seen in real traffic.
+        assert!(is_low_entropy_suspicious(
+            "0-0-0-0-0-0-0-0-0-0-0-0-0-10-0-0-0-0-0-0-0-0-0-0-0-0-0",
+            MIN
+        ));
+        assert!(is_low_entropy_suspicious(
+            "00000000-0000-0000-0000-000000000000",
+            MIN
+        ));
+    }
+
+    #[test]
+    fn low_entropy_flags_long_single_character_runs() {
+        // Counter padding on either side of a seed word.
+        assert!(is_low_entropy_suspicious("000000000shop", MIN));
+        assert!(is_low_entropy_suspicious("shop000000000", MIN));
+        assert!(is_low_entropy_suspicious("aaaaaaaaaaaaaaaa", MIN));
+    }
+
+    #[test]
+    fn low_entropy_flags_repetition_with_symbol_domination() {
+        assert!(is_low_entropy_suspicious("aaaa1111----", MIN));
+    }
+
+    #[test]
+    fn low_entropy_flags_long_all_letter_repetition() {
+        assert!(is_low_entropy_suspicious("aaaabbbbccccdddd", MIN));
+    }
+
+    #[test]
+    fn low_entropy_allows_short_all_letter_repetition() {
+        // Below the 16-byte rule: could be a generated short slug.
+        assert!(!is_low_entropy_suspicious("aaaabbbb", MIN));
+        assert!(!is_low_entropy_suspicious("aabbccdd", MIN));
+    }
+
+    #[test]
+    fn low_entropy_allows_normal_second_level_domains() {
+        let legitimate = [
+            "cloudflare",
+            "microsoft",
+            "wikipedia",
+            "appsflyersdk",
+            "wixstudio",
+            "e-commerce-shop",
+            "my-site-2024",
+        ];
+        for label in legitimate {
+            assert!(
+                !is_low_entropy_suspicious(label, MIN),
+                "{} must not be flagged",
+                label
+            );
+        }
+    }
+
+    #[test]
+    fn low_entropy_leaves_high_entropy_labels_to_the_shannon_check() {
+        // Diverse character sets are the other detector's job; flagging them
+        // here would double-count the same domain.
+        for label in ["a1b2c3d4e5", "abcd1234ef", "x9y8z7w6v5", "xvbrtzqk"] {
+            assert!(
+                !is_low_entropy_suspicious(label, MIN),
+                "{} must not be flagged",
+                label
+            );
+        }
+    }
+
+    #[test]
+    fn low_entropy_ignores_non_ascii_labels() {
+        // Byte ratios are meaningless on multi-byte input; the IDN check owns
+        // these names.
+        assert!(!is_low_entropy_suspicious("ééééééééééééééééé", MIN));
+    }
+
+    #[test]
+    fn low_entropy_min_length_is_honoured() {
+        assert!(!is_low_entropy_suspicious("12345678", 9));
+        assert!(is_low_entropy_suspicious("12345678", 8));
     }
 }

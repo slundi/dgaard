@@ -1,6 +1,9 @@
 use crate::config::Config;
 use crate::dga::{
-    entropy::{calculate_entropy, calculate_entropy_fast, is_consonant_suspicious},
+    entropy::{
+        calculate_entropy, calculate_entropy_fast, is_consonant_suspicious,
+        is_low_entropy_suspicious,
+    },
     ngram::{NgramLanguage, ngram_check_embedded},
 };
 use crate::filter::engine::FilterEngine;
@@ -47,7 +50,8 @@ pub fn check_lexical(domain: &str, filter: &FilterEngine) -> Option<BlockReason>
     None
 }
 
-/// Check DGA heuristics: entropy, consonant clustering, n-gram models.
+/// Check DGA heuristics: low entropy, entropy, consonant clustering, n-gram
+/// models.
 pub fn check_dga_heuristics(domain: &str, config: &Config) -> Option<BlockReason> {
     let intel = &config.security.intelligence;
 
@@ -62,11 +66,17 @@ pub fn check_dga_heuristics(domain: &str, config: &Config) -> Option<BlockReason
 
     let sld = parts[parts.len() - 2];
 
+    // 1. Low-entropy check. Gated on its own minimum length, so it runs even
+    //    when the SLD is too short for the entropy and n-gram checks below.
+    if intel.detect_low_entropy && is_low_entropy_suspicious(sld, intel.low_entropy_min_length) {
+        return Some(BlockReason::LowEntropy(sld.len()));
+    }
+
     if sld.len() < intel.min_word_length {
         return None;
     }
 
-    // 1. Shannon entropy check
+    // 2. Shannon entropy check
     let entropy = if intel.entropy_fast {
         calculate_entropy_fast(sld)
     } else {
@@ -76,7 +86,7 @@ pub fn check_dga_heuristics(domain: &str, config: &Config) -> Option<BlockReason
         return Some(BlockReason::HighEntropy(entropy));
     }
 
-    // 2. Consonant clustering check
+    // 3. Consonant clustering check
     if is_consonant_suspicious(
         sld,
         intel.consonant_ratio_threshold,
@@ -85,7 +95,7 @@ pub fn check_dga_heuristics(domain: &str, config: &Config) -> Option<BlockReason
         return Some(BlockReason::LexicalAnalysis);
     }
 
-    // 3. N-gram language model check
+    // 4. N-gram language model check
     if intel.use_ngram_model && intel.ngram_use_embedded {
         let languages: Vec<NgramLanguage> = intel
             .ngram_embedded_languages
@@ -180,5 +190,50 @@ mod tests {
     fn test_check_lexical_disabled() {
         let engine = create_test_engine(&[], &[], &[]);
         assert!(check_lexical("casino.com", &engine).is_none());
+    }
+
+    #[test]
+    fn check_dga_heuristics_flags_counter_padded_sld() {
+        let config = Config::default();
+        assert!(matches!(
+            check_dga_heuristics("0000000000000000001.com", &config),
+            Some(BlockReason::LowEntropy(19))
+        ));
+        assert!(matches!(
+            check_dga_heuristics("000000000shop.net", &config),
+            Some(BlockReason::LowEntropy(13))
+        ));
+    }
+
+    #[test]
+    fn check_dga_heuristics_low_entropy_can_be_disabled() {
+        let mut config = Config::default();
+        config.security.intelligence.detect_low_entropy = false;
+        assert!(check_dga_heuristics("0000000000000000001.com", &config).is_none());
+    }
+
+    #[test]
+    fn check_dga_heuristics_low_entropy_honours_its_own_min_length() {
+        let mut config = Config::default();
+        config.security.intelligence.low_entropy_min_length = 32;
+        assert!(check_dga_heuristics("0000000000000000001.com", &config).is_none());
+    }
+
+    #[test]
+    fn check_dga_heuristics_low_entropy_leaves_normal_domains_alone() {
+        // Matched on the variant rather than `is_none`: with the default
+        // `consonant_ratio_threshold` of 0.6 some of these already trip the
+        // (unrelated) consonant rule.
+        let config = Config::default();
+        for domain in ["cloudflare.com", "my-site-2024.org", "wikipedia.org"] {
+            assert!(
+                !matches!(
+                    check_dga_heuristics(domain, &config),
+                    Some(BlockReason::LowEntropy(_))
+                ),
+                "{} must not be flagged as low-entropy",
+                domain
+            );
+        }
     }
 }

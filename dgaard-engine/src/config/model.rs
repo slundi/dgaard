@@ -256,6 +256,22 @@ pub struct IntelligenceConfig {
     /// applied.  Short labels like `t.co` are skipped to avoid false positives.
     pub min_word_length: usize,
 
+    /// Detect repetitive / counter-padded labels (`0000000000000000001`,
+    /// `0-0-0-0-0-0-0-0`, `aaaaaaaaaaaaaaaa`). Shannon entropy scores these
+    /// *low*, so [`entropy_threshold`] never fires on them.
+    ///
+    /// Known false-positive class: all-digit SLDs of
+    /// [`low_entropy_min_length`] bytes or more. Set to `false` if you serve
+    /// users who rely on numeric domains.
+    /// Default: `true`.
+    pub detect_low_entropy: bool,
+
+    /// Minimum SLD length (in bytes) before the low-entropy check applies.
+    /// Separate from [`min_word_length`] so the repetition rules can be tuned
+    /// without moving the entropy / N-gram gate.
+    /// Default: 8.
+    pub low_entropy_min_length: usize,
+
     /// Maximum ratio of consonants to total characters before a label is
     /// considered unpronounceable / machine-generated (e.g., `bcdfgh`).
     pub consonant_ratio_threshold: f32,
@@ -314,6 +330,8 @@ impl Default for IntelligenceConfig {
             entropy_threshold: 4.0,
             entropy_fast: true,
             min_word_length: 8,
+            detect_low_entropy: true,
+            low_entropy_min_length: 8,
             consonant_ratio_threshold: 0.6,
             max_consonant_sequence: 5,
             use_ngram_model: false,
@@ -1437,6 +1455,8 @@ mod tests {
         assert!((i.entropy_threshold - 4.0).abs() < f32::EPSILON);
         assert!(i.entropy_fast);
         assert_eq!(i.min_word_length, 8);
+        assert!(i.detect_low_entropy);
+        assert_eq!(i.low_entropy_min_length, 8);
         assert!((i.consonant_ratio_threshold - 0.6).abs() < f32::EPSILON);
         assert_eq!(i.max_consonant_sequence, 5);
         assert!(!i.use_ngram_model);

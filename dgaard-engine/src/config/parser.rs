@@ -474,6 +474,12 @@ fn parse_intelligence(
     if let Some(n) = get_typed_integer::<usize>(table, "min_word_length")? {
         cfg.min_word_length = n;
     }
+    if let Some(b) = get_bool(table, "detect_low_entropy")? {
+        cfg.detect_low_entropy = b;
+    }
+    if let Some(n) = get_typed_integer::<usize>(table, "low_entropy_min_length")? {
+        cfg.low_entropy_min_length = n;
+    }
     if let Some(f) = get_float(table, "consonant_ratio_threshold")? {
         cfg.consonant_ratio_threshold = f;
     }
