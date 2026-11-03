@@ -54,13 +54,14 @@ pipeline = [
 ]
 
 [server.runtime]
-# “auto” uses the number of logical CPU cores.
+# “auto” uses the number of logical CPU cores (recommended for desktop/server).
 # An integer (e.g., 2) forces a specific number of threads.
-worker_threads = 1
+# On memory-constrained targets such as OpenWrt, pin this to 1.
+worker_threads = "auto"
 
-# Stack size per thread (in bytes).
-# On OpenWrt, reducing this to 2MB (2 * 1024 * 1024) saves RAM.
-stack_size = 2097152
+# Stack size per thread (in bytes). 8 MiB matches the usual desktop/server default.
+# On OpenWrt, reducing this to 2 MiB (2 * 1024 * 1024 = 2097152) saves RAM.
+stack_size = 8388608
 
 # Capacity of the request queue per worker before rejecting requests.
 max_blocking_threads = 512
@@ -102,8 +103,9 @@ max_answers_per_query = 10
 # since it avoids loading a blacklist of millions of records in RAM.
 enabled = true
 
-# Banned keywords (Full labels or separated by hyphens)
-banned_keywords = ["porno", "casino", "drogue", "bet", "sex"]
+# Banned keywords (Full labels or separated by hyphens).
+# These are examples — tailor them to the language(s) you want to filter.
+banned_keywords = ["casino", "gambling", "porn", "sex"]
 
 # If true, the keyword must be a complete label (safer)
 # If false, a simple .contains() is sufficient (more aggressive)
@@ -119,6 +121,14 @@ entropy_threshold = 4.0
 # Fast mode uses zero heap allocation, ideal for OpenWrt/embedded.
 entropy_fast = true
 min_word_length = 8
+
+# Low-entropy detection: repetitive / counter-padded labels such as
+# 0000000000000000001, 0-0-0-0-0-0-0-0 or aaaaaaaaaaaaaaaa. Shannon entropy
+# scores these *low*, so entropy_threshold never fires on them.
+# Known false positives: all-digit SLDs of low_entropy_min_length bytes or
+# more. Set detect_low_entropy = false if your users rely on numeric domains.
+detect_low_entropy = true
+low_entropy_min_length = 8
 
 # Consonant clustering detection
 # Ratio threshold (e.g., 0.6 blocks domains with >60% consonants like "bcdfgh")
@@ -143,10 +153,11 @@ ngram_use_embedded = true
 
 # Languages for embedded mode (used when ngram_use_embedded = true)
 # Supported: "english", "french", "german", "spanish", "italian"
-ngram_embedded_languages = ["english", "french"]
+# Add the language(s) spoken by your users to avoid false positives.
+ngram_embedded_languages = ["english"]
 
 # External model files (used when ngram_use_embedded = false)
-ngram_models = ["/etc/dgaard/models/english.bin", "/etc/dgaard/models/french.bin"]
+ngram_models = ["/etc/dgaard/models/english.bin"]
 
 # Log-probability threshold (domains scoring below this in ALL models are blocked)
 # Typical range: -6.0 (strict) to -3.0 (lenient). Default: -4.0
@@ -295,42 +306,16 @@ ttl_remaining_trigger_secs = 30
 # A non-canonical entry (".com" or "COM") aborts startup with an error.
 # If not empty, only these TLDs are resolved.
 # allow_only = ["com", "net", "org", "io"]
-# Block high-risk TLDs common in malware/DGA
+
+# Block high-risk TLDs common in malware/DGA.
+# This is a short generic starting point — extend it to suit your threat model.
 exclude = ["top", "xyz", "bid", "country", "stream", "gdn"]
 
-# Conditional blocking: blocks if it contains a banned_keyword AND this TLD
-suspicious_tlds = [
-  "biz",
-  "bible",
-  "top",
-  "su",
-  "li",
-  "es",
-  "sbs",
-  "cfd",
-  "ru",
-  "pub",
-  "so",
-  "icu",
-  "re",
-  "ua",
-  "online",
-  "ro",
-  "click",
-  "ar",
-  "vip",
-  "xin",
-  "cn",
-  "xyz",
-  "bond",
-  "cc",
-  "win",
-  "help",
-  "support",
-  "quest",
-  "buzz",
-  "fyi",
-]
+# Conditional blocking: blocks if it contains a banned_keyword AND this TLD.
+# The list below is a generic example. Which country-code TLDs (ccTLDs such as
+# "ru", "cn", "su", "es", "ro", ...) you treat as suspicious is a regional
+# choice — adjust it for the countries you do (or do not) expect traffic from.
+suspicious_tlds = ["biz", "top", "xyz", "sbs", "cfd", "online", "click", "vip", "buzz"]
 
 # DNS Rebinding Shield configuration.
 #
@@ -475,32 +460,26 @@ max_label_length = 60
 # This file should be updated daily via cron
 nrd_list_path = "/tmp/nrd_daily.txt"
 
-# Static blocklists (Support for multiple files)
+# Static blocklists (Support for multiple files).
 # You can get some here: https://filterlists.com/
+# The URLs below are generic, language-neutral examples. Add region- or
+# language-specific lists (e.g. a "liste_fr" for French) in your own config.
 blacklists = [
   # "/etc/dgaard/lists/adaway.txt",
   # "/etc/dgaard/lists/malware_domains.txt",
-  "https://raw.githubusercontent.com/Perflyst/PiHoleBlocklist/refs/heads/master/SmartTV.txt",
+
+  # ads / trackers
   "https://pgl.yoyo.org/as/serverlist.php?hostformat=adblock;showintro=1&mimetype=plaintext",
+  "https://easylist.to/easylist/easylist.txt",
   "https://filters.adtidy.org/extension/ublock/filters/11.txt",
-  # "https://easylist.to/easylist/easylist.txt",
-  "https://easylist-downloads.adblockplus.org/liste_ar+liste_fr+easylist.txt",
 
-  # annoyances
+  # annoyances / widgets / cookie notices
   "https://filters.adtidy.org/extension/ublock/filters/14.txt",
-  # "https://easylist-downloads.adblockplus.org/fanboy-annoyance.txt"
-  # "https://fanboy.co.nz/enhancedstats.txt"
-
-  # widgets
   "https://filters.adtidy.org/windows/filters/22.txt",
-
-  # cookie notice
   "https://www.i-dont-care-about-cookies.eu/abp/",
 
   # privacy
   "https://filters.adtidy.org/extension/ublock/filters/118_optimized.txt",
-  # "https://filters.adtidy.org/extension/ublock/filters/3.txt"
-  # "https://filters.adtidy.org/windows/filters/17.txt"
 
   # malware
   "https://raw.githubusercontent.com/DandelionSprout/adfilt/master/Alternate%20versions%20Anti-Malware%20List/AntiMalwareAdGuard.txt",
