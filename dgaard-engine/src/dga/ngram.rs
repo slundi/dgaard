@@ -798,9 +798,9 @@ mod tests {
         f.write_all(&[2u8]).unwrap(); // bigrams
         f.write_all(&10u32.to_le_bytes()).unwrap(); // claims 10 entries
         // Write only 2 entries instead of 10
-        f.write_all(&[b'a', b'b']).unwrap();
+        f.write_all(b"ab").unwrap();
         f.write_all(&(-1.0f32).to_le_bytes()).unwrap();
-        f.write_all(&[b'b', b'c']).unwrap();
+        f.write_all(b"bc").unwrap();
         f.write_all(&(-2.0f32).to_le_bytes()).unwrap();
         drop(f);
         let model = ExternalNgramModel::load_from_file(&path);

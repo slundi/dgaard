@@ -1,6 +1,6 @@
 [package]
 name = "dgaard-engine"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Sébastien LUNDI"]
 categories = ["network-programming", "text-processing"]
 edition = "2024"

@@ -7,13 +7,9 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # flag crates we depend on directly.
 unmaintained = "all"
 yanked = "warn"
-notice = "warn"
 ignore = []
 
 [licenses]
-# `unlicensed` was removed in cargo-deny 0.16: a crate whose license is not in
-# `allow` (including no license at all) is denied.
-unlicensed = "deny"
 # Adjust this list to match the licenses your project accepts.
 allow = [
   "MIT",
