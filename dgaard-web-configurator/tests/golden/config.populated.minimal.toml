@@ -60,6 +60,10 @@ list_path = ["/etc/dgaard/lists/honeypot.txt"]
 root_hints_path = "/etc/dgaard/root.hints"
 ns_concurrency = "staggered"
 
+[log]
+queries = "suspicious"
+summary_interval_secs = 3600
+
 [tld]
 exclude = ["top", "xyz", "bid", "country", "stream", "gdn"]
 suspicious_tlds = ["biz", "click", "vip"]

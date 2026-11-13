@@ -1,7 +1,9 @@
 use crate::CONFIG;
-use crate::model::StatBlockReason;
+use crate::config::QueryLogLevel;
+use crate::model::{StatAction, StatBlockReason, StatEvent};
 use crate::stats::StatsReceiver;
 use lru::LruCache;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use tokio::sync::watch;
 
@@ -12,12 +14,18 @@ const DOMAIN_MAP_CAP: usize = 100_000;
 /// bound, since drops only happen on actual write errors.
 const MAX_CLIENTS: usize = 8;
 
+/// Cap on distinct clients and blocked domains tracked per summary window,
+/// so a scan or a burst of random subdomains cannot grow the maps without
+/// bound between two summary lines.
+const SUMMARY_TRACK_CAP: usize = 4096;
+
 /// Stats collector task that receives events and handles logging/streaming.
 ///
 /// This task:
 /// 1. Receives StatMessage events from DNS handlers via MPSC channel
-/// 2. Logs block events to stdout (basic CLI logger)
-/// 3. Streams events to connected Unix socket clients
+/// 2. Logs per-query verdicts to stdout, filtered by `[log] queries`
+/// 3. Prints a `[SUMMARY]` line every `[log] summary_interval_secs`
+/// 4. Streams events to connected Unix socket clients
 pub(crate) async fn stats_collector_task(
     mut receiver: StatsReceiver,
     mut shutdown_rx: watch::Receiver<bool>,
@@ -27,6 +35,19 @@ pub(crate) async fn stats_collector_task(
     // Track domain mappings for logging; capped to avoid unbounded growth.
     let mut domain_map: LruCache<u64, String> =
         LruCache::new(NonZeroUsize::new(DOMAIN_MAP_CAP).unwrap());
+
+    let log_config = CONFIG.load().log.clone();
+    let mut query_log = QueryLog::new(log_config.queries);
+
+    // The interval is fixed at startup; the first tick fires one full period
+    // after boot rather than immediately (an empty summary is noise).
+    let summary_secs = log_config.summary_interval_secs;
+    let mut summary_tick = (summary_secs > 0).then(|| {
+        let period = std::time::Duration::from_secs(u64::from(summary_secs));
+        let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        tick
+    });
 
     // Connected socket clients. Capped to MAX_CLIENTS so a misbehaving
     // dashboard that reconnects in a tight loop cannot grow this vec
@@ -58,7 +79,8 @@ pub(crate) async fn stats_collector_task(
                 if *shutdown_rx.borrow() {
                     // Drain remaining messages before exit
                     while let Ok(msg) = receiver.try_recv() {
-                        process_stat_message(&msg, &mut domain_map, &mut clients).await;
+                        process_stat_message(&msg, &mut domain_map, &mut clients, &mut query_log)
+                            .await;
                     }
                     // Clean up socket file in the blocking pool to avoid
                     // stalling the runtime on slow filesystems.
@@ -100,10 +122,28 @@ pub(crate) async fn stats_collector_task(
                 }
             }
 
+            // Periodic summary. Polled before `recv` so a busy channel under
+            // `biased` cannot starve it.
+            _ = async {
+                match summary_tick.as_mut() {
+                    Some(tick) => {
+                        tick.tick().await;
+                    }
+                    None => std::future::pending().await,
+                }
+            } => {
+                println!("{}", query_log.summary.take_line(summary_secs, &domain_map));
+            }
+
             // Process stat messages
             msg = receiver.recv() => {
                 match msg {
-                    Some(msg) => process_stat_message(&msg, &mut domain_map, &mut clients).await,
+                    Some(msg) => {
+                        // Per-query level is hot-reloadable via SIGHUP.
+                        query_log.level = CONFIG.load().log.queries;
+                        process_stat_message(&msg, &mut domain_map, &mut clients, &mut query_log)
+                            .await
+                    }
                     None => break, // All senders dropped
                 }
             }
@@ -166,13 +206,145 @@ pub(crate) async fn send_domain_mappings_to_client(
     clients.push(new_client);
 }
 
+/// Stdout logging state owned by the collector task.
+pub(crate) struct QueryLog {
+    /// Per-query verdicts to print; refreshed from `CONFIG` on every event.
+    pub(crate) level: QueryLogLevel,
+    /// Counters for the periodic `[SUMMARY]` line.
+    pub(crate) summary: TrafficSummary,
+}
+
+impl QueryLog {
+    pub(crate) fn new(level: QueryLogLevel) -> Self {
+        Self {
+            level,
+            summary: TrafficSummary::default(),
+        }
+    }
+}
+
+/// Per-window traffic counters behind the periodic `[SUMMARY]` line.
+///
+/// Fed from the stats channel, so events dropped under backpressure (see
+/// `stats_events_dropped_total`) are missing here too.
+#[derive(Default)]
+pub(crate) struct TrafficSummary {
+    queries: u64,
+    blocked: u64,
+    suspicious: u64,
+    clients: HashSet<[u8; 16]>,
+    blocked_domains: HashMap<u64, u32>,
+}
+
+impl TrafficSummary {
+    pub(crate) fn record(&mut self, event: &StatEvent) {
+        self.queries += 1;
+        match event.action {
+            StatAction::Blocked(_) => {
+                self.blocked += 1;
+                let tracked = self.blocked_domains.len();
+                match self.blocked_domains.entry(event.domain_hash) {
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        *entry.get_mut() += 1;
+                    }
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        if tracked < SUMMARY_TRACK_CAP {
+                            entry.insert(1);
+                        }
+                    }
+                }
+            }
+            StatAction::Suspicious(_) | StatAction::HighlySuspicious(_) => self.suspicious += 1,
+            StatAction::Allowed | StatAction::Proxied | StatAction::AllowedWithOverride => {}
+        }
+        if self.clients.len() < SUMMARY_TRACK_CAP {
+            self.clients.insert(event.client_ip);
+        }
+    }
+
+    /// Render the summary for the elapsed window and reset the counters.
+    ///
+    /// The maps are dropped rather than cleared so a one-off burst does not
+    /// pin its peak allocation for the rest of the process lifetime.
+    pub(crate) fn take_line(
+        &mut self,
+        window_secs: u32,
+        domain_map: &LruCache<u64, String>,
+    ) -> String {
+        use std::fmt::Write;
+
+        let window = std::mem::take(self);
+        let blocked_pct = if window.queries == 0 {
+            0.0
+        } else {
+            window.blocked as f64 * 100.0 / window.queries as f64
+        };
+        let clients_capped = if window.clients.len() >= SUMMARY_TRACK_CAP {
+            "+"
+        } else {
+            ""
+        };
+        let mut line = format!(
+            "[SUMMARY] last {window_secs}s: queries={} blocked={} ({blocked_pct:.1}%) suspicious={} clients={}{clients_capped}",
+            window.queries,
+            window.blocked,
+            window.suspicious,
+            window.clients.len(),
+        );
+        if let Some((hash, count)) = window
+            .blocked_domains
+            .iter()
+            .max_by_key(|(_, count)| **count)
+        {
+            let domain = domain_map.peek(hash).map_or("<unknown>", String::as_str);
+            let _ = write!(line, " top_blocked={domain} ({count})");
+        }
+        line
+    }
+}
+
+/// Format the stdout line for one event, or `None` when `level` filters it
+/// out. The domain lookup and IP formatting only happen for printed lines.
+pub(crate) fn query_log_line(
+    event: &StatEvent,
+    domain_map: &mut LruCache<u64, String>,
+    level: QueryLogLevel,
+) -> Option<String> {
+    let (min_level, tag, reason) = match &event.action {
+        StatAction::Blocked(reason) => (QueryLogLevel::Blocked, "BLOCK", Some(reason)),
+        StatAction::HighlySuspicious(reason) => {
+            (QueryLogLevel::Suspicious, "SUSPICIOUS:HIGH", Some(reason))
+        }
+        StatAction::Suspicious(reason) => (QueryLogLevel::Suspicious, "SUSPICIOUS", Some(reason)),
+        StatAction::Allowed => (QueryLogLevel::All, "ALLOW", None),
+        StatAction::Proxied => (QueryLogLevel::All, "PROXY", None),
+        StatAction::AllowedWithOverride => (QueryLogLevel::All, "OVERRIDE", None),
+    };
+    if level < min_level {
+        return None;
+    }
+
+    let domain = domain_map
+        .get(&event.domain_hash)
+        .map_or("<unknown>", String::as_str);
+    let client_ip = format_client_ip(&event.client_ip);
+    Some(match reason {
+        Some(reason) => format!(
+            "[{tag}] {client_ip} -> {domain} ({})",
+            stat_block_reason_str(reason)
+        ),
+        None => format!("[{tag}] {client_ip} -> {domain}"),
+    })
+}
+
 /// Process a single stat message: log to stdout and stream to connected clients.
 pub(crate) async fn process_stat_message(
     msg: &crate::model::StatMessage,
     domain_map: &mut LruCache<u64, String>,
     clients: &mut Vec<tokio::net::UnixStream>,
+    query_log: &mut QueryLog,
 ) {
-    use crate::model::{StatAction, StatMessage};
+    use crate::model::StatMessage;
     use tokio::io::AsyncWriteExt;
 
     match msg {
@@ -180,42 +352,9 @@ pub(crate) async fn process_stat_message(
             domain_map.put(*hash, domain.clone());
         }
         StatMessage::Event(event) => {
-            // Get domain name from mapping (or use hash as fallback)
-            let domain = domain_map
-                .get(&event.domain_hash)
-                .map(|s| s.as_str())
-                .unwrap_or("<unknown>");
-
-            // Format client IP
-            let client_ip = format_client_ip(&event.client_ip);
-
-            // Log based on action
-            match &event.action {
-                StatAction::Blocked(reason) => {
-                    println!(
-                        "[BLOCK] {} -> {} ({})",
-                        client_ip,
-                        domain,
-                        stat_block_reason_str(reason)
-                    );
-                }
-                StatAction::HighlySuspicious(reason) => {
-                    let reason_str = stat_block_reason_str(reason);
-                    println!(
-                        "[SUSPICIOUS:HIGH] {} -> {} ({})",
-                        client_ip, domain, reason_str
-                    );
-                }
-                StatAction::Suspicious(reason) => {
-                    let reason_str = stat_block_reason_str(reason);
-                    println!("[SUSPICIOUS] {} -> {} ({})", client_ip, domain, reason_str);
-                }
-                StatAction::Allowed => {
-                    // Only log in verbose/debug mode (currently silent)
-                }
-                StatAction::Proxied | StatAction::AllowedWithOverride => {
-                    // Only log in verbose/debug mode (currently silent)
-                }
+            query_log.summary.record(event);
+            if let Some(line) = query_log_line(event, domain_map, query_log.level) {
+                println!("{line}");
             }
         }
     }
@@ -414,6 +553,220 @@ mod tests {
         LruCache::new(NonZeroUsize::new(1_000).unwrap())
     }
 
+    fn test_log() -> QueryLog {
+        QueryLog::new(QueryLogLevel::Blocked)
+    }
+
+    fn event_from(client: [u8; 4], domain_hash: u64, action: StatAction) -> StatEvent {
+        StatEvent {
+            timestamp: 0,
+            domain_hash,
+            client_ip: std::net::Ipv4Addr::from(client).to_ipv6_mapped().octets(),
+            action,
+        }
+    }
+
+    fn blocked() -> StatAction {
+        StatAction::Blocked(StatBlockReason::STATIC_BLACKLIST)
+    }
+
+    // ── query_log_line ───────────────────────────────────────────────────────
+
+    #[test]
+    fn query_log_line_formats_blocked_with_reason() {
+        let mut domain_map = test_map();
+        domain_map.put(7, "ads.example".to_string());
+        let event = event_from([192, 168, 1, 20], 7, blocked());
+
+        let line = query_log_line(&event, &mut domain_map, QueryLogLevel::Blocked);
+        assert_eq!(
+            line.as_deref(),
+            Some("[BLOCK] 192.168.1.20 -> ads.example (blocklist)")
+        );
+    }
+
+    #[test]
+    fn query_log_line_formats_pass_actions_without_reason() {
+        let mut domain_map = test_map();
+        domain_map.put(1, "ok.example".to_string());
+        for (action, tag) in [
+            (StatAction::Allowed, "ALLOW"),
+            (StatAction::Proxied, "PROXY"),
+            (StatAction::AllowedWithOverride, "OVERRIDE"),
+        ] {
+            let event = event_from([10, 0, 0, 1], 1, action);
+            let line = query_log_line(&event, &mut domain_map, QueryLogLevel::All);
+            assert_eq!(line, Some(format!("[{tag}] 10.0.0.1 -> ok.example")));
+        }
+    }
+
+    #[test]
+    fn query_log_line_unknown_domain_falls_back() {
+        let mut domain_map = test_map();
+        let event = event_from([10, 0, 0, 1], 404, blocked());
+        let line = query_log_line(&event, &mut domain_map, QueryLogLevel::All).unwrap();
+        assert!(line.contains("<unknown>"), "{line}");
+    }
+
+    #[test]
+    fn query_log_line_respects_cumulative_levels() {
+        let mut domain_map = test_map();
+        let suspicious = StatAction::Suspicious(StatBlockReason::LEXICAL_ANALYSIS);
+        let highly = StatAction::HighlySuspicious(StatBlockReason::HIGH_ENTROPY);
+
+        // (action, lowest level that prints it)
+        let cases = [
+            (suspicious, QueryLogLevel::Suspicious),
+            (highly, QueryLogLevel::Suspicious),
+            (blocked(), QueryLogLevel::Blocked),
+            (StatAction::Allowed, QueryLogLevel::All),
+            (StatAction::Proxied, QueryLogLevel::All),
+            (StatAction::AllowedWithOverride, QueryLogLevel::All),
+        ];
+        let levels = [
+            QueryLogLevel::Off,
+            QueryLogLevel::Suspicious,
+            QueryLogLevel::Blocked,
+            QueryLogLevel::All,
+        ];
+        for (action, min_level) in cases {
+            for level in levels {
+                let event = event_from([10, 0, 0, 1], 1, action);
+                let printed = query_log_line(&event, &mut domain_map, level).is_some();
+                assert_eq!(printed, level >= min_level, "{action:?} at level {level:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn query_log_line_tags_suspicious_levels() {
+        let mut domain_map = test_map();
+        let high = event_from(
+            [10, 0, 0, 1],
+            1,
+            StatAction::HighlySuspicious(StatBlockReason::HIGH_ENTROPY),
+        );
+        let low = event_from(
+            [10, 0, 0, 1],
+            1,
+            StatAction::Suspicious(StatBlockReason::HIGH_ENTROPY),
+        );
+        let high_line = query_log_line(&high, &mut domain_map, QueryLogLevel::All).unwrap();
+        let low_line = query_log_line(&low, &mut domain_map, QueryLogLevel::All).unwrap();
+        assert!(high_line.starts_with("[SUSPICIOUS:HIGH] "), "{high_line}");
+        assert!(low_line.starts_with("[SUSPICIOUS] "), "{low_line}");
+        assert!(low_line.ends_with("(dga)"), "{low_line}");
+    }
+
+    // ── TrafficSummary ───────────────────────────────────────────────────────
+
+    #[test]
+    fn summary_empty_window() {
+        let mut summary = TrafficSummary::default();
+        assert_eq!(
+            summary.take_line(900, &test_map()),
+            "[SUMMARY] last 900s: queries=0 blocked=0 (0.0%) suspicious=0 clients=0"
+        );
+    }
+
+    #[test]
+    fn summary_counts_and_top_blocked() {
+        let mut domain_map = test_map();
+        domain_map.put(1, "ads.example".to_string());
+        domain_map.put(2, "tracker.example".to_string());
+
+        let mut summary = TrafficSummary::default();
+        for _ in 0..3 {
+            summary.record(&event_from([10, 0, 0, 1], 1, blocked()));
+        }
+        summary.record(&event_from([10, 0, 0, 2], 2, blocked()));
+        summary.record(&event_from(
+            [10, 0, 0, 2],
+            3,
+            StatAction::Suspicious(StatBlockReason::HIGH_ENTROPY),
+        ));
+        summary.record(&event_from(
+            [10, 0, 0, 3],
+            4,
+            StatAction::HighlySuspicious(StatBlockReason::HIGH_ENTROPY),
+        ));
+        for _ in 0..2 {
+            summary.record(&event_from([10, 0, 0, 3], 5, StatAction::Proxied));
+        }
+
+        assert_eq!(
+            summary.take_line(60, &domain_map),
+            "[SUMMARY] last 60s: queries=8 blocked=4 (50.0%) suspicious=2 clients=3 \
+             top_blocked=ads.example (3)"
+        );
+    }
+
+    #[test]
+    fn summary_resets_after_take() {
+        let mut summary = TrafficSummary::default();
+        summary.record(&event_from([10, 0, 0, 1], 1, blocked()));
+        let _ = summary.take_line(60, &test_map());
+
+        let line = summary.take_line(60, &test_map());
+        assert!(line.contains("queries=0 blocked=0"), "{line}");
+        assert!(!line.contains("top_blocked"), "{line}");
+    }
+
+    #[test]
+    fn summary_top_blocked_unknown_when_mapping_evicted() {
+        let mut summary = TrafficSummary::default();
+        summary.record(&event_from([10, 0, 0, 1], 99, blocked()));
+        let line = summary.take_line(60, &test_map());
+        assert!(line.ends_with("top_blocked=<unknown> (1)"), "{line}");
+    }
+
+    #[test]
+    fn summary_tracking_is_capped() {
+        let mut summary = TrafficSummary::default();
+        let total = SUMMARY_TRACK_CAP as u32 + 10;
+        for index in 0..total {
+            let client = index.to_be_bytes();
+            summary.record(&event_from(client, u64::from(index), blocked()));
+        }
+        // A domain first seen after the cap is reached is not tracked …
+        summary.record(&event_from([1, 2, 3, 4], u64::from(total + 1), blocked()));
+        assert_eq!(summary.blocked_domains.len(), SUMMARY_TRACK_CAP);
+        assert!(!summary.blocked_domains.contains_key(&u64::from(total + 1)));
+        // … but an already-tracked one keeps counting.
+        summary.record(&event_from([1, 2, 3, 4], 0, blocked()));
+        assert_eq!(summary.blocked_domains[&0], 2);
+        assert_eq!(summary.clients.len(), SUMMARY_TRACK_CAP);
+
+        let line = summary.take_line(60, &test_map());
+        assert!(
+            line.contains(&format!("blocked={}", total + 2)),
+            "counters are not capped: {line}"
+        );
+        assert!(
+            line.contains(&format!("clients={SUMMARY_TRACK_CAP}+")),
+            "{line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_event_feeds_summary() {
+        let mut domain_map = test_map();
+        let mut clients = Vec::new();
+        let mut query_log = QueryLog::new(QueryLogLevel::Off);
+
+        let msg = StatMessage::Event(event_from([10, 0, 0, 1], 1, blocked()));
+        process_stat_message(&msg, &mut domain_map, &mut clients, &mut query_log).await;
+        let mapping = StatMessage::DomainMapping {
+            hash: 1,
+            domain: "ads.example".to_string(),
+        };
+        process_stat_message(&mapping, &mut domain_map, &mut clients, &mut query_log).await;
+
+        let line = query_log.summary.take_line(60, &domain_map);
+        assert!(line.contains("queries=1 blocked=1"), "{line}");
+        assert!(line.ends_with("top_blocked=ads.example (1)"), "{line}");
+    }
+
     #[tokio::test]
     async fn process_domain_mapping_populates_map() {
         let mut domain_map = test_map();
@@ -423,7 +776,7 @@ mod tests {
             hash: 42,
             domain: "example.com".to_string(),
         };
-        process_stat_message(&msg, &mut domain_map, &mut clients).await;
+        process_stat_message(&msg, &mut domain_map, &mut clients, &mut test_log()).await;
 
         assert_eq!(domain_map.get(&42), Some(&"example.com".to_string()));
         assert!(clients.is_empty());
@@ -445,7 +798,7 @@ mod tests {
         };
         let msg = StatMessage::Event(event);
         // Should not panic even though there are no socket clients
-        process_stat_message(&msg, &mut domain_map, &mut clients).await;
+        process_stat_message(&msg, &mut domain_map, &mut clients, &mut test_log()).await;
     }
 
     #[tokio::test]
@@ -459,7 +812,13 @@ mod tests {
             client_ip: [0u8; 16],
             action: StatAction::Allowed,
         };
-        process_stat_message(&StatMessage::Event(event), &mut domain_map, &mut clients).await;
+        process_stat_message(
+            &StatMessage::Event(event),
+            &mut domain_map,
+            &mut clients,
+            &mut test_log(),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -473,7 +832,7 @@ mod tests {
                 hash: i,
                 domain: format!("d{i}.example"),
             };
-            process_stat_message(&msg, &mut domain_map, &mut clients).await;
+            process_stat_message(&msg, &mut domain_map, &mut clients, &mut test_log()).await;
         }
 
         assert_eq!(domain_map.len(), cap, "map must not exceed capacity");

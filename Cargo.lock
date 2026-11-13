@@ -888,7 +888,7 @@ dependencies = [
 
 [[package]]
 name = "dgaard"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "aho-corasick",
  "arc-swap",
@@ -945,7 +945,7 @@ dependencies = [
 
 [[package]]
 name = "dgaard-engine"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "aho-corasick",
  "bitflags 2.13.2",

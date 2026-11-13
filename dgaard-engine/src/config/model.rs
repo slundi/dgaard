@@ -1320,6 +1320,52 @@ impl Default for PrefetchConfig {
 }
 
 // ---------------------------------------------------------------------------
+// [log]
+// ---------------------------------------------------------------------------
+
+/// Which per-query verdicts are printed to stdout.
+///
+/// Levels are cumulative and ordered by volume: each one prints everything
+/// the previous level prints, plus more.  On OpenWrt, procd forwards stdout
+/// to logd, whose ring buffer is small (64 KiB by default) — `All` can wrap
+/// it within minutes on a busy network.
+#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+pub enum QueryLogLevel {
+    /// No per-query lines.
+    Off,
+    /// Allowed queries the heuristics flagged as suspicious (rare).
+    Suspicious,
+    /// Plus every blocked query (ads, trackers, malware…).
+    #[default]
+    Blocked,
+    /// Plus every allowed, proxied and overridden query.
+    All,
+}
+
+/// Built-in logging for deployments that do not run `dgaard-monitor`.
+///
+/// Maps to `[log]` in the configuration file.
+#[derive(Debug, PartialEq, Clone)]
+pub struct LogConfig {
+    /// Per-query verdicts printed to stdout.  Hot-reloadable via SIGHUP.
+    pub queries: QueryLogLevel,
+
+    /// Print a one-line traffic summary every N seconds (queries, blocked
+    /// ratio, suspicious count, distinct clients, top blocked domain).
+    /// `0` disables it.  Read once at startup.
+    pub summary_interval_secs: u32,
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            queries: QueryLogLevel::default(),
+            summary_interval_secs: 900,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Overrides
 // ---------------------------------------------------------------------------
 
@@ -1371,6 +1417,8 @@ pub struct Config {
     pub cache: CacheConfig,
     /// Background prefetch worker.
     pub prefetch: PrefetchConfig,
+    /// Built-in stdout logging (per-query verdicts and periodic summary).
+    pub log: LogConfig,
     /// Inline domain overrides — bypass all filters and return a fixed IP.
     pub overrides: Vec<OverrideEntry>,
 }

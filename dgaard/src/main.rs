@@ -56,6 +56,13 @@ pub static RECURSIVE_DNSSEC: std::sync::LazyLock<dns::dnssec_chain::RecursiveDns
     std::sync::LazyLock::new(dns::dnssec_chain::RecursiveDnssecValidator::default);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // `log::` records (e.g. DNSSEC BOGUS in log-only mode) go to stderr.
+    // No timestamp: procd/logd and journald stamp each line themselves.
+    // Override with RUST_LOG (e.g. RUST_LOG=dgaard=debug).
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+        .format_timestamp(None)
+        .init();
+
     // rustls 0.23 requires an explicit process-level crypto provider.
     // hyper-rustls is built with the "ring" feature, so install that provider.
     rustls::crypto::ring::default_provider()

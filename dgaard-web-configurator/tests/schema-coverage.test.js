@@ -112,6 +112,7 @@ test('enum values match the strings the Rust parser accepts', () => {
     'security.dnssec.action': ['block', 'log'],
     'nxdomain_hunting.action': ['log', 'block_client'],
     'recursive.ns_concurrency': ['sequential', 'staggered', 'parallel'],
+    'log.queries': ['off', 'suspicious', 'blocked', 'all'],
   };
 
   for (const [path, values] of Object.entries(expectations)) {

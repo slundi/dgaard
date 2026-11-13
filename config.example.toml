@@ -299,6 +299,30 @@ queue_capacity = 256
 ttl_remaining_trigger_secs = 30
 
 # -----------------------------------------------------------------------------
+# Logging — built-in, no dgaard-monitor required
+# -----------------------------------------------------------------------------
+# Lines go to stdout. On OpenWrt the bundled procd init script forwards them
+# to the system log:  logread -e dgaard   (or  logread -f -e dgaard  to follow)
+#
+#   [BLOCK] 192.168.1.20 -> ads.example.com (blocklist)
+#   [SUSPICIOUS:HIGH] 192.168.1.31 -> xkqzvbw.top (dga)
+#   [SUMMARY] last 900s: queries=4210 blocked=612 (14.5%) suspicious=3 clients=7 top_blocked=ads.example.com (88)
+#
+# Internal warnings (e.g. DNSSEC BOGUS in log-only mode) go to stderr;
+# set RUST_LOG=info or RUST_LOG=debug for more detail.
+[log]
+# Per-query verdicts to print. Each level includes the previous one:
+#   "off"        — nothing
+#   "suspicious" — allowed queries the heuristics flagged (rare)
+#   "blocked"    — plus every blocked query
+#   "all"        — plus every allowed query. Can wrap the 64 KiB logd ring
+#                  buffer in minutes; raise system.@system[0].log_size first.
+# Hot-reloadable with SIGHUP.
+queries = "blocked"
+# One-line traffic summary every N seconds; 0 disables it.
+summary_interval_secs = 900
+
+# -----------------------------------------------------------------------------
 # TLD Filtering
 # -----------------------------------------------------------------------------
 [tld]

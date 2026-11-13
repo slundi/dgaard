@@ -724,6 +724,27 @@ export const ENGINE_SCHEMA = {
       ],
     },
     {
+      path: 'log',
+      title: 'Logging',
+      doc: 'Built-in stdout logging for installs that do not run dgaard-monitor.\nOn OpenWrt, procd forwards stdout to the system log: read it with\n`logread -e dgaard`.',
+      fields: [
+        {
+          key: 'queries',
+          type: 'enum',
+          values: ['off', 'suspicious', 'blocked', 'all'],
+          default: 'blocked',
+          doc: 'Per-query verdicts to print. Each level includes the previous one.\noff — nothing.\nsuspicious — allowed queries the heuristics flagged (rare).\nblocked — plus every blocked query.\nall — plus every allowed query; can wrap the 64 KiB logd buffer in\nminutes on a busy network.',
+        },
+        {
+          key: 'summary_interval_secs',
+          type: 'int',
+          rust: 'u32',
+          default: 900,
+          doc: 'Print a one-line traffic summary every N seconds (queries, blocked\nratio, suspicious count, clients, top blocked domain). 0 disables it.',
+        },
+      ],
+    },
+    {
       path: 'tld',
       title: 'TLD filtering',
       doc: 'Every entry must be canonical — lowercase, no leading dot. A\nnon-canonical entry aborts startup.',

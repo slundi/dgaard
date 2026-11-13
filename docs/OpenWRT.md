@@ -56,12 +56,29 @@ ssh root@router chmod +x /tmp/my-proxy
 
 ## Persistence Across Reboots
 
-Create an init script at `/etc/init.d/my-proxy`:
+Use a procd init script — dgaard ships one in [`openwrt/dgaard.init`](../openwrt/dgaard.init). Copy it to `/etc/init.d/dgaard`, then:
 
-```sh
-#!/bin/sh /etc/rc.common
-START=95
-start() {
-    /overlay/usr/bin/my-proxy &
-}
+```bash
+chmod +x /etc/init.d/dgaard
+/etc/init.d/dgaard enable
+/etc/init.d/dgaard start
+```
+
+procd restarts the process if it crashes and forwards its output to the system log.
+
+## Logs
+
+The init script sets `procd_set_param stdout 1` and `stderr 1`, so everything dgaard prints lands in logd — no log files, no flash wear:
+
+```bash
+logread -e dgaard        # recent entries
+logread -f -e dgaard     # follow live
+```
+
+logd keeps a RAM ring buffer of 64 KiB by default. With `[log] queries = "all"` it wraps quickly; either stay on `"blocked"` / `"suspicious"` or enlarge it:
+
+```bash
+uci set system.@system[0].log_size=512
+uci commit system
+/etc/init.d/log restart
 ```

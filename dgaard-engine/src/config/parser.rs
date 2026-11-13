@@ -1124,6 +1124,34 @@ fn parse_prefetch(table: &toml_span::value::Table<'_>) -> Result<PrefetchConfig,
     Ok(cfg)
 }
 
+/// Parse `[log]` section.
+fn parse_log(table: &toml_span::value::Table<'_>) -> Result<LogConfig, ConfigError> {
+    let mut cfg = LogConfig::default();
+
+    if let Some(s) = get_str(table, "queries")? {
+        cfg.queries = match s {
+            "off" => QueryLogLevel::Off,
+            "suspicious" => QueryLogLevel::Suspicious,
+            "blocked" => QueryLogLevel::Blocked,
+            "all" => QueryLogLevel::All,
+            other => {
+                return Err(ConfigError::InvalidValue {
+                    key: "log.queries".to_string(),
+                    message: format!(
+                        "expected \"off\", \"suspicious\", \"blocked\" or \"all\", got \"{other}\""
+                    ),
+                    span: table.get("queries").unwrap().span,
+                });
+            }
+        };
+    }
+    if let Some(n) = get_typed_integer::<u32>(table, "summary_interval_secs")? {
+        cfg.summary_interval_secs = n;
+    }
+
+    Ok(cfg)
+}
+
 /// Parse the top-level `[[overrides]]` array of inline-table entries.
 fn parse_overrides(
     tables: Vec<&toml_span::value::Table<'_>>,
@@ -1222,6 +1250,9 @@ impl Config {
         }
         if let Some(t) = get_table(root, "prefetch")? {
             cfg.prefetch = parse_prefetch(t)?;
+        }
+        if let Some(t) = get_table(root, "log")? {
+            cfg.log = parse_log(t)?;
         }
         if let Some(tables) = get_table_array(root, "overrides")? {
             cfg.overrides = parse_overrides(tables)?;
@@ -3345,5 +3376,57 @@ to = "not-an-ip"
     fn parse_overrides_empty_when_absent() {
         let cfg = Config::parse("").unwrap();
         assert!(cfg.overrides.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // [log]
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_log_defaults_when_absent() {
+        let cfg = Config::parse("").unwrap();
+        assert_eq!(cfg.log.queries, QueryLogLevel::Blocked);
+        assert_eq!(cfg.log.summary_interval_secs, 900);
+    }
+
+    #[test]
+    fn parse_log_all_levels() {
+        for (raw, expected) in [
+            ("off", QueryLogLevel::Off),
+            ("suspicious", QueryLogLevel::Suspicious),
+            ("blocked", QueryLogLevel::Blocked),
+            ("all", QueryLogLevel::All),
+        ] {
+            let toml = format!("[log]\nqueries = \"{raw}\"\n");
+            let cfg = Config::parse(&toml).unwrap();
+            assert_eq!(cfg.log.queries, expected, "level {raw}");
+        }
+    }
+
+    #[test]
+    fn parse_log_summary_interval_zero_disables() {
+        let cfg = Config::parse("[log]\nsummary_interval_secs = 0\n").unwrap();
+        assert_eq!(cfg.log.summary_interval_secs, 0);
+        assert_eq!(cfg.log.queries, QueryLogLevel::Blocked);
+    }
+
+    #[test]
+    fn parse_log_invalid_level_is_error() {
+        let err = Config::parse("[log]\nqueries = \"verbose\"\n").unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("log.queries"), "{message}");
+        assert!(message.contains("verbose"), "{message}");
+    }
+
+    #[test]
+    fn parse_log_negative_summary_interval_is_error() {
+        assert!(Config::parse("[log]\nsummary_interval_secs = -1\n").is_err());
+    }
+
+    #[test]
+    fn query_log_levels_are_ordered_by_volume() {
+        assert!(QueryLogLevel::Off < QueryLogLevel::Suspicious);
+        assert!(QueryLogLevel::Suspicious < QueryLogLevel::Blocked);
+        assert!(QueryLogLevel::Blocked < QueryLogLevel::All);
     }
 }

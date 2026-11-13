@@ -187,6 +187,27 @@ Dgaard uses a stratified filtering order to maximize performance:
 
 ## 📊 Monitoring
 
+### Built-in logging (no extra process)
+
+Dgaard prints blocked and suspicious queries to stdout, plus a traffic summary every 15 minutes. On OpenWrt the bundled procd init script forwards stdout and stderr to the system log:
+
+```bash
+logread -e dgaard        # recent entries
+logread -f -e dgaard     # follow live
+```
+
+```
+[BLOCK] 192.168.1.20 -> ads.example.com (blocklist)
+[SUSPICIOUS:HIGH] 192.168.1.31 -> xkqzvbw.top (dga)
+[SUMMARY] last 900s: queries=4210 blocked=612 (14.5%) suspicious=3 clients=7 top_blocked=ads.example.com (88)
+```
+
+Tune it in the `[log]` section: `queries = "off" | "suspicious" | "blocked" | "all"` and `summary_interval_secs` (`0` disables the summary). See [config.example.toml](../config.example.toml).
+
+For history, per-client views, charts or a web UI, use [dgaard-monitor](../dgaard-monitor).
+
+### Raw telemetry socket
+
 Connect to the Unix socket to see live hits:
 
 ```bash

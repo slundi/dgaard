@@ -82,6 +82,7 @@ fn annotated_default_config_round_trips_to_the_defaults() {
         parsed.prefetch, expected.prefetch,
         "[prefetch] defaults drifted"
     );
+    assert_eq!(parsed.log, expected.log, "[log] defaults drifted");
     assert!(
         parsed.overrides.is_empty(),
         "[[overrides]] should be empty by default"
@@ -111,6 +112,7 @@ fn both_output_modes_describe_the_same_configuration() {
     assert_eq!(annotated.recursive, minimal.recursive);
     assert_eq!(annotated.tld, minimal.tld);
     assert_eq!(annotated.sources, minimal.sources);
+    assert_eq!(annotated.log, minimal.log);
     assert_eq!(annotated.overrides, minimal.overrides);
 }
 

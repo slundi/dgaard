@@ -465,6 +465,25 @@ queue_capacity = 256
 ttl_remaining_trigger_secs = 30
 
 # -----------------------------------------------------------------------------
+# [log] — Logging
+# -----------------------------------------------------------------------------
+# Built-in stdout logging for installs that do not run dgaard-monitor.
+# On OpenWrt, procd forwards stdout to the system log: read it with
+# `logread -e dgaard`.
+[log]
+# Per-query verdicts to print. Each level includes the previous one.
+# off — nothing.
+# suspicious — allowed queries the heuristics flagged (rare).
+# blocked — plus every blocked query.
+# all — plus every allowed query; can wrap the 64 KiB logd buffer in
+# minutes on a busy network.
+queries = "suspicious"
+
+# Print a one-line traffic summary every N seconds (queries, blocked
+# ratio, suspicious count, clients, top blocked domain). 0 disables it.
+summary_interval_secs = 3600
+
+# -----------------------------------------------------------------------------
 # [tld] — TLD filtering
 # -----------------------------------------------------------------------------
 # Every entry must be canonical — lowercase, no leading dot. A

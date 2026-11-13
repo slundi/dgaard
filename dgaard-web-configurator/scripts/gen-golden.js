@@ -72,6 +72,8 @@ export const POPULATED_ENGINE = {
     '/etc/dgaard/lists/malware_domains.txt',
   ],
   'sources.whitelists': ['/etc/dgaard/lists/personal_whitelist.txt'],
+  'log.queries': 'suspicious',
+  'log.summary_interval_secs': 3600,
   overrides: [
     { domain: 'nas.home', to: '192.168.1.50' },
     { domain: '*.internal.corp', to: '10.0.0.1' },
