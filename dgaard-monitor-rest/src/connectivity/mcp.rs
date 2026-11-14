@@ -15,9 +15,8 @@ use tokio::sync::watch;
 
 use crate::config::{McpConfig, ServerConfig};
 use crate::connectivity::mcp_token_auth_provider::ConfigTokenAuthProvider;
-use dgaard_monitor_core::protocol::StatBlockReason;
+use dgaard_monitor_core::service::events::{EventFilter, query_window};
 use dgaard_monitor_core::state::AppState;
-use dgaard_monitor_core::util::{ip_to_string, parse_filter_ip};
 
 // ── Tool definition ────────────────────────────────────────────────────────────
 
@@ -42,7 +41,7 @@ pub struct EventsTool {
     /// Filter by domain name substring (case-insensitive). Matched against the resolved name;
     /// falls back to matching against the hex-encoded hash when the domain is unknown.
     pub domain: Option<String>,
-    /// Filter by action variant.
+    /// Filter by action variant (case-insensitive).
     /// Valid values: "Allowed", "Proxied", "Blocked", "Suspicious", "HighlySuspicious".
     pub action: Option<String>,
     /// Filter by block-reason bitmask (u32). Only events whose reason bits contain ALL supplied
@@ -52,29 +51,21 @@ pub struct EventsTool {
     pub limit: Option<u64>,
 }
 
-rust_mcp_sdk::tool_box!(DgaardTools, [EventsTool]);
-
-// ── Response types ─────────────────────────────────────────────────────────────
-
-#[derive(Serialize, Deserialize)]
-struct EventRecord {
-    timestamp: u64,
-    /// Resolved domain name, or `null` when the hash is unknown.
-    domain: Option<String>,
-    /// Raw domain hash as a 16-digit hex string.
-    domain_hash: String,
-    client_ip: String,
-    /// Action variant name.
-    action: String,
-    /// Raw block-reason bitmask; `null` for Allowed and Proxied events.
-    flags: Option<u32>,
-    /// Human-readable labels for each set bit in `flags`.
-    flags_labels: Vec<String>,
+impl From<EventsTool> for EventFilter {
+    fn from(tool: EventsTool) -> Self {
+        Self {
+            from_ts: tool.from_ts,
+            to_ts: tool.to_ts,
+            client_ip: tool.client_ip,
+            domain: tool.domain,
+            action: tool.action,
+            flags: tool.flags,
+            limit: tool.limit,
+        }
+    }
 }
 
-// action_name, flags_of and reason_labels live in crate::util to avoid
-// drifting copies across the connectivity surfaces.
-use dgaard_monitor_core::util::{action_name, flags_of, reason_labels};
+rust_mcp_sdk::tool_box!(DgaardTools, [EventsTool]);
 
 // ── Handler ────────────────────────────────────────────────────────────────────
 
@@ -112,99 +103,12 @@ async fn handle_events(
     tool: EventsTool,
     state: &AppState,
 ) -> Result<CallToolResult, CallToolError> {
-    let limit = tool.limit.unwrap_or(200).min(1_000) as usize;
-
-    let ip_filter: Option<[u8; 16]> = tool
-        .client_ip
-        .as_deref()
-        .map(|s| {
-            parse_filter_ip(s)
-                .ok_or_else(|| CallToolError::from_message(format!("invalid IP address: {s}")))
-        })
-        .transpose()?;
-
-    // from_bits_retain (not _truncate) so user-defined bits 16–31 are
-    // preserved for the filter check; api.rs uses the same form.
-    let required_flags: Option<StatBlockReason> = tool.flags.map(StatBlockReason::from_bits_retain);
-
-    // Snapshot events while holding the lock as briefly as possible.
-    let events_snapshot: Vec<_> = {
-        let stats = state.stats.read().await;
-        stats
-            .window_events()
-            .iter()
-            .map(|(_, ev)| ev.clone())
-            .collect()
-    };
-    let domain_map = state.domain_map.read().await;
-
-    let mut records: Vec<EventRecord> = events_snapshot
-        .into_iter()
-        .filter(|ev| {
-            if let Some(from) = tool.from_ts
-                && ev.timestamp < from
-            {
-                return false;
-            }
-            if let Some(to) = tool.to_ts
-                && ev.timestamp > to
-            {
-                return false;
-            }
-            if let Some(ref filter) = ip_filter
-                && &ev.client_ip != filter
-            {
-                return false;
-            }
-            if let Some(ref action_filter) = tool.action
-                && action_name(&ev.action) != action_filter.as_str()
-            {
-                return false;
-            }
-            if let Some(required) = required_flags {
-                match flags_of(&ev.action) {
-                    Some(r) => {
-                        if !r.contains(required) {
-                            return false;
-                        }
-                    }
-                    None => return false,
-                }
-            }
-            true
-        })
-        .filter_map(|ev| {
-            let resolved = domain_map.get(&ev.domain_hash).cloned();
-            if let Some(ref needle) = tool.domain {
-                let needle_lc = needle.to_ascii_lowercase();
-                let name_match = resolved
-                    .as_deref()
-                    .map(|n| n.to_ascii_lowercase().contains(&needle_lc))
-                    .unwrap_or(false);
-                let hash_match = format!("{:016x}", ev.domain_hash).contains(&needle_lc);
-                if !name_match && !hash_match {
-                    return None;
-                }
-            }
-            let reason = flags_of(&ev.action);
-            Some(EventRecord {
-                timestamp: ev.timestamp,
-                domain: resolved,
-                domain_hash: format!("{:016x}", ev.domain_hash),
-                client_ip: ip_to_string(&ev.client_ip),
-                action: action_name(&ev.action).to_string(),
-                flags: reason.map(|r| r.bits()),
-                flags_labels: reason.map_or_else(Vec::new, reason_labels),
-            })
-        })
-        .collect();
-
-    // Newest first, then truncate.
-    records.sort_unstable_by_key(|b| std::cmp::Reverse(b.timestamp));
-    records.truncate(limit);
+    let records = query_window(state, &tool.into())
+        .await
+        .map_err(|err| CallToolError::from_message(err.to_string()))?;
 
     let json = serde_json::to_string_pretty(&records)
-        .map_err(|e| CallToolError::from_message(e.to_string()))?;
+        .map_err(|err| CallToolError::from_message(err.to_string()))?;
 
     Ok(CallToolResult {
         content: vec![ContentBlock::TextContent(TextContent::new(
@@ -291,13 +195,15 @@ pub async fn run(
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
+//
+// Filter semantics are covered by `dgaard_monitor_core::service::events`;
+// these tests only check the MCP adapter (tool → filter, result → JSON text).
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
-    use dgaard_monitor_core::state::AppState;
-    use std::time::Duration;
+    use dgaard_monitor_core::util::EventRecord;
 
     fn make_state() -> Arc<AppState> {
         Arc::new(AppState::new(Duration::from_secs(3600)))
@@ -307,41 +213,26 @@ mod tests {
         [a, b, c, d, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     }
 
-    fn blocked_event(ts: u64, hash: u64, ip: [u8; 16], r: StatBlockReason) -> StatEvent {
+    fn event(ts: u64, hash: u64, action: StatAction) -> StatEvent {
         StatEvent {
             timestamp: ts,
             domain_hash: hash,
-            client_ip: ip,
-            action: StatAction::Blocked(r),
+            client_ip: ipv4(10, 0, 0, 1),
+            action,
         }
     }
 
-    fn allowed_event(ts: u64, hash: u64, ip: [u8; 16]) -> StatEvent {
-        StatEvent {
-            timestamp: ts,
-            domain_hash: hash,
-            client_ip: ip,
-            action: StatAction::Allowed,
+    fn empty_tool() -> EventsTool {
+        EventsTool {
+            from_ts: None,
+            to_ts: None,
+            client_ip: None,
+            domain: None,
+            action: None,
+            flags: None,
+            limit: None,
         }
     }
-
-    // ── reason_labels ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn reason_labels_lists_set_bits() {
-        let r = StatBlockReason::STATIC_BLACKLIST | StatBlockReason::HIGH_ENTROPY;
-        let labels = reason_labels(r);
-        assert!(labels.iter().any(|l| l.as_str() == "STATIC_BLACKLIST"));
-        assert!(labels.iter().any(|l| l.as_str() == "HIGH_ENTROPY"));
-        assert!(!labels.iter().any(|l| l.as_str() == "ABP_RULE"));
-    }
-
-    #[test]
-    fn reason_labels_empty_for_empty_flags() {
-        assert!(reason_labels(StatBlockReason::empty()).is_empty());
-    }
-
-    // ── handle_events ─────────────────────────────────────────────────────────
 
     async fn query(state: &Arc<AppState>, tool: EventsTool) -> Vec<EventRecord> {
         let result = handle_events(tool, state).await.unwrap();
@@ -352,143 +243,69 @@ mod tests {
         serde_json::from_str(&text).unwrap()
     }
 
+    #[test]
+    fn tool_converts_into_filter_field_by_field() {
+        let filter: EventFilter = EventsTool {
+            from_ts: Some(1),
+            to_ts: Some(2),
+            client_ip: Some("10.0.0.1".into()),
+            domain: Some("evil".into()),
+            action: Some("Blocked".into()),
+            flags: Some(4),
+            limit: Some(5),
+        }
+        .into();
+        assert_eq!(filter.from_ts, Some(1));
+        assert_eq!(filter.to_ts, Some(2));
+        assert_eq!(filter.client_ip.as_deref(), Some("10.0.0.1"));
+        assert_eq!(filter.domain.as_deref(), Some("evil"));
+        assert_eq!(filter.action.as_deref(), Some("Blocked"));
+        assert_eq!(filter.flags, Some(4));
+        assert_eq!(filter.limit, Some(5));
+    }
+
     #[tokio::test]
-    async fn returns_all_events_with_no_filters() {
+    async fn returns_records_as_json_text() {
         let state = make_state();
+        state.insert_domain(1, "example.com".into()).await;
         state
-            .record_event(allowed_event(1000, 1, ipv4(1, 0, 0, 0)))
+            .record_event(event(1000, 1, StatAction::Allowed))
             .await;
         state
-            .record_event(blocked_event(
+            .record_event(event(
                 2000,
                 2,
-                ipv4(2, 0, 0, 0),
-                StatBlockReason::STATIC_BLACKLIST,
+                StatAction::Blocked(StatBlockReason::NRD_LIST | StatBlockReason::HIGH_ENTROPY),
             ))
             .await;
 
-        let records = query(
-            &state,
-            EventsTool {
-                from_ts: None,
-                to_ts: None,
-                client_ip: None,
-                domain: None,
-                action: None,
-                flags: None,
-                limit: None,
-            },
-        )
-        .await;
+        let records = query(&state, empty_tool()).await;
         assert_eq!(records.len(), 2);
+        assert_eq!(records[0].timestamp, 2000);
+        assert!(records[0].flags_labels.iter().any(|s| s == "NRD_LIST"));
+        assert_eq!(records[1].domain.as_deref(), Some("example.com"));
+        assert!(records[1].flags.is_none());
     }
 
     #[tokio::test]
-    async fn filters_by_from_ts() {
+    async fn action_filter_is_case_insensitive() {
         let state = make_state();
         state
-            .record_event(allowed_event(500, 1, ipv4(1, 0, 0, 0)))
+            .record_event(event(1000, 1, StatAction::Allowed))
             .await;
         state
-            .record_event(allowed_event(1500, 2, ipv4(2, 0, 0, 0)))
-            .await;
-
-        let records = query(
-            &state,
-            EventsTool {
-                from_ts: Some(1000),
-                to_ts: None,
-                client_ip: None,
-                domain: None,
-                action: None,
-                flags: None,
-                limit: None,
-            },
-        )
-        .await;
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].timestamp, 1500);
-    }
-
-    #[tokio::test]
-    async fn filters_by_to_ts() {
-        let state = make_state();
-        state
-            .record_event(allowed_event(500, 1, ipv4(1, 0, 0, 0)))
-            .await;
-        state
-            .record_event(allowed_event(1500, 2, ipv4(2, 0, 0, 0)))
-            .await;
-
-        let records = query(
-            &state,
-            EventsTool {
-                from_ts: None,
-                to_ts: Some(1000),
-                client_ip: None,
-                domain: None,
-                action: None,
-                flags: None,
-                limit: None,
-            },
-        )
-        .await;
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].timestamp, 500);
-    }
-
-    #[tokio::test]
-    async fn filters_by_client_ip() {
-        let state = make_state();
-        state
-            .record_event(allowed_event(1000, 1, ipv4(10, 0, 0, 1)))
-            .await;
-        state
-            .record_event(allowed_event(1001, 2, ipv4(10, 0, 0, 2)))
-            .await;
-
-        let records = query(
-            &state,
-            EventsTool {
-                from_ts: None,
-                to_ts: None,
-                client_ip: Some("10.0.0.1".into()),
-                domain: None,
-                action: None,
-                flags: None,
-                limit: None,
-            },
-        )
-        .await;
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].client_ip, "10.0.0.1");
-    }
-
-    #[tokio::test]
-    async fn filters_by_action() {
-        let state = make_state();
-        state
-            .record_event(allowed_event(1000, 1, ipv4(1, 0, 0, 0)))
-            .await;
-        state
-            .record_event(blocked_event(
+            .record_event(event(
                 1001,
                 2,
-                ipv4(2, 0, 0, 0),
-                StatBlockReason::ABP_RULE,
+                StatAction::Blocked(StatBlockReason::ABP_RULE),
             ))
             .await;
 
         let records = query(
             &state,
             EventsTool {
-                from_ts: None,
-                to_ts: None,
-                client_ip: None,
-                domain: None,
-                action: Some("Blocked".into()),
-                flags: None,
-                limit: None,
+                action: Some("blocked".into()),
+                ..empty_tool()
             },
         )
         .await;
@@ -497,230 +314,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn filters_by_flags_bitmask() {
-        let state = make_state();
-        // event with only STATIC_BLACKLIST
-        state
-            .record_event(blocked_event(
-                1000,
-                1,
-                ipv4(1, 0, 0, 0),
-                StatBlockReason::STATIC_BLACKLIST,
-            ))
-            .await;
-        // event with STATIC_BLACKLIST | HIGH_ENTROPY
-        state
-            .record_event(blocked_event(
-                1001,
-                2,
-                ipv4(2, 0, 0, 0),
-                StatBlockReason::STATIC_BLACKLIST | StatBlockReason::HIGH_ENTROPY,
-            ))
-            .await;
-
-        // Filter: must have both bits set
-        let required = (StatBlockReason::STATIC_BLACKLIST | StatBlockReason::HIGH_ENTROPY).bits();
-        let records = query(
-            &state,
-            EventsTool {
-                from_ts: None,
-                to_ts: None,
-                client_ip: None,
-                domain: None,
-                action: None,
-                flags: Some(required),
-                limit: None,
-            },
-        )
-        .await;
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].timestamp, 1001);
-    }
-
-    #[tokio::test]
-    async fn filters_by_domain_name() {
-        let state = make_state();
-        state
-            .insert_domain(0xaabbcc, "evil.example.com".into())
-            .await;
-        state.insert_domain(0xddeeff, "safe.net".into()).await;
-        state
-            .record_event(allowed_event(1000, 0xaabbcc, ipv4(1, 0, 0, 0)))
-            .await;
-        state
-            .record_event(allowed_event(1001, 0xddeeff, ipv4(2, 0, 0, 0)))
-            .await;
-
-        let records = query(
-            &state,
-            EventsTool {
-                from_ts: None,
-                to_ts: None,
-                client_ip: None,
-                domain: Some("evil".into()),
-                action: None,
-                flags: None,
-                limit: None,
-            },
-        )
-        .await;
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].domain.as_deref(), Some("evil.example.com"));
-    }
-
-    #[tokio::test]
-    async fn results_are_sorted_newest_first() {
-        let state = make_state();
-        state
-            .record_event(allowed_event(300, 1, ipv4(1, 0, 0, 0)))
-            .await;
-        state
-            .record_event(allowed_event(100, 2, ipv4(2, 0, 0, 0)))
-            .await;
-        state
-            .record_event(allowed_event(200, 3, ipv4(3, 0, 0, 0)))
-            .await;
-
-        let records = query(
-            &state,
-            EventsTool {
-                from_ts: None,
-                to_ts: None,
-                client_ip: None,
-                domain: None,
-                action: None,
-                flags: None,
-                limit: None,
-            },
-        )
-        .await;
-        assert_eq!(records[0].timestamp, 300);
-        assert_eq!(records[1].timestamp, 200);
-        assert_eq!(records[2].timestamp, 100);
-    }
-
-    #[tokio::test]
-    async fn limit_is_respected() {
-        let state = make_state();
-        for i in 0..10 {
-            state
-                .record_event(allowed_event(i, i, ipv4(1, 0, 0, 0)))
-                .await;
-        }
-
-        let records = query(
-            &state,
-            EventsTool {
-                from_ts: None,
-                to_ts: None,
-                client_ip: None,
-                domain: None,
-                action: None,
-                flags: None,
-                limit: Some(3),
-            },
-        )
-        .await;
-        assert_eq!(records.len(), 3);
-    }
-
-    #[tokio::test]
-    async fn limit_is_capped_at_1000() {
-        let state = make_state();
-        for i in 0..5 {
-            state
-                .record_event(allowed_event(i, i, ipv4(1, 0, 0, 0)))
-                .await;
-        }
-
-        let records = query(
-            &state,
-            EventsTool {
-                from_ts: None,
-                to_ts: None,
-                client_ip: None,
-                domain: None,
-                action: None,
-                flags: None,
-                limit: Some(99_999),
-            },
-        )
-        .await;
-        // Only 5 events exist, all returned; cap doesn't truncate when count < cap.
-        assert_eq!(records.len(), 5);
-    }
-
-    #[tokio::test]
     async fn invalid_ip_filter_returns_error() {
         let state = make_state();
-        let err = handle_events(
+        let result = handle_events(
             EventsTool {
-                from_ts: None,
-                to_ts: None,
                 client_ip: Some("not-an-ip".into()),
-                domain: None,
-                action: None,
-                flags: None,
-                limit: None,
+                ..empty_tool()
             },
             &state,
         )
         .await;
-        assert!(err.is_err());
-    }
-
-    #[tokio::test]
-    async fn event_record_includes_flags_labels() {
-        let state = make_state();
-        state
-            .record_event(blocked_event(
-                1000,
-                1,
-                ipv4(1, 0, 0, 0),
-                StatBlockReason::NRD_LIST | StatBlockReason::HIGH_ENTROPY,
-            ))
-            .await;
-
-        let records = query(
-            &state,
-            EventsTool {
-                from_ts: None,
-                to_ts: None,
-                client_ip: None,
-                domain: None,
-                action: None,
-                flags: None,
-                limit: None,
-            },
-        )
-        .await;
-        assert_eq!(records.len(), 1);
-        assert!(records[0].flags_labels.iter().any(|s| s == "NRD_LIST"));
-        assert!(records[0].flags_labels.iter().any(|s| s == "HIGH_ENTROPY"));
-    }
-
-    #[tokio::test]
-    async fn allowed_event_has_null_flags() {
-        let state = make_state();
-        state
-            .record_event(allowed_event(1000, 1, ipv4(1, 0, 0, 0)))
-            .await;
-
-        let records = query(
-            &state,
-            EventsTool {
-                from_ts: None,
-                to_ts: None,
-                client_ip: None,
-                domain: None,
-                action: None,
-                flags: None,
-                limit: None,
-            },
-        )
-        .await;
-        assert_eq!(records.len(), 1);
-        assert!(records[0].flags.is_none());
-        assert!(records[0].flags_labels.is_empty());
+        assert!(result.is_err());
     }
 }

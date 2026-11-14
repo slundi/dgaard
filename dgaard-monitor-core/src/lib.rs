@@ -10,5 +10,6 @@ pub mod error;
 pub mod forwarding;
 pub mod io;
 pub mod protocol;
+pub mod service;
 pub mod state;
 pub mod util;

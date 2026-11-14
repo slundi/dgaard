@@ -3,12 +3,12 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde::Serialize;
 
+use crate::error::error_response;
 use crate::web::state::WebState;
+use dgaard_monitor_core::service::events::{HistoryQuery, query_history};
 use dgaard_monitor_core::util::EventRecord;
 
 #[derive(Serialize)]
@@ -18,130 +18,26 @@ struct QueryResponse {
     hostname: Option<String>,
 }
 
-#[derive(Deserialize)]
-pub struct QueriesParams {
-    pub limit: Option<usize>,
-    pub offset: Option<usize>,
-    pub client: Option<String>,
-    pub action: Option<String>,
-    /// Start of time range (Unix timestamp, inclusive). Enables DB query.
-    pub from: Option<u64>,
-    /// End of time range (Unix timestamp, inclusive). Enables DB query.
-    pub to: Option<u64>,
-}
-
-fn is_valid_action(action: &str) -> bool {
-    matches!(
-        action.to_lowercase().as_str(),
-        "allowed" | "blocked" | "suspicious" | "highlysuspicious" | "proxied"
-    )
-}
-
 pub async fn queries_handler(
     State(web): State<Arc<WebState>>,
-    Query(params): Query<QueriesParams>,
+    Query(params): Query<HistoryQuery>,
 ) -> Response {
-    if params
-        .action
-        .as_deref()
-        .is_some_and(|a| !is_valid_action(a))
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "action must be one of: allowed, blocked, suspicious, highlysuspicious, proxied"})),
-        )
-            .into_response();
-    }
+    let records = match query_history(web.db.as_ref(), &web.query_log, &params).await {
+        Ok(records) => records,
+        Err(err) => return error_response(err),
+    };
 
-    let limit = params.limit.unwrap_or(100).min(1000);
-    let offset = params.offset.unwrap_or(0);
-
-    // When a time-range is requested, serve from SQLite.
-    if params.from.is_some() || params.to.is_some() {
-        let db = match web.db.as_ref() {
-            Some(d) => std::sync::Arc::clone(d),
-            None => {
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(json!({"error": "persistence not configured"})),
-                )
-                    .into_response();
-            }
-        };
-
-        let from = params.from.unwrap_or(0);
-        let to = params.to.unwrap_or(u64::MAX);
-        let client = params.client.clone();
-        let action = params.action.clone();
-
-        let result = tokio::task::spawn_blocking(move || {
-            db.query_range(from, to, client, action, limit, offset)
-        })
-        .await;
-
-        return match result {
-            Ok(Ok(records)) => {
-                let results: Vec<QueryResponse> = records
-                    .into_iter()
-                    .map(|record| {
-                        let hostname = record
-                            .client_ip
-                            .parse::<IpAddr>()
-                            .ok()
-                            .and_then(|ip| web.hostname_cache.get(&ip).map(|h| h.clone()));
-                        QueryResponse { record, hostname }
-                    })
-                    .collect();
-                Json(results).into_response()
-            }
-            Ok(Err(e)) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("database error: {e}")})),
-            )
-                .into_response(),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("task error: {e}")})),
-            )
-                .into_response(),
-        };
-    }
-
-    let log = web.query_log.lock().await;
-
-    let results: Vec<QueryResponse> = log
-        .iter()
-        .rev()
-        .filter(|record| {
-            let client_ok = params
-                .client
-                .as_ref()
-                .map(|c| &record.client_ip == c)
-                .unwrap_or(true);
-            let action_ok = params
-                .action
-                .as_ref()
-                .map(|a| record.action.to_lowercase() == a.to_lowercase())
-                .unwrap_or(true);
-            client_ok && action_ok
-        })
-        .skip(offset)
-        .take(limit)
+    let results: Vec<QueryResponse> = records
+        .into_iter()
         .map(|record| {
             let hostname = record
                 .client_ip
                 .parse::<IpAddr>()
                 .ok()
                 .and_then(|ip| web.hostname_cache.get(&ip).map(|h| h.clone()));
-            QueryResponse {
-                record: record.clone(),
-                hostname,
-            }
+            QueryResponse { record, hostname }
         })
         .collect();
-
-    drop(log);
-
     Json(results).into_response()
 }
 
@@ -149,6 +45,7 @@ pub async fn queries_handler(
 mod tests {
     use super::*;
     use crate::web::state::WebState;
+    use axum::http::StatusCode;
     use dgaard_monitor_core::state::AppState;
     use dgaard_monitor_core::util::EventRecord;
     use std::time::Duration;
@@ -173,7 +70,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_action_returns_400() {
         let web = make_web_state();
-        let params = QueriesParams {
+        let params = HistoryQuery {
             limit: None,
             offset: None,
             client: None,
@@ -188,7 +85,7 @@ mod tests {
     #[tokio::test]
     async fn empty_log_returns_empty_array() {
         let web = make_web_state();
-        let params = QueriesParams {
+        let params = HistoryQuery {
             limit: None,
             offset: None,
             client: None,
@@ -214,7 +111,7 @@ mod tests {
             web.push_event(record).await;
         }
 
-        let params = QueriesParams {
+        let params = HistoryQuery {
             limit: None,
             offset: None,
             client: None,
@@ -230,7 +127,7 @@ mod tests {
         let parsed: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
         assert_eq!(parsed.len(), 100);
 
-        let params_capped = QueriesParams {
+        let params_capped = HistoryQuery {
             limit: Some(9999),
             offset: None,
             client: None,
@@ -257,7 +154,7 @@ mod tests {
     #[tokio::test]
     async fn from_without_db_returns_503() {
         let web = make_web_state();
-        let params = QueriesParams {
+        let params = HistoryQuery {
             limit: None,
             offset: None,
             client: None,
@@ -299,7 +196,7 @@ mod tests {
             .unwrap();
         }
 
-        let params = QueriesParams {
+        let params = HistoryQuery {
             limit: None,
             offset: None,
             client: None,

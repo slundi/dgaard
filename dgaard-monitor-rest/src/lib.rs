@@ -1,5 +1,6 @@
 pub mod config;
 mod connectivity;
+mod error;
 mod web;
 
 use crate::config::{ApiConfig, McpConfig, ServerConfig, WebConfig, WebSocketConfig};
