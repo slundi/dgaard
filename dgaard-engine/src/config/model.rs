@@ -75,7 +75,9 @@ impl Default for RuntimeConfig {
 pub enum PipelineStep {
     /// Instant pass — domain is on the personal / CDN whitelist.
     Whitelist,
-    /// In-process LRU cache hit — avoids upstream round-trip.
+    /// Response cache: an answer already served (and allowed) is replayed
+    /// without running the rest of the pipeline. The daemon consults it
+    /// before the pipeline; leaving the step out disables the cache.
     HotCache,
     /// Exact-match lookup against the compiled blocklist (rkyv / XXH3).
     StaticBlock,
@@ -179,6 +181,14 @@ impl IpNet {
             }
             _ => false,
         }
+    }
+}
+
+impl ServerConfig {
+    /// True when `HotCache` is part of the pipeline: the response cache is
+    /// read and written. Leaving the step out disables it.
+    pub fn uses_hot_cache(&self) -> bool {
+        self.pipeline.contains(&PipelineStep::HotCache)
     }
 }
 
@@ -953,10 +963,14 @@ pub enum BailiwickPolicy {
 /// How the resolver fans queries out across the available NS addresses for
 /// a given zone.
 ///
-/// `Sequential` (default) is what BIND and Unbound do by default. The
-/// staggered/parallel modes will land alongside the rest of the Phase 2
-/// follow-up tasks; they are accepted by the parser today so configs
-/// remain forward-compatible.
+/// * `Sequential` (default, what BIND and Unbound do): one server at a
+///   time, the next on failure;
+/// * `Staggered`: another server every `ns_stagger_ms` while all pending
+///   ones are silent, up to `max_concurrent_queries` extra in flight;
+/// * `Parallel`: `max_concurrent_queries` servers at once.
+///
+/// The first answer wins; every launch is paid from
+/// `max_queries_per_resolution`.
 #[derive(Debug, Default, PartialEq, Clone, Copy)]
 pub enum NsConcurrency {
     #[default]
@@ -985,13 +999,14 @@ pub struct RecursiveConfig {
     pub max_cname_depth: u8,
     /// Per-nameserver UDP query timeout (ms).
     pub query_timeout_ms: u64,
-    /// RFC 9156 QNAME minimization. The parser accepts the field today,
-    /// the loop runs full QNAME until the follow-up commit wires it in.
+    /// RFC 9156 QNAME minimization: each zone's servers see only the next
+    /// label (type A) of the name; the full name and type go to the servers
+    /// of its own zone. Falls back to the full name for servers that answer
+    /// a minimised name with NXDOMAIN, data or an error.
     pub qname_minimization: bool,
     /// Bailiwick enforcement policy.
     pub bailiwick_policy: BailiwickPolicy,
-    /// NS-fanout policy. Only `Sequential` is implemented in this commit;
-    /// the others are accepted for forward compatibility.
+    /// NS-fanout policy (see [`NsConcurrency`]).
     pub ns_concurrency: NsConcurrency,
     /// Used by staggered (extra launches) and parallel (total). Bounded
     /// small to avoid antisocial behaviour against root/TLD operators.
@@ -1133,8 +1148,9 @@ pub enum NxdomainAction {
     /// Record the event in the structured log; do not block the client.
     #[default]
     Log,
-    /// Insert a firewall rule to drop all traffic from the offending client
-    /// IP for the remainder of the detection window.
+    /// Also refuse every query of the offending client (REFUSED) for the
+    /// rest of the detection window. dgaard's own answers only: no system
+    /// firewall rule is inserted.
     BlockClient,
 }
 
@@ -1517,6 +1533,16 @@ pub struct Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hot_cache_follows_the_pipeline() {
+        let mut server = ServerConfig::default();
+        assert!(server.uses_hot_cache());
+        server
+            .pipeline
+            .retain(|step| *step != PipelineStep::HotCache);
+        assert!(!server.uses_hot_cache());
+    }
 
     // ---- IpNet (server.allowed_networks) ----
 

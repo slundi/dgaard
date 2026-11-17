@@ -149,7 +149,11 @@ pub fn resolve_with_score(domain: &str, filter: &FilterEngine, config: &Config) 
                 }
             }
             PipelineStep::HotCache => {
-                // TODO: Implement LRU cache lookup
+                // The response cache lives in the daemon, which consults it
+                // before running this pipeline when the step is listed
+                // (`ServerConfig::uses_hot_cache`). Its position does not
+                // change outcomes: only answers that passed the pipeline are
+                // cached, and the cache is cleared whenever lists reload.
             }
             PipelineStep::StaticBlock => {
                 if is_blocked(domain, filter) {

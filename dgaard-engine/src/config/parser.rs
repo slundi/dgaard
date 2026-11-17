@@ -1440,7 +1440,7 @@ impl Config {
     fn validate_bounds(&self) -> Result<(), ConfigError> {
         let runtime = &self.server.runtime;
         let recursive = &self.recursive;
-        let checks: [(&str, u64, u64); 7] = [
+        let mut checks: Vec<(&str, u64, u64)> = vec![
             (
                 "server.runtime.max_concurrent_queries",
                 runtime.max_concurrent_queries as u64,
@@ -1469,6 +1469,43 @@ impl Config {
                 1,
             ),
         ];
+        let hunting = &self.nxdomain_hunting;
+        if hunting.enabled {
+            checks.push((
+                "nxdomain_hunting.threshold",
+                u64::from(hunting.threshold),
+                1,
+            ));
+            checks.push((
+                "nxdomain_hunting.window_seconds",
+                u64::from(hunting.window_seconds),
+                1,
+            ));
+        }
+        let tunneling = &self.tunneling_detection;
+        if tunneling.enabled {
+            checks.push((
+                "tunneling_detection.max_subdomains_per_minute",
+                u64::from(tunneling.max_subdomains_per_minute),
+                1,
+            ));
+            checks.push((
+                "tunneling_detection.max_label_length",
+                u64::from(tunneling.max_label_length),
+                1,
+            ));
+            // A DNS label never exceeds 63 bytes: a larger limit never fires.
+            if tunneling.max_label_length > 63 {
+                return Err(ConfigError::InvalidValue {
+                    key: "tunneling_detection.max_label_length".to_string(),
+                    message: format!(
+                        "must be at most 63 (the DNS label limit), got {}",
+                        tunneling.max_label_length
+                    ),
+                    span: toml_span::Span::default(),
+                });
+            }
+        }
         match checks.iter().find(|(_, value, min)| value < min) {
             Some((key, value, min)) => Err(ConfigError::InvalidValue {
                 key: (*key).to_string(),
@@ -3323,6 +3360,41 @@ list_path = []
             let err = cfg.validate().unwrap_err().to_string();
             assert!(err.contains(key), "{key}: {err}");
         }
+    }
+
+    #[test]
+    fn validate_bounds_behavioral_analytics_when_enabled() {
+        let cases: [BreakCase; 5] = [
+            ("nxdomain_hunting.threshold", |cfg| {
+                cfg.nxdomain_hunting.threshold = 0
+            }),
+            ("nxdomain_hunting.window_seconds", |cfg| {
+                cfg.nxdomain_hunting.window_seconds = 0
+            }),
+            ("tunneling_detection.max_subdomains_per_minute", |cfg| {
+                cfg.tunneling_detection.max_subdomains_per_minute = 0
+            }),
+            ("tunneling_detection.max_label_length", |cfg| {
+                cfg.tunneling_detection.max_label_length = 0
+            }),
+            ("tunneling_detection.max_label_length", |cfg| {
+                cfg.tunneling_detection.max_label_length = 64
+            }),
+        ];
+        for (key, break_it) in cases {
+            let mut cfg = Config::default();
+            break_it(&mut cfg);
+            let err = cfg.validate().unwrap_err().to_string();
+            assert!(err.contains(key), "{key}: {err}");
+
+            // Not checked while the feature is off.
+            cfg.nxdomain_hunting.enabled = false;
+            cfg.tunneling_detection.enabled = false;
+            assert!(cfg.validate().is_ok(), "{key} with the feature off");
+        }
+        let mut cfg = Config::default();
+        cfg.tunneling_detection.max_label_length = 63;
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

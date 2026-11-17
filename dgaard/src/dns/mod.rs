@@ -210,7 +210,9 @@ pub(crate) async fn forward_and_inspect(
         return ForwardOutcome::Blocked(stat_action);
     }
 
-    if let Some(cache) = crate::RESPONSE_CACHE.get() {
+    if cfg.server.uses_hot_cache()
+        && let Some(cache) = crate::RESPONSE_CACHE.get()
+    {
         // The cache derives the lifetime (positive or negative, RFC 2308)
         // and rewrites the served TTLs under the same policy.
         let policy = TtlPolicy {
@@ -265,6 +267,20 @@ pub(crate) async fn answer_query(
         dns_packet.qclass
     );
 
+    // 1b. NXDOMAIN hunting with `action = "block_client"`: a client caught
+    //     scanning is refused for the rest of its window.
+    let now = std::time::Instant::now();
+    if CONFIG.load().nxdomain_hunting.enabled
+        && crate::behavior::BEHAVIOR.is_refused(peer.ip(), now)
+    {
+        STATS_COUNTERS.increment_blocked();
+        if let Some(sender) = STATS_SENDER.get() {
+            let reason = StatBlockReason::from(&dgaard_engine::model::BlockReason::NxdomainHunting);
+            sender.send_event(&dns_packet.domain, peer, StatAction::Blocked(reason));
+        }
+        return Some(DnsPacket::build_refused_response(&dns_packet.message));
+    }
+
     // 2a. QType Warden: block forbidden query types before domain resolution.
     //     This is the cheapest check — a u16 lookup — so it runs first.
     if let Some(reason) = check_qtype(dns_packet.qtype) {
@@ -302,7 +318,8 @@ pub(crate) async fn answer_query(
 
     // 2c. Hot cache: serve a cached response before touching the filter pipeline.
     //     A hit skips resolve_with_score, upstream forwarding, and DNSSEC entirely.
-    if let Some(cache) = crate::RESPONSE_CACHE.get()
+    if CONFIG.load().server.uses_hot_cache()
+        && let Some(cache) = crate::RESPONSE_CACHE.get()
         && let Some(CachedAnswer {
             bytes: cached,
             remaining_ttl,
@@ -330,6 +347,9 @@ pub(crate) async fn answer_query(
         if let Some(sender) = STATS_SENDER.get() {
             sender.send_event(&dns_packet.domain, peer, StatAction::Cached);
         }
+        if crate::behavior::is_nxdomain(&cached) {
+            note_nxdomain(peer, now);
+        }
         return Some(cached);
     }
 
@@ -347,6 +367,20 @@ pub(crate) async fn answer_query(
     // 3. Process the action and determine stat action
     let cfg_snap = CONFIG.load();
     let scoring = &cfg_snap.security.scoring;
+
+    // 3a'. Tunneling detection on queries about to leave (whitelisted names
+    //      are exempt): for an exfiltration channel the query is the data.
+    let action = match action {
+        Action::ProxyToUpstream => crate::behavior::BEHAVIOR
+            .check_tunneling(
+                peer.ip(),
+                &dns_packet.domain,
+                now,
+                &cfg_snap.tunneling_detection,
+            )
+            .map_or(Action::ProxyToUpstream, Action::Block),
+        other => other,
+    };
 
     // 3a. Score gate before any upstream traffic; the post-answer check
     //     below only sees what answer inspection adds.
@@ -378,6 +412,9 @@ pub(crate) async fn answer_query(
                         STATS_COUNTERS.increment_allowed();
                     } else {
                         STATS_COUNTERS.increment_proxied();
+                    }
+                    if crate::behavior::is_nxdomain(&bytes) {
+                        note_nxdomain(peer, now);
                     }
                     (bytes, Some(stat_action))
                 }
@@ -449,6 +486,27 @@ pub(crate) async fn answer_query(
     }
 
     Some(response)
+}
+
+/// NXDOMAIN hunting: count an NXDOMAIN answered to `peer`, and report the
+/// client when it crosses the threshold.
+fn note_nxdomain(peer: std::net::SocketAddr, now: std::time::Instant) {
+    let cfg = CONFIG.load();
+    let hunting = &cfg.nxdomain_hunting;
+    if let Some(count) = crate::behavior::BEHAVIOR.record_nxdomain(peer.ip(), now, hunting) {
+        let consequence = match hunting.action {
+            crate::config::NxdomainAction::BlockClient => {
+                format!("refused for {}s", hunting.window_seconds)
+            }
+            crate::config::NxdomainAction::Log => String::from("logged only"),
+        };
+        log::warn!(
+            "NXDOMAIN hunting: {} got {count} NXDOMAIN answers within {}s \
+             (possible botnet / DGA scanning) — {consequence}",
+            peer.ip(),
+            hunting.window_seconds
+        );
+    }
 }
 
 /// Handle a query received over UDP: answer it, then fit the response in
@@ -1084,6 +1142,124 @@ mod tests {
                 ResponseCode::ServFail
             );
             assert_eq!(install_cache().len(), 0);
+        });
+    }
+
+    // ---- behavioral analytics and HotCache ----
+
+    fn tune(edit: impl FnOnce(&mut Config)) {
+        let mut config = (*CONFIG.load_full()).clone();
+        edit(&mut config);
+        CONFIG.store(Arc::new(config));
+    }
+
+    #[test]
+    fn tunneling_query_never_leaves() {
+        run_with_globals(async {
+            install_policy(&[], "tunnel-site.com");
+            tune(|cfg| cfg.tunneling_detection.max_subdomains_per_minute = 2);
+            for name in ["c1.tunnel-site.com", "c2.tunnel-site.com"] {
+                assert_eq!(run_query(name).await, (ResponseCode::NoError, 1));
+            }
+            let (rcode, calls) = run_query("c3.tunnel-site.com").await;
+            assert_eq!(rcode, ResponseCode::NXDomain);
+            assert_eq!(calls, 0, "the encoded data must not reach upstream");
+        });
+    }
+
+    #[test]
+    fn overlong_label_is_blocked_as_tunneling() {
+        run_with_globals(async {
+            install_policy(&[], "label-site.com");
+            tune(|cfg| cfg.tunneling_detection.max_label_length = 20);
+            let name = format!("{}.label-site.com", "a".repeat(21));
+            assert_eq!(run_query(&name).await, (ResponseCode::NXDomain, 0));
+        });
+    }
+
+    #[test]
+    fn whitelisted_names_are_not_counted_as_tunneling() {
+        run_with_globals(async {
+            let names = [
+                "w1.white-site.com",
+                "w2.white-site.com",
+                "w3.white-site.com",
+            ];
+            install_policy(&names, "w1.white-site.com");
+            tune(|cfg| cfg.tunneling_detection.max_subdomains_per_minute = 1);
+            for name in names {
+                assert_eq!(run_query(name).await, (ResponseCode::NoError, 1));
+            }
+        });
+    }
+
+    #[test]
+    fn nxdomain_scanner_is_refused_with_block_client() {
+        run_with_globals(async {
+            install_policy(&[], "missing-site.com");
+            tune(|cfg| {
+                cfg.nxdomain_hunting.threshold = 2;
+                cfg.nxdomain_hunting.action = crate::config::NxdomainAction::BlockClient;
+            });
+            for _ in 0..2 {
+                assert_eq!(
+                    run_query("missing-site.com").await.0,
+                    ResponseCode::NXDomain
+                );
+            }
+            let (rcode, calls) = run_query("clean-domain.com").await;
+            assert_eq!(rcode, ResponseCode::Refused);
+            assert_eq!(calls, 0);
+        });
+    }
+
+    #[test]
+    fn nxdomain_hunting_in_log_mode_keeps_serving() {
+        run_with_globals(async {
+            install_policy(&[], "missing-site.com");
+            tune(|cfg| cfg.nxdomain_hunting.threshold = 2);
+            for _ in 0..3 {
+                run_query("missing-site.com").await;
+            }
+            assert_eq!(run_query("clean-domain.com").await.0, ResponseCode::NoError);
+        });
+    }
+
+    #[test]
+    fn blocked_answers_do_not_count_as_nxdomain() {
+        // dgaard's own NXDOMAIN for blocked names says nothing about the
+        // client: an ad-heavy page must not get it refused.
+        run_with_globals(async {
+            let name = tunnel_name();
+            let (score, _) = install_policy(&[], &name);
+            tune(|cfg| {
+                cfg.security.scoring.blocking_threshold = score;
+                cfg.nxdomain_hunting.threshold = 1;
+                cfg.nxdomain_hunting.action = crate::config::NxdomainAction::BlockClient;
+            });
+            assert_eq!(run_query(&name).await, (ResponseCode::NXDomain, 0));
+            assert_eq!(run_query("clean-domain.com").await.0, ResponseCode::NoError);
+        });
+    }
+
+    #[test]
+    fn pipeline_without_hot_cache_disables_the_cache() {
+        run_with_globals(async {
+            install_policy(&[], "nocache-site.com");
+            let cache = install_cache();
+            cache.clear();
+            tune(|cfg| {
+                cfg.server
+                    .pipeline
+                    .retain(|step| *step != crate::config::PipelineStep::HotCache);
+            });
+            for _ in 0..2 {
+                assert_eq!(
+                    run_query("nocache-site.com").await,
+                    (ResponseCode::NoError, 1)
+                );
+            }
+            assert_eq!(cache.len(), 0, "nothing written either");
         });
     }
 

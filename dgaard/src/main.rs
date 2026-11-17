@@ -1,3 +1,4 @@
+mod behavior;
 mod cache;
 mod cli;
 mod config;

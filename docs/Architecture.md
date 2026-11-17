@@ -44,7 +44,7 @@ flowchart TD
     S3["3. Smart-IDN Blocker<br/>Punycode + homograph check"]
     S4["4. Tiered Blacklist<br/>Bloom filter + rkyv FSTs"]
     S5["5. Heuristic Engine<br/>Entropy · N-Gram · Lexical"]
-    S6["6. Behavioral Analytics<br/>NXDOMAIN hunting + tunneling"]
+    S6["6. Behavioral Analytics<br/>tunneling (per client, per domain)<br/>NXDOMAIN hunting (per client)"]
     S7["7. GeoIP Scoring<br/>MaxMind MMDB lookup"]
     S8["8. Custom TI Flags<br/>16 user-defined bitflags"]
 
@@ -71,6 +71,20 @@ flowchart TD
     S8 -->|flagged| BLOCK
     S8 -->|pass| ALLOW
 ```
+
+Stage 6 keeps per-client state, so it runs in the daemon around the engine
+(`dgaard/src/behavior.rs`) rather than inside `dgaard-engine`:
+
+- **Tunneling detection** (`[tunneling_detection]`) judges a query just before
+  it would be forwarded: a label longer than `max_label_length`, or more than
+  `max_subdomains_per_minute` distinct names under one registrable domain from
+  one client, blocks it (NXDOMAIN) without contacting the upstream. Whitelisted
+  names are exempt.
+- **NXDOMAIN hunting** (`[nxdomain_hunting]`) counts the NXDOMAIN answers each
+  client receives from upstream or the cache (not dgaard's own block answers).
+  Crossing `threshold` within `window_seconds` is logged; with
+  `action = "block_client"` the client's queries are also refused (REFUSED) for
+  the rest of the window.
 
 ---
 

@@ -631,7 +631,7 @@ export const ENGINE_SCHEMA = {
           key: 'qname_minimization',
           type: 'bool',
           default: true,
-          doc: 'RFC 9156 QNAME minimization. Accepted today; the loop still sends the\nfull QNAME until the Phase 2 follow-up lands.',
+          doc: "RFC 9156 QNAME minimization: each zone's servers only see the next\nlabel of the name; the full name goes to the servers of its own zone.\nFalls back to the full name for servers that mishandle minimised names.",
         },
         {
           key: 'strict_bailiwick',
@@ -644,7 +644,7 @@ export const ENGINE_SCHEMA = {
           type: 'enum',
           values: ['sequential', 'staggered', 'parallel'],
           default: 'sequential',
-          doc: 'How queries fan out across a zone\'s nameservers. Only "sequential" is\nimplemented today; the others are accepted for forward compatibility.',
+          doc: "How queries fan out across a zone's nameservers. sequential: one at a\ntime; staggered: another every ns_stagger_ms while the pending ones are\nsilent; parallel: max_concurrent_queries at once. First answer wins.",
         },
         {
           key: 'max_concurrent_queries',
@@ -785,7 +785,7 @@ export const ENGINE_SCHEMA = {
     {
       path: 'nxdomain_hunting',
       title: 'NXDOMAIN hunting',
-      doc: 'Detects botnet C2 beacon scanning by counting NXDOMAIN responses per\nclient in a sliding window.',
+      doc: "Detects botnet C2 beacon scanning by counting NXDOMAIN answers per\nclient in a sliding window (dgaard's own block answers do not count).\nBehind a forwarder every query has the same source: prefer log there.",
       fields: [
         { key: 'enabled', type: 'bool', default: true, doc: 'Master switch for NXDOMAIN hunting.' },
         {
@@ -807,7 +807,7 @@ export const ENGINE_SCHEMA = {
           type: 'enum',
           values: ['log', 'block_client'],
           default: 'log',
-          doc: "log — record the event only.\nblock_client — drop the client's traffic via firewall integration for\nthe remainder of the window.",
+          doc: 'log — warn in the log only.\nblock_client — also refuse every query of the client (REFUSED) for the\nrest of the window. No system firewall rule is inserted.',
         },
       ],
     },
@@ -827,14 +827,14 @@ export const ENGINE_SCHEMA = {
           type: 'int',
           rust: 'u32',
           default: 50,
-          doc: 'Maximum unique subdomains under one SLD per client per minute.',
+          doc: 'Maximum distinct names under one registrable domain (example.com,\nbbc.co.uk) per client per minute. Beyond it queries are blocked before\nthey leave; whitelisted names are exempt.',
         },
         {
           key: 'max_label_length',
           type: 'int',
           rust: 'u8',
           default: 60,
-          doc: 'Maximum byte length of a single label. Base64 and hex payloads produce\nlabels much longer than legitimate names.',
+          doc: 'Maximum byte length of a single label (1–63). Base64 and hex payloads\nproduce labels much longer than legitimate names.',
         },
       ],
     },

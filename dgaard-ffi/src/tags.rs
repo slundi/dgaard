@@ -103,6 +103,10 @@ pub enum dgaard_reason {
     DGAARD_REASON_CHAOS_CLASS = 20,
     /// Hit a user-defined custom flag list. Number payload: the bit index (16–31).
     DGAARD_REASON_CUSTOM_FLAG = 21,
+    /// Data encoded in DNS labels (overlong label, too many distinct names).
+    DGAARD_REASON_DNS_TUNNELING = 22,
+    /// Client refused after too many NXDOMAIN answers.
+    DGAARD_REASON_NXDOMAIN_HUNTING = 23,
 }
 
 /// One reason, flattened into the three things C can consume: a tag, an
@@ -184,6 +188,8 @@ impl FlatReason {
             BlockReason::CustomFlag(bit) => {
                 Self::with_number(DGAARD_REASON_CUSTOM_FLAG, f64::from(*bit))
             }
+            BlockReason::DnsTunneling => Self::bare(DGAARD_REASON_DNS_TUNNELING),
+            BlockReason::NxdomainHunting => Self::bare(DGAARD_REASON_NXDOMAIN_HUNTING),
         }
     }
 }
@@ -245,6 +251,8 @@ mod tests {
             BlockReason::PtrLeak,
             BlockReason::ChaosClass,
             BlockReason::CustomFlag(17),
+            BlockReason::DnsTunneling,
+            BlockReason::NxdomainHunting,
         ]
     }
 
@@ -261,7 +269,7 @@ mod tests {
             assert!(!seen.contains(&tag), "{reason:?} reuses tag {tag:?}");
             seen.push(tag);
         }
-        assert_eq!(seen.len(), 21);
+        assert_eq!(seen.len(), 23);
     }
 
     #[test]
@@ -272,7 +280,7 @@ mod tests {
             .iter()
             .map(|reason| FlatReason::from_reason(reason).tag as i32)
             .collect();
-        assert_eq!(tags, (1..=21).collect::<Vec<i32>>());
+        assert_eq!(tags, (1..=23).collect::<Vec<i32>>());
     }
 
     #[test]

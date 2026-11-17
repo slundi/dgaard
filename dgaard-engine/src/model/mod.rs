@@ -90,6 +90,16 @@ pub enum BlockReason {
     /// Carries the bit index (16–31) that maps to a `[[security.custom_flags]]`
     /// entry in the configuration.
     CustomFlag(u8),
+
+    /// `[tunneling_detection]`: a label longer than `max_label_length`, or
+    /// more than `max_subdomains_per_minute` distinct names under one
+    /// registrable domain from one client — data encoded in DNS labels.
+    DnsTunneling,
+
+    /// `[nxdomain_hunting]` with `action = "block_client"`: the client got
+    /// too many NXDOMAIN answers (botnet / DGA scanning) and is refused for
+    /// the rest of the window.
+    NxdomainHunting,
 }
 
 /// Messages sent over the stats channel to the collector.

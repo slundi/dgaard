@@ -58,6 +58,8 @@ pub fn format_reason(reason: &BlockReason) -> String {
         BlockReason::PtrLeak => String::from("PtrLeak"),
         BlockReason::ChaosClass => String::from("ChaosClass"),
         BlockReason::CustomFlag(bit) => format!("CustomFlag({})", bit),
+        BlockReason::DnsTunneling => String::from("DnsTunneling"),
+        BlockReason::NxdomainHunting => String::from("NxdomainHunting"),
     }
 }
 

@@ -415,8 +415,9 @@ max_cname_depth = 10
 # Per-nameserver UDP query timeout.
 query_timeout_ms = 3000
 
-# RFC 9156 QNAME minimization. Accepted today; the loop still sends the
-# full QNAME until the Phase 2 follow-up lands.
+# RFC 9156 QNAME minimization: each zone's servers only see the next
+# label of the name; the full name goes to the servers of its own zone.
+# Falls back to the full name for servers that mishandle minimised names.
 qname_minimization = true
 
 # true — refuse out-of-bailiwick referrals up front (a referral that
@@ -424,8 +425,9 @@ qname_minimization = true
 # false — lenient, more tolerant of misconfigured zones.
 strict_bailiwick = true
 
-# How queries fan out across a zone's nameservers. Only "sequential" is
-# implemented today; the others are accepted for forward compatibility.
+# How queries fan out across a zone's nameservers. sequential: one at a
+# time; staggered: another every ns_stagger_ms while the pending ones are
+# silent; parallel: max_concurrent_queries at once. First answer wins.
 ns_concurrency = "staggered"
 
 # Extra launches for staggered mode, total for parallel mode. Kept small
@@ -519,8 +521,9 @@ suspicious_tlds = ["biz", "click", "vip"]
 # -----------------------------------------------------------------------------
 # [nxdomain_hunting] — NXDOMAIN hunting
 # -----------------------------------------------------------------------------
-# Detects botnet C2 beacon scanning by counting NXDOMAIN responses per
-# client in a sliding window.
+# Detects botnet C2 beacon scanning by counting NXDOMAIN answers per
+# client in a sliding window (dgaard's own block answers do not count).
+# Behind a forwarder every query has the same source: prefer log there.
 [nxdomain_hunting]
 # Master switch for NXDOMAIN hunting.
 enabled = true
@@ -531,9 +534,9 @@ threshold = 15
 # Sliding window duration.
 window_seconds = 60
 
-# log — record the event only.
-# block_client — drop the client's traffic via firewall integration for
-# the remainder of the window.
+# log — warn in the log only.
+# block_client — also refuse every query of the client (REFUSED) for the
+# rest of the window. No system firewall rule is inserted.
 action = "block_client"
 
 # -----------------------------------------------------------------------------
@@ -545,11 +548,13 @@ action = "block_client"
 # Master switch for tunneling detection.
 enabled = true
 
-# Maximum unique subdomains under one SLD per client per minute.
+# Maximum distinct names under one registrable domain (example.com,
+# bbc.co.uk) per client per minute. Beyond it queries are blocked before
+# they leave; whitelisted names are exempt.
 max_subdomains_per_minute = 50
 
-# Maximum byte length of a single label. Base64 and hex payloads produce
-# labels much longer than legitimate names.
+# Maximum byte length of a single label (1–63). Base64 and hex payloads
+# produce labels much longer than legitimate names.
 max_label_length = 60
 
 # -----------------------------------------------------------------------------

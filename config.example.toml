@@ -53,7 +53,7 @@ block_idn = true
 # The default order optimized for OpenWrt
 pipeline = [
   "Whitelist", # 1. Instant pass
-  "HotCache", # 2. Local memory hits
+  "HotCache", # 2. Local memory hits (remove to disable the response cache)
   "StaticBlock", # 3. Exact match (Fast)
   "SuffixMatch", # 4. Wildcards (FST)
   "Heuristics", # 5. DGA/Entropy (Math)
@@ -264,17 +264,24 @@ max_cname_depth = 10
 # Per-nameserver UDP query timeout (ms).
 query_timeout_ms = 3000
 
-# RFC 9156 QNAME minimization. Accepted today; the loop currently sends
-# the full QNAME (this will tighten in the follow-up Phase 2 commit).
+# RFC 9156 QNAME minimization: each zone's servers only see the next label
+# of the name (asked as type A); the full name and type go to the servers of
+# its own zone. Servers answering a minimised name with NXDOMAIN, data or an
+# error get the full name instead. At most 10 minimised queries per walk.
 qname_minimization = true
 
 # Strict (true, default) refuses out-of-bailiwick referrals up-front;
 # lenient (false) is more tolerant of misconfigured zones.
 strict_bailiwick = true
 
-# "sequential" (default), "staggered", or "parallel".
-# Today only "sequential" is implemented in the loop; the others are
-# accepted by the parser for forward compatibility.
+# How a query fans out across a zone's nameservers:
+#   "sequential" (default) — one server at a time, the next on failure;
+#   "staggered"            — another server every ns_stagger_ms while the
+#                            pending ones are silent, up to
+#                            max_concurrent_queries extra in flight;
+#   "parallel"             — max_concurrent_queries servers at once.
+# The first answer wins; every launch counts against
+# max_queries_per_resolution.
 ns_concurrency = "sequential"
 max_concurrent_queries = 2
 ns_stagger_ms = 200
@@ -500,20 +507,31 @@ suspicious_country_score = 3
 # -----------------------------------------------------------------------------
 # Behavior Monitoring
 # -----------------------------------------------------------------------------
+# NXDOMAIN hunting: a client that gets `threshold` NXDOMAIN answers from
+# upstream (or the cache) within `window_seconds` is probably scanning for a
+# botnet C2. dgaard's own block answers do not count. Behind a forwarder
+# (e.g. dnsmasq) every query comes from the same address: prefer "log" there.
 [nxdomain_hunting]
 enabled = true
-# Number of NXDOMAINs before a client is flagged
+# Number of NXDOMAINs before a client is flagged (>= 1)
 threshold = 15
-# Time window in seconds
+# Sliding window in seconds (>= 1)
 window_seconds = 60
-# Action: "log" or "block_client" (via firewall integration)
+# Action: "log" (warning in the log) or "block_client" (also refuse every
+# query of that client with REFUSED for the rest of the window; no system
+# firewall rule is inserted)
 action = "log"
 
+# Tunneling detection: queries about to be forwarded are blocked (NXDOMAIN,
+# never sent upstream) when a label exceeds `max_label_length`, or when one
+# client asks more than `max_subdomains_per_minute` distinct names under the
+# same registrable domain (example.com, bbc.co.uk) within a minute.
+# Whitelisted names are exempt.
 [tunneling_detection]
 enabled = true
-# Max unique subdomains per SLD (e.g., v1.x.example.com)
+# Max distinct names per registrable domain per client per minute (>= 1)
 max_subdomains_per_minute = 50
-# Max length of a single label (detects Base64 payloads)
+# Max length of a single label, 1-63 (detects Base64 payloads)
 max_label_length = 60
 
 # -----------------------------------------------------------------------------

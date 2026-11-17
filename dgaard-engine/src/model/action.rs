@@ -171,6 +171,10 @@ impl From<&BlockReason> for StatBlockReason {
             BlockReason::SpecialUseDomain => StatBlockReason::INVALID_STRUCTURE,
             BlockReason::PtrLeak => StatBlockReason::DNS_REBINDING,
             BlockReason::ChaosClass => StatBlockReason::FORBIDDEN_QTYPE,
+            // Same sharing rule: tunneling is a structural signal, a client
+            // flagged by NXDOMAIN hunting is the generic "suspicious".
+            BlockReason::DnsTunneling => StatBlockReason::INVALID_STRUCTURE,
+            BlockReason::NxdomainHunting => StatBlockReason::SUSPICIOUS,
             // User-defined custom flag: set the bit at position `bit` (valid range 16–31).
             // The config parser enforces this range, but BlockReason::CustomFlag is a public
             // type — guard defensively so no caller can trigger a panic (debug) or a wrapping
@@ -189,6 +193,19 @@ impl From<&BlockReason> for StatBlockReason {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn behavioral_reasons_share_existing_stat_bits() {
+        // The monitor protocol's built-in bits stay as they are.
+        assert_eq!(
+            StatBlockReason::from(&BlockReason::DnsTunneling),
+            StatBlockReason::INVALID_STRUCTURE
+        );
+        assert_eq!(
+            StatBlockReason::from(&BlockReason::NxdomainHunting),
+            StatBlockReason::SUSPICIOUS
+        );
+    }
 
     #[test]
     fn test_stat_block_reason_from_block_reason() {

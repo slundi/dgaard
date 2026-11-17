@@ -130,6 +130,14 @@ enum dgaard_reason
      * Hit a user-defined custom flag list. Number payload: the bit index (16–31).
      */
     DGAARD_REASON_CUSTOM_FLAG = 21,
+    /**
+     * Data encoded in DNS labels (overlong label, too many distinct names).
+     */
+    DGAARD_REASON_DNS_TUNNELING = 22,
+    /**
+     * Client refused after too many NXDOMAIN answers.
+     */
+    DGAARD_REASON_NXDOMAIN_HUNTING = 23,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L

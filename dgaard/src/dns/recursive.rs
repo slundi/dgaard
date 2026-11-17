@@ -16,7 +16,6 @@
 //!   loops) through the shared [`ResolutionBudget`]
 //! - Hard caps on delegation depth + total queries per resolution
 //! - EDNS0 OPT advertisement
-//! - Sequential `ns_concurrency`
 //! - Delegation cache: a walk starts at the deepest known zone cut (bounded
 //!   LRU, NS TTL capped at a day), back to the root if its servers fail
 //! - Nameserver addresses on loopback / LAN ranges are never queried
@@ -27,11 +26,18 @@
 //! - Root hints compiled-in (with optional `root_hints_path` override)
 //! - Metrics counters into [`crate::STATS_COUNTERS`]
 //!
-//! ## Deferred to the rest of Phase 2
+//! - QNAME minimization (RFC 9156, `qname_minimization`): below each zone
+//!   cut, one more label at a time (type A), the full name only to the
+//!   servers of its own zone; relaxed fallback to the full name on
+//!   NXDOMAIN / data / errors for a minimised name, at most
+//!   [`MAX_MINIMISE_COUNT`] minimised queries per walk
+//! - NS fanout (`ns_concurrency`): sequential, staggered (another server
+//!   every `ns_stagger_ms`, up to `max_concurrent_queries` extra) or
+//!   parallel (`max_concurrent_queries` at once); first answer wins, every
+//!   launch paid from the query budget
 //!
-//! - QNAME minimization (today: full QNAME on every hop; the config flag is
-//!   parsed and stored so configs stay forward-compatible)
-//! - Staggered / parallel NS fanout (config accepted, runtime is sequential)
+//! ## Deferred
+//!
 //! - ECS striping (no ECS option is ever inserted, which is the only
 //!   safe-by-default behaviour required by the roadmap)
 
@@ -59,7 +65,7 @@ use crate::dns::dnssec_chain::{
 use crate::dns::packet::DnsPacket;
 use crate::dns::resolver::UpstreamResolver;
 
-pub use dgaard_engine::config::{BailiwickPolicy, RecursiveConfig};
+pub use dgaard_engine::config::{BailiwickPolicy, NsConcurrency, RecursiveConfig};
 
 /// Compiled-in IANA root server addresses (`named.root`-style snapshot).
 ///
@@ -222,6 +228,41 @@ pub fn extract_referral_zone(authority: &[Record]) -> Option<Name> {
         .iter()
         .find(|r| matches!(&r.data, RData::NS(_)))
         .map(|r| r.name.clone())
+}
+
+/// Queries in flight in [`RecursiveResolver::query_any_ns`], each with the
+/// server it was sent to.
+type PendingQueries<'a> =
+    Vec<Pin<Box<dyn Future<Output = (SocketAddr, io::Result<Message>)> + Send + 'a>>>;
+
+/// Most minimised queries one delegation walk may send before asking the
+/// full name (RFC 9156 §2.3 `MAX_MINIMISE_COUNT`): bounds the cost of names
+/// with many labels (`ip6.arpa`, deep subdomains).
+pub const MAX_MINIMISE_COUNT: u8 = 10;
+
+/// NOERROR with no answer and no referral: the name exists (or is an empty
+/// non-terminal) but holds no data of the asked type, so it is no zone cut.
+fn is_nodata(response: &Message) -> bool {
+    response.metadata.response_code == ResponseCode::NoError
+        && !response.metadata.truncation
+        && response.answers.is_empty()
+        && extract_ns_names(&response.authorities).is_empty()
+}
+
+/// Wait for the first of `pending` to finish, removing it. Never resolves
+/// when `pending` is empty: callers check first.
+fn first_done<'v, 'f: 'v, T>(
+    pending: &'v mut Vec<Pin<Box<dyn Future<Output = T> + Send + 'f>>>,
+) -> impl Future<Output = T> + 'v {
+    std::future::poll_fn(move |cx| {
+        for idx in 0..pending.len() {
+            if let std::task::Poll::Ready(out) = pending[idx].as_mut().poll(cx) {
+                drop(pending.swap_remove(idx));
+                return std::task::Poll::Ready(out);
+            }
+        }
+        std::task::Poll::Pending
+    })
 }
 
 /// Upper bound on nested zone cuts chained without a referral (a zone,
@@ -805,6 +846,12 @@ impl RecursiveResolver {
         self.ensure_zone_keys(&current_zone, &ns_addrs, &mut budget.queries_used)
             .await;
 
+        // RFC 9156: below `current_zone`, ask one more label of `qname` at a
+        // time until a referral, the full name or the minimisation budget.
+        let mut minimise = self.config.qname_minimization;
+        let mut probe_labels = usize::from(current_zone.num_labels()) + 1;
+        let mut minimised_queries: u8 = 0;
+
         loop {
             if budget.queries_used >= self.config.max_queries_per_resolution {
                 crate::STATS_COUNTERS.increment_recursive_query_cap_hit();
@@ -815,13 +862,23 @@ impl RecursiveResolver {
                 return Err(io::Error::other("max_delegation_depth exceeded"));
             }
 
+            let minimised = minimise
+                && probe_labels < usize::from(qname.num_labels())
+                && minimised_queries < MAX_MINIMISE_COUNT;
+            let (ask_name, ask_type) = if minimised {
+                (qname.trim_to(probe_labels), RecordType::A)
+            } else {
+                (qname.clone(), qtype)
+            };
             let result = self
-                .query_any_ns(&ns_addrs, qname, qtype, &mut budget.queries_used)
+                .query_any_ns(&ns_addrs, &ask_name, ask_type, &mut budget.queries_used)
                 .await;
             // Lame: no answer, an error, or a referral that does not lead
             // further down (the zone moved and these servers dropped it).
+            // NODATA for a minimised name is an answer: no cut there.
             let lame = match result.as_ref().map(classify_response) {
-                Ok(ResponseKind::Empty) | Err(_) => true,
+                Ok(ResponseKind::Empty) => !(minimised && result.as_ref().is_ok_and(is_nodata)),
+                Err(_) => true,
                 Ok(ResponseKind::Referral { new_zone, .. }) => {
                     new_zone == current_zone || !is_in_bailiwick(&current_zone, &new_zone)
                 }
@@ -832,6 +889,7 @@ impl RecursiveResolver {
                 current_zone = Name::root();
                 ns_addrs = pick_initial_ns_addrs(&self.roots, self.ipv6_usable);
                 from_cache = false;
+                probe_labels = 1;
                 self.ensure_zone_keys(&current_zone, &ns_addrs, &mut budget.queries_used)
                     .await;
                 continue;
@@ -840,6 +898,26 @@ impl RecursiveResolver {
             let response = result?;
 
             let classified = classify_response(&response);
+            if minimised {
+                minimised_queries += 1;
+                match classified {
+                    // A zone cut: followed below like any referral.
+                    ResponseKind::Referral { .. } => {}
+                    // An empty non-terminal or a name of this zone: no cut
+                    // at this label, try one more.
+                    _ if is_nodata(&response) => {
+                        probe_labels += 1;
+                        continue;
+                    }
+                    // NXDOMAIN (some servers deny empty non-terminals), data,
+                    // a CNAME or an error for a minimised name: ask the full
+                    // name instead (RFC 9156 §2.3, relaxed mode).
+                    _ => {
+                        minimise = false;
+                        continue;
+                    }
+                }
+            }
             if matches!(classified, ResponseKind::Answer | ResponseKind::NxDomain)
                 && let Some(validator) = self.validator.clone()
             {
@@ -924,6 +1002,7 @@ impl RecursiveResolver {
                     }
 
                     current_zone = new_zone;
+                    probe_labels = usize::from(current_zone.num_labels()) + 1;
                     depth = depth.saturating_add(1);
                 }
                 ResponseKind::NxDomain => return Ok((response, current_zone)),
@@ -950,9 +1029,31 @@ impl RecursiveResolver {
         }
     }
 
-    /// Sequentially walk `ns_addrs`, send `qname / qtype` to each, return
-    /// the first acceptable response. Increments `queries_used` per
-    /// launched query so amplification accounts correctly.
+    /// How many queries may be in flight at once, and how long to wait
+    /// before launching the next server while all of them are pending.
+    fn fanout(&self) -> (usize, Option<Duration>) {
+        let extra = usize::from(self.config.max_concurrent_queries);
+        match self.config.ns_concurrency {
+            NsConcurrency::Sequential => (1, None),
+            NsConcurrency::Staggered => (
+                1 + extra,
+                Some(Duration::from_millis(self.config.ns_stagger_ms)),
+            ),
+            NsConcurrency::Parallel => (extra.max(1), None),
+        }
+    }
+
+    /// Send `qname / qtype` to the servers of `ns_addrs` following
+    /// `ns_concurrency` and return the first acceptable response:
+    ///
+    /// * sequential — one server at a time, the next on failure;
+    /// * staggered — another server every `ns_stagger_ms` while all pending
+    ///   ones are silent, up to `1 + max_concurrent_queries` in flight;
+    /// * parallel — `max_concurrent_queries` at once.
+    ///
+    /// A failed server frees its slot for the next one. Every launch (and
+    /// TCP retry) increments `queries_used` so amplification accounts
+    /// correctly.
     async fn query_any_ns(
         &self,
         ns_addrs: &[SocketAddr],
@@ -960,32 +1061,109 @@ impl RecursiveResolver {
         qtype: RecordType,
         queries_used: &mut u32,
     ) -> io::Result<Message> {
+        enum Event {
+            Done(SocketAddr, io::Result<Message>),
+            Stagger,
+        }
+
+        let (window, stagger) = self.fanout();
+        let mut servers = ns_addrs.iter().copied().peekable();
+        let mut pending: PendingQueries<'_> = Vec::new();
         let mut last_err: Option<io::Error> = None;
-        for addr in ns_addrs {
-            if *queries_used >= self.config.max_queries_per_resolution {
-                break;
-            }
-            *queries_used += 1;
-            crate::STATS_COUNTERS.increment_recursive_queries();
-            match self.query_single_ns(*addr, qname, qtype).await {
+
+        let initial = if stagger.is_none() { window } else { 1 };
+        for _ in 0..initial {
+            self.launch_next(
+                &mut pending,
+                &mut servers,
+                window,
+                queries_used,
+                qname,
+                qtype,
+            );
+        }
+        let mut next_launch = tokio::time::Instant::now() + stagger.unwrap_or_default();
+
+        while !pending.is_empty() {
+            let can_stagger =
+                stagger.is_some() && pending.len() < window && servers.peek().is_some();
+            let event = tokio::select! {
+                (addr, result) = first_done(&mut pending) => Event::Done(addr, result),
+                _ = tokio::time::sleep_until(next_launch), if can_stagger => Event::Stagger,
+            };
+            match event {
+                Event::Stagger => {
+                    self.launch_next(
+                        &mut pending,
+                        &mut servers,
+                        window,
+                        queries_used,
+                        qname,
+                        qtype,
+                    );
+                    next_launch = tokio::time::Instant::now() + stagger.unwrap_or_default();
+                }
                 // Truncated over UDP: ask the same server over TCP
                 // (RFC 7766), paying one more query from the budget.
-                Ok(msg) if msg.metadata.truncation => {
+                Event::Done(addr, Ok(msg)) if msg.metadata.truncation => {
                     if *queries_used >= self.config.max_queries_per_resolution {
                         return Ok(msg);
                     }
                     *queries_used += 1;
                     crate::STATS_COUNTERS.increment_recursive_tcp_fallback();
-                    match self.query_single_ns_tcp(*addr, qname, qtype).await {
+                    match self.query_single_ns_tcp(addr, qname, qtype).await {
                         Ok(full) => return Ok(full),
                         Err(e) => last_err = Some(e),
                     }
+                    self.launch_next(
+                        &mut pending,
+                        &mut servers,
+                        window,
+                        queries_used,
+                        qname,
+                        qtype,
+                    );
                 }
-                Ok(msg) => return Ok(msg),
-                Err(e) => last_err = Some(e),
+                Event::Done(_, Ok(msg)) => return Ok(msg),
+                // A failed server frees its slot at once.
+                Event::Done(_, Err(e)) => {
+                    last_err = Some(e);
+                    self.launch_next(
+                        &mut pending,
+                        &mut servers,
+                        window,
+                        queries_used,
+                        qname,
+                        qtype,
+                    );
+                }
             }
         }
         Err(last_err.unwrap_or_else(|| io::Error::other("no NS addresses to query")))
+    }
+
+    /// Start the query to the next server of `servers` when fewer than
+    /// `window` are in flight and the budget allows one more.
+    fn launch_next<'a>(
+        &'a self,
+        pending: &mut PendingQueries<'a>,
+        servers: &mut std::iter::Peekable<impl Iterator<Item = SocketAddr>>,
+        window: usize,
+        queries_used: &mut u32,
+        qname: &'a Name,
+        qtype: RecordType,
+    ) {
+        if pending.len() >= window || *queries_used >= self.config.max_queries_per_resolution {
+            return;
+        }
+        let Some(addr) = servers.next() else {
+            return;
+        };
+        *queries_used += 1;
+        crate::STATS_COUNTERS.increment_recursive_queries();
+        pending.push(Box::pin(async move {
+            (addr, self.query_single_ns(addr, qname, qtype).await)
+        }));
     }
 
     /// One TCP exchange, after a truncated UDP answer from `addr`. Caller
@@ -2912,6 +3090,8 @@ mod tests {
         let root = spawn_truncating_ns(Ipv4Addr::new(192, 0, 2, 78)).await;
         let mut cfg = cfg_for_tests();
         cfg.max_queries_per_resolution = 1;
+        // The one query must be the full name, not a minimised one.
+        cfg.qname_minimization = false;
         let resolver = RecursiveResolver::with_roots(cfg, vec![root]);
         let packet = make_dns_packet("big.example.", RecordType::A);
         let err = resolver.resolve(&packet).await.unwrap_err();
@@ -3815,5 +3995,345 @@ mod tests {
             .await
             .expect("reachable once private servers are allowed");
         assert_eq!(glue_queries.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    // ---- QNAME minimisation (RFC 9156) ----
+
+    type Seen = Arc<std::sync::Mutex<Vec<(String, RecordType)>>>;
+
+    /// Mock handler that records every (qname, qtype) it receives.
+    fn recording(seen: &Seen, inner: MockHandler) -> MockHandler {
+        let seen = Arc::clone(seen);
+        Arc::new(move |q| {
+            seen.lock()
+                .unwrap()
+                .push((qname_of(q).to_string(), qtype_of(q)));
+            inner(q)
+        })
+    }
+
+    fn seen_by(seen: &Seen) -> Vec<(String, RecordType)> {
+        seen.lock().unwrap().clone()
+    }
+
+    fn new_seen() -> Seen {
+        Arc::new(std::sync::Mutex::new(Vec::new()))
+    }
+
+    async fn resolve_with(
+        servers: &[(Ipv4Addr, MockHandler)],
+        qname: &str,
+        qtype: RecordType,
+        minimise: bool,
+    ) -> io::Result<Message> {
+        let port = spawn_mock_hierarchy(servers).await;
+        let mut resolver = hierarchy_resolver(port);
+        resolver.config.qname_minimization = minimise;
+        let bytes = resolver.resolve(&make_dns_packet(qname, qtype)).await?;
+        Ok(Message::from_vec(&bytes).unwrap())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn each_server_only_sees_the_next_label() {
+        let (root_seen, com_seen, zone_seen) = (new_seen(), new_seen(), new_seen());
+        let servers = [
+            (ROOT_IP, recording(&root_seen, mock_root())),
+            (
+                COM_IP,
+                recording(
+                    &com_seen,
+                    mock_com(vec![("a.com.", "ns.a.com.", Some(ZONE1_IP))]),
+                ),
+            ),
+            (
+                ZONE1_IP,
+                recording(
+                    &zone_seen,
+                    mock(|_q| answer_msg(vec![a_record("www.a.com.", [192, 0, 2, 1])])),
+                ),
+            ),
+        ];
+        let msg = resolve_with(&servers, "www.a.com.", RecordType::AAAA, true)
+            .await
+            .unwrap();
+        assert_eq!(msg.answers, [a_record("www.a.com.", [192, 0, 2, 1])]);
+        assert_eq!(seen_by(&root_seen), [("com.".into(), RecordType::A)]);
+        assert_eq!(seen_by(&com_seen), [("a.com.".into(), RecordType::A)]);
+        assert_eq!(
+            seen_by(&zone_seen),
+            [("www.a.com.".into(), RecordType::AAAA)],
+            "only the zone's own servers see the full name and type"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn without_minimisation_every_server_sees_the_full_name() {
+        let root_seen = new_seen();
+        let servers = [
+            (ROOT_IP, recording(&root_seen, mock_root())),
+            (
+                COM_IP,
+                mock_com(vec![("a.com.", "ns.a.com.", Some(ZONE1_IP))]),
+            ),
+            (
+                ZONE1_IP,
+                mock(|_q| answer_msg(vec![a_record("www.a.com.", [192, 0, 2, 1])])),
+            ),
+        ];
+        resolve_with(&servers, "www.a.com.", RecordType::AAAA, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            seen_by(&root_seen),
+            [("www.a.com.".into(), RecordType::AAAA)]
+        );
+    }
+
+    /// `a.com.` server holding `target` below non-cut names, which it
+    /// answers with `intermediate`.
+    fn deep_zone(
+        seen: &Seen,
+        target: &'static str,
+        intermediate: fn() -> Message,
+    ) -> [(Ipv4Addr, MockHandler); 3] {
+        [
+            (ROOT_IP, mock_root()),
+            (
+                COM_IP,
+                mock_com(vec![("a.com.", "ns.a.com.", Some(ZONE1_IP))]),
+            ),
+            (
+                ZONE1_IP,
+                recording(
+                    seen,
+                    mock(move |q| {
+                        if qname_of(q) == name(target) {
+                            answer_msg(vec![a_record(target, [192, 0, 2, 5])])
+                        } else {
+                            intermediate()
+                        }
+                    }),
+                ),
+            ),
+        ]
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn nodata_for_a_minimised_name_means_no_cut_there() {
+        let seen = new_seen();
+        let servers = deep_zone(&seen, "www.y.x.a.com.", || answer_msg(Vec::new()));
+        let msg = resolve_with(&servers, "www.y.x.a.com.", RecordType::AAAA, true)
+            .await
+            .unwrap();
+        assert_eq!(msg.answers, [a_record("www.y.x.a.com.", [192, 0, 2, 5])]);
+        assert_eq!(
+            seen_by(&seen),
+            [
+                ("x.a.com.".into(), RecordType::A),
+                ("y.x.a.com.".into(), RecordType::A),
+                ("www.y.x.a.com.".into(), RecordType::AAAA)
+            ]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn nxdomain_for_a_minimised_name_falls_back_to_the_full_name() {
+        // Servers that deny empty non-terminals must not break resolution.
+        let seen = new_seen();
+        let servers = deep_zone(&seen, "www.x.a.com.", nxdomain_msg);
+        let msg = resolve_with(&servers, "www.x.a.com.", RecordType::AAAA, true)
+            .await
+            .unwrap();
+        assert_eq!(msg.metadata.response_code, ResponseCode::NoError);
+        assert_eq!(msg.answers, [a_record("www.x.a.com.", [192, 0, 2, 5])]);
+        assert_eq!(
+            seen_by(&seen),
+            [
+                ("x.a.com.".into(), RecordType::A),
+                ("www.x.a.com.".into(), RecordType::AAAA)
+            ]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn minimisation_is_bounded_per_walk() {
+        let seen = new_seen();
+        let deep = format!("{}a.com.", "l.".repeat(14));
+        let target = name(&deep);
+        let servers = [
+            (ROOT_IP, mock_root()),
+            (
+                COM_IP,
+                mock_com(vec![("a.com.", "ns.a.com.", Some(ZONE1_IP))]),
+            ),
+            (
+                ZONE1_IP,
+                recording(
+                    &seen,
+                    mock(move |q| {
+                        if qname_of(q) == target {
+                            answer_msg(vec![Record::from_rdata(
+                                target.clone(),
+                                300,
+                                RData::A(A::new(192, 0, 2, 6)),
+                            )])
+                        } else {
+                            answer_msg(Vec::new())
+                        }
+                    }),
+                ),
+            ),
+        ];
+        let msg = resolve_with(&servers, &deep, RecordType::AAAA, true)
+            .await
+            .unwrap();
+        assert_eq!(msg.answers.len(), 1);
+        let queries = seen_by(&seen);
+        let minimised = queries
+            .iter()
+            .filter(|(_, qtype)| *qtype == RecordType::A)
+            .count();
+        // Root and com. took two of the ten minimised queries.
+        assert_eq!(minimised, usize::from(MAX_MINIMISE_COUNT) - 2);
+        assert_eq!(
+            queries.last().unwrap(),
+            &(deep.clone(), RecordType::AAAA),
+            "then the full name"
+        );
+    }
+
+    // ---- NS fanout (ns_concurrency) ----
+
+    /// Authoritative mock answering every query with `ip` after `delay`.
+    async fn spawn_delayed_ns(delay: Duration, ip: [u8; 4]) -> SocketAddr {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr = socket.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 4096];
+            while let Ok((len, peer)) = socket.recv_from(&mut buf).await {
+                let Ok(query) = Message::from_vec(&buf[..len]) else {
+                    continue;
+                };
+                let socket = Arc::clone(&socket);
+                tokio::spawn(async move {
+                    tokio::time::sleep(delay).await;
+                    let mut reply = answer_msg(vec![Record::from_rdata(
+                        qname_of(&query),
+                        300,
+                        RData::A(A(Ipv4Addr::from(ip))),
+                    )]);
+                    reply.metadata.id = query.metadata.id;
+                    reply.metadata.message_type = MessageType::Response;
+                    reply.add_query(query.queries[0].clone());
+                    let _ = socket.send_to(&reply.to_vec().unwrap(), peer).await;
+                });
+            }
+        });
+        addr
+    }
+
+    /// Query `[slow, fast]` with `mode`; return the answering IP, the time
+    /// taken and the queries spent.
+    async fn fanout_race(mode: NsConcurrency) -> (Ipv4Addr, Duration, u32) {
+        let slow = spawn_delayed_ns(Duration::from_millis(700), [192, 0, 2, 1]).await;
+        let fast = spawn_delayed_ns(Duration::ZERO, [192, 0, 2, 2]).await;
+        let mut cfg = cfg_for_tests();
+        cfg.ns_concurrency = mode;
+        cfg.ns_stagger_ms = 100;
+        cfg.max_concurrent_queries = 2;
+        let resolver = RecursiveResolver::with_roots(cfg, Vec::new());
+        let mut used = 0;
+        let started = std::time::Instant::now();
+        let msg = resolver
+            .query_any_ns(
+                &[slow, fast],
+                &name("race.example."),
+                RecordType::A,
+                &mut used,
+            )
+            .await
+            .unwrap();
+        let ip = match &msg.answers[0].data {
+            RData::A(a) => a.0,
+            other => panic!("{other:?}"),
+        };
+        (ip, started.elapsed(), used)
+    }
+
+    #[tokio::test]
+    async fn sequential_fanout_waits_for_the_first_server() {
+        let (ip, elapsed, used) = fanout_race(NsConcurrency::Sequential).await;
+        assert_eq!(ip, Ipv4Addr::new(192, 0, 2, 1));
+        assert!(elapsed >= Duration::from_millis(650), "{elapsed:?}");
+        assert_eq!(used, 1);
+    }
+
+    #[tokio::test]
+    async fn staggered_fanout_launches_the_next_server_after_the_gap() {
+        let (ip, elapsed, used) = fanout_race(NsConcurrency::Staggered).await;
+        assert_eq!(ip, Ipv4Addr::new(192, 0, 2, 2), "the fast server wins");
+        assert!(elapsed >= Duration::from_millis(90), "{elapsed:?}");
+        assert!(elapsed < Duration::from_millis(500), "{elapsed:?}");
+        assert_eq!(used, 2);
+    }
+
+    #[tokio::test]
+    async fn parallel_fanout_queries_at_once() {
+        let (ip, elapsed, used) = fanout_race(NsConcurrency::Parallel).await;
+        assert_eq!(ip, Ipv4Addr::new(192, 0, 2, 2));
+        assert!(elapsed < Duration::from_millis(300), "{elapsed:?}");
+        assert_eq!(used, 2);
+    }
+
+    #[tokio::test]
+    async fn a_failed_server_frees_its_slot() {
+        // Nothing listens on the first address: the connected socket gets
+        // the ICMP error at once and the next server is tried.
+        let dead = {
+            let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            socket.local_addr().unwrap()
+        };
+        let fast = spawn_delayed_ns(Duration::ZERO, [192, 0, 2, 3]).await;
+        for mode in [NsConcurrency::Sequential, NsConcurrency::Staggered] {
+            let mut cfg = cfg_for_tests();
+            cfg.ns_concurrency = mode;
+            cfg.ns_stagger_ms = 5_000;
+            cfg.max_concurrent_queries = 1;
+            let resolver = RecursiveResolver::with_roots(cfg, Vec::new());
+            let mut used = 0;
+            let started = std::time::Instant::now();
+            let msg = resolver
+                .query_any_ns(&[dead, fast], &name("x.example."), RecordType::A, &mut used)
+                .await
+                .unwrap();
+            assert_eq!(msg.answers.len(), 1, "{mode:?}");
+            assert!(started.elapsed() < Duration::from_secs(1), "{mode:?}");
+            assert_eq!(used, 2, "{mode:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn fanout_launches_are_paid_from_the_budget() {
+        let servers = [
+            spawn_delayed_ns(Duration::from_millis(200), [192, 0, 2, 1]).await,
+            spawn_delayed_ns(Duration::from_millis(200), [192, 0, 2, 2]).await,
+            spawn_delayed_ns(Duration::from_millis(200), [192, 0, 2, 3]).await,
+        ];
+        let mut cfg = cfg_for_tests();
+        cfg.ns_concurrency = NsConcurrency::Parallel;
+        cfg.max_concurrent_queries = 3;
+        cfg.max_queries_per_resolution = 2;
+        let resolver = RecursiveResolver::with_roots(cfg, Vec::new());
+        let mut used = 0;
+        resolver
+            .query_any_ns(&servers, &name("x.example."), RecordType::A, &mut used)
+            .await
+            .unwrap();
+        assert_eq!(used, 2, "the budget caps the parallel launches");
     }
 }

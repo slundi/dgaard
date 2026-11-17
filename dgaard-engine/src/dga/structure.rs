@@ -567,9 +567,40 @@ pub fn effective_sld(domain: &str) -> Option<&str> {
     Some(second)
 }
 
+/// The registrable domain of `domain`: its effective SLD and public suffix
+/// (`www.example.com` → `example.com`, `news.bbc.co.uk` → `bbc.co.uk`).
+/// `None` for a bare public suffix or a single label.
+pub fn registrable_domain(domain: &str) -> Option<&str> {
+    let trimmed = domain.trim_end_matches('.');
+    let mut labels = trimmed.rsplitn(4, '.');
+    let tld = labels.next()?;
+    let second = labels.next()?;
+    if tld.is_empty() || second.is_empty() {
+        return None;
+    }
+    let mut len = tld.len() + 1 + second.len();
+    if is_two_label_public_suffix(second, tld) {
+        let third = labels.next().filter(|label| !label.is_empty())?;
+        len += 1 + third.len();
+    }
+    Some(&trimmed[trimmed.len() - len..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registrable_domain_keeps_the_public_suffix() {
+        assert_eq!(registrable_domain("www.example.com"), Some("example.com"));
+        assert_eq!(registrable_domain("example.com."), Some("example.com"));
+        assert_eq!(registrable_domain("a.b.news.bbc.co.uk"), Some("bbc.co.uk"));
+        assert_eq!(registrable_domain("bbc.co.uk"), Some("bbc.co.uk"));
+        assert_eq!(registrable_domain("co.uk"), None);
+        assert_eq!(registrable_domain("com"), None);
+        assert_eq!(registrable_domain(""), None);
+        assert_eq!(registrable_domain(".com"), None);
+    }
 
     #[test]
     fn public_suffix_table_is_sorted_and_unique() {
