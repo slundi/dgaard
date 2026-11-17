@@ -3,8 +3,12 @@
 //! This module provides an MPSC channel-based system for collecting DNS query
 //! events from worker tasks and streaming them to external consumers via Unix socket.
 
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+use lru::LruCache;
 use tokio::sync::mpsc;
 
 use crate::GLOBAL_SEED;
@@ -15,6 +19,88 @@ use crate::model::{StatAction, StatBlockReason, StatEvent, StatMessage};
 /// Bounded to provide backpressure when the collector is slow.
 const CHANNEL_CAPACITY: usize = 4096;
 
+/// Hash → domain mappings the collector keeps (LRU).
+pub(crate) const DOMAIN_MAP_CAP: usize = 100_000;
+
+/// Domains the sender remembers as announced: half the collector's map, so
+/// whatever the sender still skips is, with a wide margin, still known by
+/// the collector (both refresh an entry on every event; the margin absorbs
+/// sharding and dropped events).
+const ANNOUNCED_CAP: usize = DOMAIN_MAP_CAP / 2;
+
+/// Lock shards of the announced set: the query path never contends on one
+/// global lock.
+const ANNOUNCED_SHARDS: usize = 16;
+
+// Enforced at compile time: the sender must stay well below the collector.
+const _: () =
+    assert!(ANNOUNCED_CAP * 2 <= DOMAIN_MAP_CAP && ANNOUNCED_CAP.is_multiple_of(ANNOUNCED_SHARDS));
+
+/// Every mapping is sent again after this long, healing any drift between
+/// the sender's and the collector's LRUs (e.g. after dropped events).
+const REANNOUNCE_INTERVAL: Duration = Duration::from_secs(3600);
+
+/// Bounded record of the domain hashes already announced to the collector.
+///
+/// A sharded LRU: random subdomains (scans, tunnels, DGAs) evict each other
+/// instead of growing memory, and an evicted domain is simply announced
+/// again the next time it shows up.
+struct AnnouncedSet {
+    shards: Box<[Mutex<LruCache<u64, ()>>]>,
+    reannounce_every: Duration,
+    /// When the shards were last cleared.
+    cleared_at: Mutex<Instant>,
+}
+
+impl AnnouncedSet {
+    fn new(capacity: usize, shards: usize, reannounce_every: Duration) -> Self {
+        let per_shard = NonZeroUsize::new((capacity / shards).max(1)).expect("capacity >= 1");
+        Self {
+            shards: (0..shards)
+                .map(|_| Mutex::new(LruCache::new(per_shard)))
+                .collect(),
+            reannounce_every,
+            cleared_at: Mutex::new(Instant::now()),
+        }
+    }
+
+    fn shard(&self, hash: u64) -> std::sync::MutexGuard<'_, LruCache<u64, ()>> {
+        let idx = (hash % self.shards.len() as u64) as usize;
+        self.shards[idx].lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// True when `hash` is known as announced; refreshes its recency.
+    fn touch(&self, hash: u64) -> bool {
+        self.clear_if_due();
+        self.shard(hash).get(&hash).is_some()
+    }
+
+    fn insert(&self, hash: u64) {
+        self.shard(hash).put(hash, ());
+    }
+
+    /// Forget everything once per `reannounce_every`.
+    fn clear_if_due(&self) {
+        let mut cleared_at = self.cleared_at.lock().unwrap_or_else(|e| e.into_inner());
+        if cleared_at.elapsed() < self.reannounce_every {
+            return;
+        }
+        *cleared_at = Instant::now();
+        drop(cleared_at);
+        for shard in self.shards.iter() {
+            shard.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.shards
+            .iter()
+            .map(|shard| shard.lock().unwrap().len())
+            .sum()
+    }
+}
+
 /// Sender handle for emitting stat events from DNS handlers.
 ///
 /// Clone this to distribute across worker tasks. Sending is non-blocking
@@ -22,9 +108,9 @@ const CHANNEL_CAPACITY: usize = 4096;
 #[derive(Clone)]
 pub struct StatsSender {
     tx: mpsc::Sender<StatMessage>,
-    /// Tracks which domain hashes have already been announced.
-    /// Uses a thread-safe set to avoid duplicate DomainMapping messages.
-    announced: std::sync::Arc<dashmap::DashSet<u64>>,
+    /// Domain hashes recently announced, to avoid duplicate DomainMapping
+    /// messages. Bounded: see [`AnnouncedSet`].
+    announced: Arc<AnnouncedSet>,
 }
 
 impl StatsSender {
@@ -45,8 +131,8 @@ impl StatsSender {
         let hash =
             twox_hash::XxHash64::oneshot(GLOBAL_SEED.load(Ordering::Relaxed), domain.as_bytes());
 
-        // Send domain mapping if not already announced
-        if !self.announced.contains(&hash) {
+        // Send domain mapping unless recently announced
+        if !self.announced.touch(hash) {
             let mapping = StatMessage::DomainMapping {
                 hash,
                 domain: domain.to_string(),
@@ -120,10 +206,18 @@ impl StatsReceiver {
 /// Returns a sender (cloneable for distribution to workers) and a receiver
 /// for the collector task.
 pub fn channel() -> (StatsSender, StatsReceiver) {
+    channel_with(AnnouncedSet::new(
+        ANNOUNCED_CAP,
+        ANNOUNCED_SHARDS,
+        REANNOUNCE_INTERVAL,
+    ))
+}
+
+fn channel_with(announced: AnnouncedSet) -> (StatsSender, StatsReceiver) {
     let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
     let sender = StatsSender {
         tx,
-        announced: std::sync::Arc::new(dashmap::DashSet::new()),
+        announced: Arc::new(announced),
     };
     let receiver = StatsReceiver { rx };
     (sender, receiver)
@@ -503,7 +597,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel::<StatMessage>(1);
         let sender = StatsSender {
             tx,
-            announced: std::sync::Arc::new(dashmap::DashSet::new()),
+            announced: Arc::new(AnnouncedSet::new(16, 1, REANNOUNCE_INTERVAL)),
         };
 
         let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
@@ -514,5 +608,84 @@ mod tests {
         let after = crate::STATS_COUNTERS.get_stats_dropped();
         // The event try_send must have been dropped (channel already full).
         assert!(after > before, "expected at least one drop");
+    }
+
+    // ---- bounded announced set ----
+
+    /// Mappings announced for `domain` in the messages received so far.
+    fn mappings_for(rx: &mut StatsReceiver, domain: &str) -> usize {
+        let mut count = 0;
+        while let Ok(msg) = rx.try_recv() {
+            if let StatMessage::DomainMapping {
+                domain: announced, ..
+            } = msg
+                && announced == domain
+            {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    fn small_channel(capacity: usize, reannounce_every: Duration) -> (StatsSender, StatsReceiver) {
+        channel_with(AnnouncedSet::new(capacity, 1, reannounce_every))
+    }
+
+    fn client() -> SocketAddr {
+        "127.0.0.1:9999".parse().unwrap()
+    }
+
+    #[test]
+    fn announced_set_stays_bounded() {
+        // Random subdomains (scan, tunnel, DGA) used to grow it forever.
+        let set = AnnouncedSet::new(64, 4, REANNOUNCE_INTERVAL);
+        for hash in 0..10_000u64 {
+            if !set.touch(hash) {
+                set.insert(hash);
+            }
+        }
+        assert!(set.len() <= 64, "{} entries", set.len());
+    }
+
+    #[tokio::test]
+    async fn evicted_domain_is_announced_again() {
+        init_test_seed();
+        let (sender, mut rx) = small_channel(4, REANNOUNCE_INTERVAL);
+        sender.send_event("first.test", client(), StatAction::Allowed);
+        for idx in 0..10 {
+            sender.send_event(&format!("noise{idx}.test"), client(), StatAction::Allowed);
+        }
+        assert_eq!(mappings_for(&mut rx, "first.test"), 1);
+        sender.send_event("first.test", client(), StatAction::Allowed);
+        assert_eq!(mappings_for(&mut rx, "first.test"), 1, "announced again");
+    }
+
+    #[tokio::test]
+    async fn busy_domain_is_announced_once() {
+        init_test_seed();
+        let (sender, mut rx) = small_channel(4, REANNOUNCE_INTERVAL);
+        for idx in 0..20 {
+            sender.send_event("busy.test", client(), StatAction::Allowed);
+            sender.send_event(&format!("noise{idx}.test"), client(), StatAction::Allowed);
+        }
+        assert_eq!(
+            mappings_for(&mut rx, "busy.test"),
+            1,
+            "each use refreshes it ahead of one-off names"
+        );
+    }
+
+    #[tokio::test]
+    async fn mappings_are_announced_again_periodically() {
+        init_test_seed();
+        let (sender, mut rx) = small_channel(16, Duration::ZERO);
+        sender.send_event("periodic.test", client(), StatAction::Allowed);
+        sender.send_event("periodic.test", client(), StatAction::Allowed);
+        assert_eq!(mappings_for(&mut rx, "periodic.test"), 2);
+
+        let (sender, mut rx) = small_channel(16, Duration::from_secs(3600));
+        sender.send_event("periodic.test", client(), StatAction::Allowed);
+        sender.send_event("periodic.test", client(), StatAction::Allowed);
+        assert_eq!(mappings_for(&mut rx, "periodic.test"), 1);
     }
 }

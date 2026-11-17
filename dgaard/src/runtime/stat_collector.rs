@@ -1,13 +1,11 @@
 use crate::CONFIG;
 use crate::config::QueryLogLevel;
 use crate::model::{StatAction, StatBlockReason, StatEvent};
-use crate::stats::StatsReceiver;
+use crate::stats::{DOMAIN_MAP_CAP, StatsReceiver};
 use lru::LruCache;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use tokio::sync::watch;
-
-const DOMAIN_MAP_CAP: usize = 100_000;
 
 /// Maximum number of simultaneously connected stats clients. A flapping
 /// dashboard would otherwise grow `clients: Vec<UnixStream>` without
@@ -352,6 +350,10 @@ pub(crate) async fn process_stat_message(
             domain_map.put(*hash, domain.clone());
         }
         StatMessage::Event(event) => {
+            // Every event refreshes its mapping, logged or not, so the map
+            // evicts domains nobody queries rather than busy ones — the
+            // sender, which refreshes on every send, relies on it.
+            domain_map.promote(&event.domain_hash);
             query_log.summary.record(event);
             if let Some(line) = query_log_line(event, domain_map, query_log.level) {
                 println!("{line}");
@@ -765,6 +767,33 @@ mod tests {
         let line = query_log.summary.take_line(60, &domain_map);
         assert!(line.contains("queries=1 blocked=1"), "{line}");
         assert!(line.ends_with("top_blocked=ads.example (1)"), "{line}");
+    }
+
+    #[tokio::test]
+    async fn every_event_refreshes_its_mapping() {
+        // with logging off, events used to leave the LRU order
+        // untouched, so busy domains were evicted like one-off ones and
+        // then shown as <unknown>.
+        let mut domain_map = LruCache::new(NonZeroUsize::new(2).unwrap());
+        let mut clients = Vec::new();
+        let mut query_log = QueryLog::new(QueryLogLevel::Off);
+        for (hash, domain) in [(1u64, "busy.example"), (2, "idle.example")] {
+            let mapping = StatMessage::DomainMapping {
+                hash,
+                domain: domain.to_string(),
+            };
+            process_stat_message(&mapping, &mut domain_map, &mut clients, &mut query_log).await;
+        }
+        let event = StatMessage::Event(event_from([10, 0, 0, 1], 1, StatAction::Allowed));
+        process_stat_message(&event, &mut domain_map, &mut clients, &mut query_log).await;
+        let newcomer = StatMessage::DomainMapping {
+            hash: 3,
+            domain: "new.example".to_string(),
+        };
+        process_stat_message(&newcomer, &mut domain_map, &mut clients, &mut query_log).await;
+
+        assert!(domain_map.contains(&1), "busy domain kept");
+        assert!(!domain_map.contains(&2), "idle domain evicted");
     }
 
     #[tokio::test]
