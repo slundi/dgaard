@@ -17,7 +17,10 @@ mode = "forwarder"
 
 # Networks allowed to use this proxy (Access Control List)
 allowed_networks = ["127.0.0.1/32", "192.168.1.0/24"]
-# Port for the Unix Socket stats stream
+# Unix socket streaming telemetry (queried domains, client IPs) to the
+# dashboard / TUI. Created with mode 0660: give readers the daemon's group
+# (e.g. systemd `Group=`). An existing socket at this path is replaced; any
+# other file there makes startup skip the stats socket instead of deleting it.
 stats_socket_path = "/var/run/dgaard/stats.sock"
 
 # Reject any domain containing non-ANSI characters (Punycode)

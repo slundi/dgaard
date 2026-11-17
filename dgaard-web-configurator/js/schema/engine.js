@@ -41,7 +41,7 @@ export const ENGINE_SCHEMA = {
           key: 'stats_socket_path',
           type: 'path',
           default: '/tmp/dgaard_stats.sock',
-          doc: 'Unix socket used to stream telemetry to the dashboard / TUI.\nMust match input.socket in dgaard-monitor.toml.',
+          doc: "Unix socket used to stream telemetry to the dashboard / TUI.\nMust match input.socket in dgaard-monitor.toml. Created with mode 0660:\nreaders need the daemon's group. Only an existing socket is replaced.",
         },
         {
           key: 'block_idn',

@@ -5,12 +5,63 @@ use crate::stats::{DOMAIN_MAP_CAP, StatsReceiver};
 use lru::LruCache;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
-use tokio::sync::watch;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{mpsc, watch};
 
 /// Maximum number of simultaneously connected stats clients. A flapping
-/// dashboard would otherwise grow `clients: Vec<UnixStream>` without
-/// bound, since drops only happen on actual write errors.
+/// dashboard would otherwise grow the client list without bound.
 const MAX_CLIENTS: usize = 8;
+
+/// Messages queued per client. A client that falls this far behind is
+/// disconnected rather than allowed to stall the collector.
+const CLIENT_QUEUE: usize = 1024;
+
+/// Longest a single write to a client may take before it is disconnected.
+const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Permissions of the stats socket: it exposes queried domains and client
+/// IPs, so only the daemon's user and group may connect, whatever the umask.
+const SOCKET_MODE: u32 = 0o660;
+
+/// One connected stats client, as seen by the collector: the sending end of
+/// its bounded queue. A dedicated task owns the socket and does the writes.
+pub(crate) struct StatsClient {
+    tx: mpsc::Sender<Arc<[u8]>>,
+}
+
+impl StatsClient {
+    /// Start the writer task of a new client: it first sends `snapshot`
+    /// (the current domain mappings), then every queued message, each write
+    /// bounded by `write_timeout`. The task ends — and the collector drops
+    /// the client — on a write error or timeout.
+    pub(crate) fn spawn(
+        mut stream: tokio::net::UnixStream,
+        snapshot: Vec<u8>,
+        queue: usize,
+        write_timeout: Duration,
+    ) -> Self {
+        let (tx, mut rx) = mpsc::channel::<Arc<[u8]>>(queue);
+        tokio::spawn(async move {
+            if !write_within(&mut stream, &snapshot, write_timeout).await {
+                return;
+            }
+            drop(snapshot);
+            while let Some(bytes) = rx.recv().await {
+                if !write_within(&mut stream, &bytes, write_timeout).await {
+                    return;
+                }
+            }
+        });
+        Self { tx }
+    }
+
+    /// Queue `bytes` without waiting; false when the client must be dropped
+    /// (queue full: too slow; closed: its writer task ended).
+    fn offer(&self, bytes: &Arc<[u8]>) -> bool {
+        self.tx.try_send(Arc::clone(bytes)).is_ok()
+    }
+}
 
 /// Cap on distinct clients and blocked domains tracked per summary window,
 /// so a scan or a burst of random subdomains cannot grow the maps without
@@ -28,8 +79,6 @@ pub(crate) async fn stats_collector_task(
     mut receiver: StatsReceiver,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
-    use tokio::net::UnixStream;
-
     // Track domain mappings for logging; capped to avoid unbounded growth.
     let mut domain_map: LruCache<u64, String> =
         LruCache::new(NonZeroUsize::new(DOMAIN_MAP_CAP).unwrap());
@@ -50,7 +99,7 @@ pub(crate) async fn stats_collector_task(
     // Connected socket clients. Capped to MAX_CLIENTS so a misbehaving
     // dashboard that reconnects in a tight loop cannot grow this vec
     // (and the per-event broadcast cost) without bound.
-    let mut clients: Vec<UnixStream> = Vec::new();
+    let mut clients: Vec<StatsClient> = Vec::new();
 
     // Try to bind the Unix socket
     let socket_path = CONFIG.load().server.stats_socket_path.clone();
@@ -85,7 +134,7 @@ pub(crate) async fn stats_collector_task(
                     if !socket_path.is_empty() {
                         let cleanup_path = socket_path.clone();
                         let _ = tokio::task::spawn_blocking(move || {
-                            let _ = std::fs::remove_file(&cleanup_path);
+                            let _ = remove_stale_socket(std::path::Path::new(&cleanup_path));
                         })
                         .await;
                     }
@@ -110,9 +159,16 @@ pub(crate) async fn stats_collector_task(
                             drop(stream);
                             continue;
                         }
+                        clients.retain(|client| !client.tx.is_closed());
                         println!("Stats client connected ({} total)", clients.len() + 1);
-                        // Send all current domain mappings to the new client
-                        send_domain_mappings_to_client(&mut clients, &domain_map, stream).await;
+                        // Its own task sends the current domain mappings,
+                        // then follows the live stream.
+                        clients.push(StatsClient::spawn(
+                            stream,
+                            domain_mappings_snapshot(&domain_map),
+                            CLIENT_QUEUE,
+                            CLIENT_WRITE_TIMEOUT,
+                        ));
                     }
                     Err(e) => {
                         eprintln!("Error accepting stats connection: {}", e);
@@ -149,14 +205,43 @@ pub(crate) async fn stats_collector_task(
     }
 }
 
+/// Write all of `bytes` within `limit`; false on error or timeout.
+async fn write_within(stream: &mut tokio::net::UnixStream, bytes: &[u8], limit: Duration) -> bool {
+    use tokio::io::AsyncWriteExt;
+
+    matches!(
+        tokio::time::timeout(limit, stream.write_all(bytes)).await,
+        Ok(Ok(()))
+    )
+}
+
+/// Remove a leftover stats socket at `path`. Only a socket is removed: a
+/// regular file, directory or symlink there is an error, because the daemon
+/// often runs as root and the path comes from configuration.
+fn remove_stale_socket(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::FileTypeExt;
+
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_socket() => std::fs::remove_file(path),
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "{} exists and is not a socket; refusing to remove it",
+                path.display()
+            ),
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Set up the Unix domain socket for stats streaming.
 ///
-/// Filesystem prep (mkdir parent, unlink stale socket) runs in a blocking
-/// pool so the tokio executor isn't stalled on slow flash or NFS during
-/// startup.
+/// The socket is bound under a temporary name, given [`SOCKET_MODE`], then
+/// renamed into place, so it never exists at `path` with umask-derived
+/// permissions. Filesystem work runs in the blocking pool so the executor
+/// isn't stalled on slow flash or NFS during startup.
 pub(crate) async fn setup_unix_socket(path: &str) -> std::io::Result<tokio::net::UnixListener> {
-    use tokio::net::UnixListener;
-
     if path.is_empty() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -164,44 +249,49 @@ pub(crate) async fn setup_unix_socket(path: &str) -> std::io::Result<tokio::net:
         ));
     }
 
-    let path_owned = path.to_string();
-    tokio::task::spawn_blocking(move || {
-        let _ = std::fs::remove_file(&path_owned);
-        if let Some(parent) = std::path::Path::new(&path_owned).parent()
+    let path_owned = std::path::PathBuf::from(path);
+    let std_listener = tokio::task::spawn_blocking(move || {
+        use std::os::unix::fs::PermissionsExt;
+
+        if let Some(parent) = path_owned.parent()
             && !parent.as_os_str().is_empty()
         {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
+        remove_stale_socket(&path_owned)?;
+        let staging = path_owned.with_extension(format!("tmp{}", std::process::id()));
+        remove_stale_socket(&staging)?;
+        let listener = std::os::unix::net::UnixListener::bind(&staging)?;
+        let placed =
+            std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(SOCKET_MODE))
+                .and_then(|()| std::fs::rename(&staging, &path_owned));
+        if let Err(e) = placed {
+            let _ = std::fs::remove_file(&staging);
+            return Err(e);
+        }
+        listener.set_nonblocking(true)?;
+        Ok::<_, std::io::Error>(listener)
     })
     .await
-    .map_err(|e| std::io::Error::other(format!("setup_unix_socket join: {e}")))?;
+    .map_err(|e| std::io::Error::other(format!("setup_unix_socket join: {e}")))??;
 
-    UnixListener::bind(path)
+    tokio::net::UnixListener::from_std(std_listener)
 }
 
-/// Send all current domain mappings to a newly connected client.
-pub(crate) async fn send_domain_mappings_to_client(
-    clients: &mut Vec<tokio::net::UnixStream>,
-    domain_map: &LruCache<u64, String>,
-    mut new_client: tokio::net::UnixStream,
-) {
+/// Every known domain mapping, serialized back to back: what a new client
+/// receives before the live stream.
+pub(crate) fn domain_mappings_snapshot(domain_map: &LruCache<u64, String>) -> Vec<u8> {
     use crate::model::StatMessage;
-    use tokio::io::AsyncWriteExt;
 
-    // Send all known domain mappings to the new client
+    let mut snapshot = Vec::new();
     for (&hash, domain) in domain_map.iter() {
         let msg = StatMessage::DomainMapping {
             hash,
             domain: domain.clone(),
         };
-        let bytes = msg.serialize();
-        if new_client.write_all(&bytes).await.is_err() {
-            // Client disconnected during handshake, don't add it
-            return;
-        }
+        snapshot.extend_from_slice(&msg.serialize());
     }
-
-    clients.push(new_client);
+    snapshot
 }
 
 /// Stdout logging state owned by the collector task.
@@ -339,11 +429,10 @@ pub(crate) fn query_log_line(
 pub(crate) async fn process_stat_message(
     msg: &crate::model::StatMessage,
     domain_map: &mut LruCache<u64, String>,
-    clients: &mut Vec<tokio::net::UnixStream>,
+    clients: &mut Vec<StatsClient>,
     query_log: &mut QueryLog,
 ) {
     use crate::model::StatMessage;
-    use tokio::io::AsyncWriteExt;
 
     match msg {
         StatMessage::DomainMapping { hash, domain } => {
@@ -361,18 +450,17 @@ pub(crate) async fn process_stat_message(
         }
     }
 
-    // Stream to connected Unix socket clients
+    // Hand the message to every client's queue without waiting: a slow or
+    // stuck client is dropped instead of stalling the collector.
     if !clients.is_empty() {
-        let bytes = msg.serialize();
-        let mut i = 0;
-        while i < clients.len() {
-            if clients[i].write_all(&bytes).await.is_err() {
-                // Client disconnected, remove it
-                let _ = clients.swap_remove(i);
-                println!("Stats client disconnected ({} remaining)", clients.len());
-            } else {
-                i += 1;
-            }
+        let bytes: Arc<[u8]> = msg.serialize().into();
+        let before = clients.len();
+        clients.retain(|client| client.offer(&bytes));
+        if clients.len() < before {
+            println!(
+                "Stats client disconnected (too slow or gone; {} remaining)",
+                clients.len()
+            );
         }
     }
 }
@@ -892,17 +980,154 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    fn socket_path(dir: &tempfile::TempDir) -> String {
+        dir.path().join("stats.sock").to_str().unwrap().to_owned()
+    }
+
     #[tokio::test]
-    async fn setup_unix_socket_removes_stale_file() {
-        let path = format!("/tmp/dgaard_test_stale_{}", std::process::id());
-        // Create a stale file
-        std::fs::write(&path, b"stale").unwrap();
-        let result = setup_unix_socket(&path).await;
+    async fn setup_unix_socket_is_owner_and_group_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = socket_path(&dir);
+        let _listener = setup_unix_socket(&path).await.unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, SOCKET_MODE, "got {mode:o}");
+        // No staging file left behind.
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn setup_unix_socket_replaces_a_stale_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = socket_path(&dir);
+        drop(std::os::unix::net::UnixListener::bind(&path).unwrap()); // leaves the file
+        let _listener = setup_unix_socket(&path).await.unwrap();
+        // The fresh socket is the one listening at the path.
+        tokio::net::UnixStream::connect(&path)
+            .await
+            .expect("connect to the new socket");
+    }
+
+    #[tokio::test]
+    async fn setup_unix_socket_refuses_to_delete_other_files() {
+        // Review M2: any file at the configured path used to be removed,
+        // with the daemon often running as root.
+        let dir = tempfile::tempdir().unwrap();
+        let path = socket_path(&dir);
+        std::fs::write(&path, b"precious").unwrap();
+        let err = setup_unix_socket(&path).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&path).unwrap(), b"precious");
+
+        let target = dir.path().join("target.txt");
+        std::fs::write(&target, b"keep").unwrap();
+        let link = dir.path().join("link.sock");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(setup_unix_socket(link.to_str().unwrap()).await.is_err());
         assert!(
-            result.is_ok(),
-            "Should succeed after removing stale file: {:?}",
-            result.err()
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
-        let _ = std::fs::remove_file(&path);
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+    }
+
+    #[tokio::test]
+    async fn setup_unix_socket_creates_the_parent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run/dgaard/stats.sock");
+        let _listener = setup_unix_socket(path.to_str().unwrap()).await.unwrap();
+        assert!(path.exists());
+    }
+
+    // ── per-client writer tasks ──────────────────────────────────────────────
+
+    async fn read_exactly(stream: &mut tokio::net::UnixStream, len: usize) -> Vec<u8> {
+        use tokio::io::AsyncReadExt;
+
+        let mut buf = vec![0u8; len];
+        tokio::time::timeout(Duration::from_secs(2), stream.read_exact(&mut buf))
+            .await
+            .expect("data within 2 s")
+            .unwrap();
+        buf
+    }
+
+    #[tokio::test]
+    async fn new_client_gets_the_snapshot_then_the_stream() {
+        let (server_side, mut peer) = tokio::net::UnixStream::pair().unwrap();
+        let mut map = test_map();
+        map.put(1, "one.example".to_string());
+        let snapshot = domain_mappings_snapshot(&map);
+        let client = StatsClient::spawn(server_side, snapshot.clone(), 8, Duration::from_secs(1));
+
+        let first: Arc<[u8]> = Arc::from(&b"first"[..]);
+        let second: Arc<[u8]> = Arc::from(&b"second"[..]);
+        assert!(client.offer(&first));
+        assert!(client.offer(&second));
+
+        let expected = [snapshot.as_slice(), b"first", b"second"].concat();
+        assert_eq!(read_exactly(&mut peer, expected.len()).await, expected);
+    }
+
+    #[tokio::test]
+    async fn stuck_client_is_dropped_without_blocking_the_collector() {
+        // A client that connects and never reads: its snapshot write blocks,
+        // its queue fills, and the collector must neither wait nor keep it.
+        let (server_side, _never_read) = tokio::net::UnixStream::pair().unwrap();
+        let big_snapshot = vec![0u8; 4 * 1024 * 1024];
+        let stuck = StatsClient::spawn(server_side, big_snapshot, 4, Duration::from_secs(30));
+        let mut clients = vec![stuck];
+        let mut domain_map = test_map();
+        let mut query_log = QueryLog::new(QueryLogLevel::Off);
+
+        let started = std::time::Instant::now();
+        for hash in 0..20u64 {
+            let msg = StatMessage::Event(event_from([10, 0, 0, 1], hash, StatAction::Allowed));
+            process_stat_message(&msg, &mut domain_map, &mut clients, &mut query_log).await;
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "collector stalled"
+        );
+        assert!(clients.is_empty(), "the stuck client was disconnected");
+    }
+
+    #[tokio::test]
+    async fn stalled_writes_end_the_client_after_the_timeout() {
+        let (server_side, _never_read) = tokio::net::UnixStream::pair().unwrap();
+        let client = StatsClient::spawn(
+            server_side,
+            vec![0u8; 4 * 1024 * 1024],
+            CLIENT_QUEUE,
+            Duration::from_millis(50),
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !client.tx.is_closed() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("writer task gave up after its write timeout");
+        assert!(!client.offer(&Arc::from(&b"late"[..])));
+    }
+
+    #[tokio::test]
+    async fn healthy_client_receives_broadcast_events() {
+        let (server_side, mut peer) = tokio::net::UnixStream::pair().unwrap();
+        let mut clients = vec![StatsClient::spawn(
+            server_side,
+            Vec::new(),
+            CLIENT_QUEUE,
+            CLIENT_WRITE_TIMEOUT,
+        )];
+        let mut domain_map = test_map();
+        let msg = StatMessage::Event(event_from([10, 0, 0, 1], 7, StatAction::Allowed));
+        process_stat_message(&msg, &mut domain_map, &mut clients, &mut test_log()).await;
+        let expected = msg.serialize();
+        assert_eq!(read_exactly(&mut peer, expected.len()).await, expected);
+        assert_eq!(clients.len(), 1);
     }
 }

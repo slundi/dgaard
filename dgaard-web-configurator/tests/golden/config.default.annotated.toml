@@ -21,7 +21,8 @@ mode = "forwarder"
 allowed_networks = ["127.0.0.1/32", "192.168.1.0/24"]
 
 # Unix socket used to stream telemetry to the dashboard / TUI.
-# Must match input.socket in dgaard-monitor.toml.
+# Must match input.socket in dgaard-monitor.toml. Created with mode 0660:
+# readers need the daemon's group. Only an existing socket is replaced.
 stats_socket_path = "/tmp/dgaard_stats.sock"
 
 # Block every domain containing non-ASCII (Punycode / IDN) labels
