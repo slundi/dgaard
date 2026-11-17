@@ -3,19 +3,23 @@
 # -----------------------------------------------------------------------------
 
 [server]
-# The address and port your proxy listens on (usually port 53 for DNS)
+# The address and port your proxy listens on (usually port 53 for DNS).
+# Bound at startup before anything else: dgaard exits with an error when the
+# address is invalid, the port is already in use (e.g. by another dgaard
+# instance) or binding needs privileges it lacks.
 listen_addr = "192.168.1.1:53"
 
 # Resolution backend for "clean" queries that survive the filter pipeline:
 #   "forwarder" (default) — delegate to the servers in [forwarder] below.
 #   "recursive"           — iterative resolution from the root hints.
 #
-# Recursive mode is incompatible with DNSSEC validation until Phase 6 ships
-# (see docs/Roadmap-recursive-DNS.md). dgaard refuses to start if both
-# mode = "recursive" and [security.dnssec] enabled = true.
+# Both modes support [security.dnssec] (see docs/Roadmap-recursive-DNS.md).
 mode = "forwarder"
 
-# Networks allowed to use this proxy (Access Control List)
+# Networks allowed to use this proxy (Access Control List), as addr/prefix.
+# Queries from other sources are dropped; an empty list accepts everyone.
+# A malformed entry is a startup / reload error. IPv4 clients reaching an
+# IPv6 dual-stack listener ([::]) match the IPv4 ranges.
 allowed_networks = ["127.0.0.1/32", "192.168.1.0/24"]
 # Unix socket streaming telemetry (queried domains, client IPs) to the
 # dashboard / TUI. Created with mode 0660: give readers the daemon's group

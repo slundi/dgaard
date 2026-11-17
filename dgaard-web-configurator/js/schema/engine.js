@@ -22,7 +22,7 @@ export const ENGINE_SCHEMA = {
           type: 'socketaddr',
           default: '127.0.0.1:53',
           placeholder: '192.168.1.1:53',
-          doc: 'Address and port the proxy listens on (53 in production, an\nunprivileged port for development).',
+          doc: 'Address and port the proxy listens on (53 in production, an\nunprivileged port for development). dgaard exits at startup when it\ncannot bind it, e.g. when another instance already holds the port.',
         },
         {
           key: 'mode',
@@ -35,7 +35,7 @@ export const ENGINE_SCHEMA = {
           key: 'allowed_networks',
           type: 'cidr-list',
           default: ['127.0.0.1/32', '192.168.1.0/24'],
-          doc: 'Networks allowed to use this proxy. Queries from addresses outside\nthis list are dropped.',
+          doc: 'Networks allowed to use this proxy (addr/prefix). Queries from\naddresses outside this list are dropped; an empty list accepts everyone.',
         },
         {
           key: 'stats_socket_path',

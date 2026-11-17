@@ -1290,6 +1290,31 @@ impl Config {
     /// engine, so a misconfigured reload leaves the running engine untouched rather than silently
     /// degrading service.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        let listen = &self.server.listen_addr;
+        if listen.parse::<std::net::SocketAddr>().is_err() {
+            return Err(ConfigError::InvalidValue {
+                key: "server.listen_addr".to_string(),
+                message: format!(
+                    "\"{listen}\" is not a valid socket address (expected ip:port or [ipv6]:port)"
+                ),
+                span: toml_span::Span::default(),
+            });
+        }
+        // A malformed entry would silently shrink the ACL (all-malformed:
+        // every client refused).
+        if let Some(bad) = self
+            .server
+            .allowed_networks
+            .iter()
+            .find(|cidr| IpNet::parse(cidr).is_none())
+        {
+            return Err(ConfigError::InvalidValue {
+                key: "server.allowed_networks".to_string(),
+                message: format!("\"{bad}\" is not a valid CIDR range (expected addr/prefix)"),
+                span: toml_span::Span::default(),
+            });
+        }
+
         for server in &self.forwarder.servers {
             if server.parse::<std::net::SocketAddr>().is_err() {
                 return Err(ConfigError::InvalidValue {
@@ -3182,6 +3207,36 @@ list_path = []
         let mut cfg = Config::default();
         cfg.forwarder.servers = vec!["1.1.1.1:53".into(), "bad".into(), "9.9.9.9:53".into()];
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_a_bad_listen_addr() {
+        for addr in ["localhost:53", "127.0.0.1", "", "127.0.0.1:99999"] {
+            let mut cfg = Config::default();
+            cfg.server.listen_addr = addr.to_string();
+            let err = cfg.validate().unwrap_err();
+            assert!(
+                err.to_string().contains("server.listen_addr"),
+                "{addr}: {err}"
+            );
+        }
+        let mut cfg = Config::default();
+        cfg.server.listen_addr = "[::]:5353".to_string();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_malformed_allowed_networks() {
+        let mut cfg = Config::default();
+        cfg.server.allowed_networks = vec!["192.168.1.0/24".into(), "192.168.1.0".into()];
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("server.allowed_networks"), "{err}");
+        assert!(err.to_string().contains("\"192.168.1.0\""), "{err}");
+
+        cfg.server.allowed_networks = vec!["10.0.0.0/8".into(), "fd00::/8".into()];
+        assert!(cfg.validate().is_ok());
+        cfg.server.allowed_networks.clear();
+        assert!(cfg.validate().is_ok(), "empty: every source accepted");
     }
 
     #[test]

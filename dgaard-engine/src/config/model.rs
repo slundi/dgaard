@@ -107,14 +107,12 @@ pub struct ServerConfig {
     pub listen_addr: String,
 
     /// Resolution backend: `"forwarder"` (default) or `"recursive"`.
-    ///
-    /// When set to `Recursive`, dgaard refuses to start if DNSSEC validation
-    /// is also enabled (the recursive DNSSEC path lands in Phase 6 — see
-    /// `docs/Roadmap-recursive-DNS.md`).
     pub mode: ResolutionMode,
 
-    /// CIDR ranges whose queries are accepted.
-    /// Queries from addresses outside this list are silently dropped.
+    /// CIDR ranges whose queries are accepted (see [`IpNet`]).
+    /// Queries from addresses outside this list are silently dropped; an
+    /// empty list accepts every source. Malformed entries are refused by
+    /// `Config::validate`.
     pub allowed_networks: Vec<String>,
 
     /// Filesystem path of the Unix-domain socket used to stream telemetry
@@ -137,6 +135,47 @@ pub struct ServerConfig {
     /// endpoint.  Leave unset (the default) to disable the endpoint entirely.
     /// Example: `"127.0.0.1:9153"`.
     pub metrics_listen: Option<String>,
+}
+
+/// One CIDR range (`addr/prefix`), as listed in `server.allowed_networks`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IpNet {
+    network: std::net::IpAddr,
+    prefix: u8,
+}
+
+impl IpNet {
+    /// Parse `addr/prefix`; bits beyond the prefix are ignored. `None` when
+    /// the address, the prefix or their combination is invalid.
+    pub fn parse(cidr: &str) -> Option<Self> {
+        let (addr, prefix) = cidr.split_once('/')?;
+        let network: std::net::IpAddr = addr.parse().ok()?;
+        let prefix: u8 = prefix.parse().ok()?;
+        let max = if network.is_ipv4() { 32 } else { 128 };
+        (prefix <= max).then_some(Self { network, prefix })
+    }
+
+    /// True when `ip` is inside the range. An IPv4-mapped IPv6 source (a
+    /// dual-stack socket) is matched as its IPv4 address.
+    pub fn contains(&self, ip: std::net::IpAddr) -> bool {
+        use std::net::IpAddr;
+
+        match (ip.to_canonical(), self.network) {
+            (IpAddr::V4(src), IpAddr::V4(net)) => {
+                let mask = u32::MAX
+                    .checked_shl(32 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                u32::from(src) & mask == u32::from(net) & mask
+            }
+            (IpAddr::V6(src), IpAddr::V6(net)) => {
+                let mask = u128::MAX
+                    .checked_shl(128 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                u128::from(src) & mask == u128::from(net) & mask
+            }
+            _ => false,
+        }
+    }
 }
 
 impl Default for ServerConfig {
@@ -1453,6 +1492,62 @@ pub struct Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- IpNet (server.allowed_networks) ----
+
+    #[test]
+    fn ip_net_parses_valid_ranges() {
+        for cidr in [
+            "10.0.0.0/8",
+            "0.0.0.0/0",
+            "192.168.1.5/24",
+            "::1/128",
+            "2001:db8::/32",
+            "::/0",
+        ] {
+            assert!(IpNet::parse(cidr).is_some(), "{cidr}");
+        }
+    }
+
+    #[test]
+    fn ip_net_rejects_malformed_ranges() {
+        for cidr in [
+            "10.0.0.0",
+            "10.0.0.0/33",
+            "::1/129",
+            "10.0.0/8",
+            "x/8",
+            "10.0.0.0/-1",
+            "10.0.0.0/",
+            "",
+        ] {
+            assert!(IpNet::parse(cidr).is_none(), "{cidr}");
+        }
+    }
+
+    #[test]
+    fn ip_net_contains_ignores_host_bits() {
+        let net = IpNet::parse("192.168.1.5/24").unwrap();
+        assert!(net.contains("192.168.1.200".parse().unwrap()));
+        assert!(!net.contains("192.168.2.1".parse().unwrap()));
+        let all = IpNet::parse("0.0.0.0/0").unwrap();
+        assert!(all.contains("203.0.113.1".parse().unwrap()));
+        assert!(!all.contains("::1".parse().unwrap()), "families never mix");
+        let v6 = IpNet::parse("2001:db8::/32").unwrap();
+        assert!(v6.contains("2001:db8:ffff::1".parse().unwrap()));
+        assert!(!v6.contains("2001:db9::1".parse().unwrap()));
+        assert!(
+            IpNet::parse("::/0")
+                .unwrap()
+                .contains("fe80::1".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn ip_net_matches_ipv4_mapped_sources_as_ipv4() {
+        let net = IpNet::parse("192.168.1.0/24").unwrap();
+        assert!(net.contains("::ffff:192.168.1.9".parse().unwrap()));
+    }
 
     // -----------------------------------------------------------------------
     // WorkerThreads

@@ -8,7 +8,8 @@
 # Listener address, client ACL and the order of the filter pipeline.
 [server]
 # Address and port the proxy listens on (53 in production, an
-# unprivileged port for development).
+# unprivileged port for development). dgaard exits at startup when it
+# cannot bind it, e.g. when another instance already holds the port.
 listen_addr = "192.168.1.1:53"
 
 # Resolution backend for queries that survive the filter pipeline.
@@ -16,8 +17,8 @@ listen_addr = "192.168.1.1:53"
 # "recursive" resolves iteratively from the root hints.
 mode = "recursive"
 
-# Networks allowed to use this proxy. Queries from addresses outside
-# this list are dropped.
+# Networks allowed to use this proxy (addr/prefix). Queries from
+# addresses outside this list are dropped; an empty list accepts everyone.
 allowed_networks = ["127.0.0.1/32", "10.0.0.0/8", "192.168.1.0/24"]
 
 # Unix socket used to stream telemetry to the dashboard / TUI.

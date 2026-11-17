@@ -4,14 +4,17 @@ mod stat_collector;
 use std::{
     net::IpAddr,
     sync::{
-        Arc,
+        Arc, LazyLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use arc_swap::ArcSwapOption;
+
 use crate::{
     CONFIG, CONFIG_PATH, STATS_SENDER,
+    config::{Config, IpNet},
     debug::debug_print,
     dns::handle_query,
     filter::reload_lists,
@@ -19,7 +22,7 @@ use crate::{
         shutdown::{ShutdownGuard, TaskGuard, wait_for_tasks},
         stat_collector::stats_collector_task,
     },
-    utils::get_socket,
+    utils::bind_listen_sockets,
 };
 use crate::{
     stats::{self, StatsReceiver},
@@ -37,52 +40,54 @@ use tokio::{
 
 use crate::GLOBAL_SEED;
 
-/// Returns `true` if `ip` falls within any of the CIDR ranges in `networks`.
-///
-/// Malformed entries are silently skipped. An empty list allows every source
-/// (fail-open) so a misconfigured ACL does not black-hole the proxy.
-fn is_ip_allowed(ip: IpAddr, networks: &[String]) -> bool {
-    if networks.is_empty() {
-        return true;
-    }
-    for cidr in networks {
-        let Some((addr_str, prefix_str)) = cidr.split_once('/') else {
-            continue;
-        };
-        let Ok(prefix_len) = prefix_str.parse::<u32>() else {
-            continue;
-        };
-        match (ip, addr_str.parse::<IpAddr>()) {
-            (IpAddr::V4(src), Ok(IpAddr::V4(net))) => {
-                if prefix_len > 32 {
-                    continue;
-                }
-                let mask = if prefix_len == 0 {
-                    0u32
-                } else {
-                    u32::MAX << (32 - prefix_len)
-                };
-                if u32::from(src) & mask == u32::from(net) & mask {
-                    return true;
-                }
-            }
-            (IpAddr::V6(src), Ok(IpAddr::V6(net))) => {
-                if prefix_len > 128 {
-                    continue;
-                }
-                let mask = if prefix_len == 0 {
-                    0u128
-                } else {
-                    u128::MAX << (128 - prefix_len)
-                };
-                if u128::from(src) & mask == u128::from(net) & mask {
-                    return true;
-                }
-            }
-            _ => continue,
+/// The client ACL of one configuration, parsed once instead of per packet.
+struct ClientAcl {
+    /// Configuration the ACL was parsed from: a reload swaps `CONFIG` for a
+    /// new `Arc`, which triggers a new parse. Holding it keeps the address
+    /// from being reused by another configuration.
+    config: Arc<Config>,
+    networks: Vec<IpNet>,
+    /// `allowed_networks` is empty: every source is accepted. A list whose
+    /// entries all fail to parse accepts nobody (fail closed).
+    open: bool,
+}
+
+impl ClientAcl {
+    fn new(config: Arc<Config>) -> Self {
+        // `Config::validate` refuses malformed entries at load time.
+        let networks = config
+            .server
+            .allowed_networks
+            .iter()
+            .filter_map(|cidr| IpNet::parse(cidr))
+            .collect();
+        let open = config.server.allowed_networks.is_empty();
+        Self {
+            config,
+            networks,
+            open,
         }
     }
-    false
+
+    fn allows(&self, ip: IpAddr) -> bool {
+        self.open || self.networks.iter().any(|net| net.contains(ip))
+    }
+}
+
+static CLIENT_ACL: LazyLock<ArcSwapOption<ClientAcl>> = LazyLock::new(ArcSwapOption::empty);
+
+/// True when `ip` may query dgaard under the current `server.allowed_networks`.
+fn is_client_allowed(ip: IpAddr) -> bool {
+    let config = CONFIG.load();
+    if let Some(acl) = CLIENT_ACL.load().as_ref()
+        && Arc::ptr_eq(&acl.config, &config)
+    {
+        return acl.allows(ip);
+    }
+    let acl = Arc::new(ClientAcl::new(Arc::clone(&config)));
+    let allowed = acl.allows(ip);
+    CLIENT_ACL.store(Some(acl));
+    allowed
 }
 
 /// Initialize the stats channel and store the sender globally.
@@ -169,6 +174,9 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
         .max_blocking_threads(CONFIG.load().server.runtime.max_blocking_threads)
         .build()?;
     runtime.block_on(async {
+        // Bind before anything else starts: no listening socket, no server.
+        let tokio_socket = bind_listen_sockets(&CONFIG.load().server.listen_addr, 1)?.remove(0);
+
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         tokio::spawn(watch_for_reloads(shutdown_rx.clone()));
         let guard = ShutdownGuard::new(shutdown_rx.clone());
@@ -205,8 +213,6 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
         spawn_popularity_persistence(shutdown_rx.clone());
         spawn_prefetch_worker(shutdown_rx.clone());
 
-        let tokio_socket = get_socket(&CONFIG.load().server.listen_addr)?;
-
         let semaphore = Arc::new(Semaphore::new(
             CONFIG.load().server.runtime.max_concurrent_queries,
         ));
@@ -238,6 +244,11 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
         .build()?;
 
     runtime.block_on(async {
+        // One SO_REUSEPORT socket per worker, all bound before anything
+        // starts: a bind failure aborts startup instead of leaving workers
+        // that exit one by one and a process that serves nothing.
+        let sockets = bind_listen_sockets(&CONFIG.load().server.listen_addr, cpus)?;
+
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let guard = ShutdownGuard::new(shutdown_rx.clone());
         tokio::spawn(watch_for_reloads(shutdown_rx.clone()));
@@ -278,26 +289,12 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
 
         let mut handles = Vec::new();
 
-        for worker_id in 0..cpus {
+        for tokio_socket in sockets {
             let worker_guard = guard.clone();
             let worker_semaphore = Arc::clone(&semaphore);
             let mut worker_shutdown_rx = shutdown_rx.clone();
 
             handles.push(tokio::spawn(async move {
-                let addr = &CONFIG.load().server.listen_addr;
-                let tokio_socket = match get_socket(addr) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        // A transient bind failure on one SO_REUSEPORT worker
-                        // shouldn't silently reduce capacity for the lifetime
-                        // of the process — log loudly so the operator notices.
-                        eprintln!(
-                            "worker {worker_id}: failed to bind {addr}: {e} \
-                             — this worker will not serve queries"
-                        );
-                        return;
-                    }
-                };
                 let mut buf = [0u8; 4096];
 
                 loop {
@@ -313,7 +310,7 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
                         result = tokio_socket.recv_from(&mut buf) => {
                             match result {
                                 Ok((len, addr)) => {
-                                    if !is_ip_allowed(addr.ip(), &CONFIG.load().server.allowed_networks) {
+                                    if !is_client_allowed(addr.ip()) {
                                         continue;
                                     }
                                     let packet = buf[..len].to_vec();
@@ -375,8 +372,7 @@ async fn spawn_tcp_listener(semaphore: Arc<Semaphore>, shutdown_rx: watch::Recei
     match tokio::net::TcpListener::bind(&addr).await {
         Ok(listener) => {
             println!("Dgaard listening on {} (TCP)", addr);
-            let allowed =
-                Arc::new(|ip: IpAddr| is_ip_allowed(ip, &CONFIG.load().server.allowed_networks));
+            let allowed = Arc::new(is_client_allowed);
             tokio::spawn(crate::dns::tcp::serve(
                 listener,
                 crate::dns::tcp::TcpLimits::default(),
@@ -458,7 +454,7 @@ async fn worker_loop(
             result = tokio_socket.recv_from(&mut buf) => {
                 match result {
                     Ok((len, addr)) => {
-                        if !is_ip_allowed(addr.ip(), &CONFIG.load().server.allowed_networks) {
+                        if !is_client_allowed(addr.ip()) {
                             continue;
                         }
                         let packet = buf[..len].to_vec();
@@ -773,99 +769,112 @@ mod tests {
     static TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(Mutex::default);
 
     // -----------------------------------------------------------------------
-    // is_ip_allowed tests
+    // Client ACL tests
     // -----------------------------------------------------------------------
 
-    fn nets(cidrs: &[&str]) -> Vec<String> {
-        cidrs.iter().map(|s| s.to_string()).collect()
+    fn acl(cidrs: &[&str]) -> ClientAcl {
+        let mut config = Config::default();
+        config.server.allowed_networks = cidrs.iter().map(|s| s.to_string()).collect();
+        ClientAcl::new(Arc::new(config))
+    }
+
+    fn allowed(ip: &str, cidrs: &[&str]) -> bool {
+        acl(cidrs).allows(ip.parse().unwrap())
     }
 
     #[test]
     fn empty_networks_allows_any_ip() {
-        let ip: IpAddr = "203.0.113.1".parse().unwrap();
-        assert!(is_ip_allowed(ip, &[]));
+        assert!(allowed("203.0.113.1", &[]));
     }
 
     #[test]
-    fn exact_ipv4_host_route_matches() {
-        let ip: IpAddr = "127.0.0.1".parse().unwrap();
-        assert!(is_ip_allowed(ip, &nets(&["127.0.0.1/32"])));
+    fn ipv4_ranges() {
+        let lan = ["127.0.0.1/32", "192.168.1.0/24"];
+        assert!(allowed("127.0.0.1", &lan));
+        assert!(allowed("192.168.1.0", &lan));
+        assert!(allowed("192.168.1.42", &lan));
+        assert!(allowed("192.168.1.255", &lan));
+        assert!(!allowed("192.168.2.0", &lan));
+        assert!(!allowed("203.0.113.1", &lan));
+        assert!(allowed("203.0.113.99", &["0.0.0.0/0"]));
     }
 
     #[test]
-    fn ipv4_outside_range_is_denied() {
-        let ip: IpAddr = "203.0.113.1".parse().unwrap();
-        assert!(!is_ip_allowed(
-            ip,
-            &nets(&["127.0.0.1/32", "192.168.1.0/24"])
-        ));
+    fn ipv6_ranges() {
+        assert!(allowed("::1", &["::1/128"]));
+        assert!(allowed("2001:db8::42", &["2001:db8::/32"]));
+        assert!(!allowed("2001:db9::1", &["2001:db8::/32"]));
+        assert!(!allowed("192.168.1.1", &["::1/128"]));
     }
 
     #[test]
-    fn ipv4_inside_subnet_is_allowed() {
-        let ip: IpAddr = "192.168.1.42".parse().unwrap();
-        assert!(is_ip_allowed(ip, &nets(&["192.168.1.0/24"])));
+    fn ipv4_mapped_source_matches_ipv4_ranges() {
+        // A client of a dual-stack [::] socket shows up IPv4-mapped.
+        assert!(allowed("::ffff:192.168.1.7", &["192.168.1.0/24"]));
+        assert!(!allowed("::ffff:10.0.0.1", &["192.168.1.0/24"]));
     }
 
     #[test]
-    fn ipv4_subnet_boundary_first_addr_allowed() {
-        let ip: IpAddr = "192.168.1.0".parse().unwrap();
-        assert!(is_ip_allowed(ip, &nets(&["192.168.1.0/24"])));
+    fn malformed_entries_are_skipped_but_never_open_the_acl() {
+        assert!(allowed("10.0.0.1", &["bad/entry", "10.0.0.0/8"]));
+        // Only malformed entries: nobody, not everybody.
+        assert!(!allowed("10.0.0.1", &["not-a-cidr"]));
     }
 
     #[test]
-    fn ipv4_subnet_boundary_last_addr_allowed() {
-        let ip: IpAddr = "192.168.1.255".parse().unwrap();
-        assert!(is_ip_allowed(ip, &nets(&["192.168.1.0/24"])));
+    fn acl_is_parsed_once_per_configuration() {
+        let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = CONFIG.load_full();
+        let mut config = Config::default();
+        config.server.allowed_networks = vec!["10.0.0.0/8".into()];
+        CONFIG.store(Arc::new(config));
+
+        assert!(is_client_allowed("10.1.2.3".parse().unwrap()));
+        let first = CLIENT_ACL.load_full().expect("cached");
+        assert!(!is_client_allowed("192.168.1.1".parse().unwrap()));
+        let second = CLIENT_ACL.load_full().expect("cached");
+        assert!(Arc::ptr_eq(&first, &second), "same config: no new parse");
+
+        // A reload (new config) is picked up on the next packet.
+        let mut reloaded = Config::default();
+        reloaded.server.allowed_networks = vec!["192.168.1.0/24".into()];
+        CONFIG.store(Arc::new(reloaded));
+        assert!(is_client_allowed("192.168.1.1".parse().unwrap()));
+        assert!(!is_client_allowed("10.1.2.3".parse().unwrap()));
+
+        CONFIG.store(previous);
+    }
+
+    // -----------------------------------------------------------------------
+    // Startup binds before serving (review M7)
+    // -----------------------------------------------------------------------
+
+    /// Run both startup paths against `listen_addr`; they must fail at once
+    /// (before, the multi-worker path kept a process alive serving nothing).
+    fn startup_errors(listen_addr: &str) -> (String, String) {
+        let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = CONFIG.load_full();
+        let mut config = Config::default();
+        config.server.listen_addr = listen_addr.to_string();
+        CONFIG.store(Arc::new(config));
+        let multi = start_with_workers(2).expect_err("multi-worker must fail");
+        let single = start_with_single_worker().expect_err("single worker must fail");
+        CONFIG.store(previous);
+        (multi.to_string(), single.to_string())
     }
 
     #[test]
-    fn ipv4_one_beyond_subnet_denied() {
-        let ip: IpAddr = "192.168.2.0".parse().unwrap();
-        assert!(!is_ip_allowed(ip, &nets(&["192.168.1.0/24"])));
+    fn startup_fails_when_the_port_is_taken() {
+        let holder = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let (multi, single) = startup_errors(&holder.local_addr().unwrap().to_string());
+        assert!(multi.contains("already in use"), "{multi}");
+        assert!(single.contains("already in use"), "{single}");
     }
 
     #[test]
-    fn ipv4_slash_zero_allows_all() {
-        let ip: IpAddr = "203.0.113.99".parse().unwrap();
-        assert!(is_ip_allowed(ip, &nets(&["0.0.0.0/0"])));
-    }
-
-    #[test]
-    fn ipv6_loopback_allowed_in_v6_net() {
-        let ip: IpAddr = "::1".parse().unwrap();
-        assert!(is_ip_allowed(ip, &nets(&["::1/128"])));
-    }
-
-    #[test]
-    fn ipv6_inside_subnet_allowed() {
-        let ip: IpAddr = "2001:db8::42".parse().unwrap();
-        assert!(is_ip_allowed(ip, &nets(&["2001:db8::/32"])));
-    }
-
-    #[test]
-    fn ipv6_outside_subnet_denied() {
-        let ip: IpAddr = "2001:db9::1".parse().unwrap();
-        assert!(!is_ip_allowed(ip, &nets(&["2001:db8::/32"])));
-    }
-
-    #[test]
-    fn malformed_cidr_entry_is_skipped() {
-        let ip: IpAddr = "10.0.0.1".parse().unwrap();
-        // Only entry is malformed — should fail closed (return false)
-        assert!(!is_ip_allowed(ip, &nets(&["not-a-cidr"])));
-    }
-
-    #[test]
-    fn mixed_valid_and_malformed_entries() {
-        let ip: IpAddr = "10.0.0.1".parse().unwrap();
-        assert!(is_ip_allowed(ip, &nets(&["bad/entry", "10.0.0.0/8"])));
-    }
-
-    #[test]
-    fn ipv4_addr_against_ipv6_cidr_is_denied() {
-        let ip: IpAddr = "192.168.1.1".parse().unwrap();
-        assert!(!is_ip_allowed(ip, &nets(&["::1/128"])));
+    fn startup_fails_on_an_invalid_listen_addr() {
+        let (multi, single) = startup_errors("not-an-address");
+        assert!(!multi.is_empty() && !single.is_empty());
     }
 
     // -----------------------------------------------------------------------
