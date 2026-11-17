@@ -223,8 +223,9 @@ blocked_types = [10, 13, 252, 255]
 # [security.rebinding_shield] — Rebinding shield
 # -----------------------------------------------------------------------------
 # Rejects upstream answers mapping a public domain to a private or
-# reserved IP — the DNS rebinding attack vector. Covers RFC 1918, 1122,
-# 6598, 3927, 4291 and 4193 ranges in both address families.
+# reserved IP — the DNS rebinding attack vector. NAT64, 6to4 and
+# IPv4-mapped addresses are judged by the IPv4 they carry. Whitelisted
+# names are shielded too; list LAN names in allowed_domains.
 [security.rebinding_shield]
 # Master switch for the rebinding shield.
 enabled = true
@@ -233,6 +234,12 @@ enabled = true
 # and link-local ranges locally instead of forwarding them to a public
 # resolver, which would expose internal host names and LAN topology.
 block_ptr_leak = true
+
+# Domains (and their subdomains) allowed to resolve to private
+# addresses, e.g. LAN hosts in a public zone. Matched on the queried name:
+# a public name CNAMEd to one of them is still blocked. Lowercase, no
+# leading dot.
+allowed_domains = []
 
 # -----------------------------------------------------------------------------
 # [security.low_ttl] — Low TTL

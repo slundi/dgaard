@@ -325,7 +325,7 @@ export const ENGINE_SCHEMA = {
     {
       path: 'security.rebinding_shield',
       title: 'Rebinding shield',
-      doc: 'Rejects upstream answers mapping a public domain to a private or\nreserved IP — the DNS rebinding attack vector. Covers RFC 1918, 1122,\n6598, 3927, 4291 and 4193 ranges in both address families.',
+      doc: 'Rejects upstream answers mapping a public domain to a private or\nreserved IP — the DNS rebinding attack vector. NAT64, 6to4 and\nIPv4-mapped addresses are judged by the IPv4 they carry. Whitelisted\nnames are shielded too; list LAN names in allowed_domains.',
       fields: [
         {
           key: 'enabled',
@@ -338,6 +338,12 @@ export const ENGINE_SCHEMA = {
           type: 'bool',
           default: true,
           doc: 'Answer PTR queries (*.in-addr.arpa, *.ip6.arpa) for private, loopback\nand link-local ranges locally instead of forwarding them to a public\nresolver, which would expose internal host names and LAN topology.',
+        },
+        {
+          key: 'allowed_domains',
+          type: 'tld-list',
+          default: [],
+          doc: 'Domains (and their subdomains) allowed to resolve to private\naddresses, e.g. LAN hosts in a public zone. Matched on the queried name:\na public name CNAMEd to one of them is still blocked. Lowercase, no\nleading dot.',
         },
       ],
     },

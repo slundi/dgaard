@@ -132,9 +132,10 @@ pub fn compute_score(domain: &str, filter: &FilterEngine, config: &Config) -> Su
     score
 }
 
-/// Apply suspicion scoring from a parsed DNS answer section.
+/// Apply suspicion scoring from the parsed DNS answer to `domain`.
 pub fn score_answer(
     score: &mut SuspicionScore,
+    domain: &str,
     answer: &InspectedAnswer,
     filter: &FilterEngine,
     config: &Config,
@@ -180,7 +181,8 @@ pub fn score_answer(
         }
     }
 
-    if config.security.rebinding_shield.enabled {
+    let shield = &config.security.rebinding_shield;
+    if shield.enabled && !rebinding_allowed(domain, &shield.allowed_domains) {
         for ip in &answer.a_records {
             if is_private_ipv4(*ip) {
                 score.add(score_points::DNS_REBINDING, BlockReason::DnsRebinding);
@@ -246,29 +248,80 @@ pub fn score_answer(
     }
 }
 
-/// Check if an IPv4 address falls in a private or reserved range.
+/// True for an IPv4 address a public name must not resolve to (DNS
+/// rebinding): this host, the LAN, and ranges that are not routable unicast.
+///
+/// "This" network 0/8, loopback 127/8, RFC 1918, CGNAT 100.64/10,
+/// link-local 169.254/16, benchmarking 198.18/15, the RFC 5737 documentation
+/// nets, multicast 224/4, reserved 240/4 and broadcast.
 pub(crate) fn is_private_ipv4(ip: std::net::Ipv4Addr) -> bool {
-    let [a, b, c, _] = ip.octets();
-    matches!(a, 0 | 10 | 127)
-        || (a == 100 && (64..=127).contains(&b))
-        || (a == 169 && b == 254)
-        || (a == 172 && (16..=31).contains(&b))
-        || (a == 192 && b == 168)
-        || (a == 192 && b == 0 && c == 2)   // RFC 5737 TEST-NET-1
-        || (a == 198 && b == 51 && c == 100) // RFC 5737 TEST-NET-2
-        || (a == 203 && b == 0 && c == 113) // RFC 5737 TEST-NET-3
+    let [first, second, ..] = ip.octets();
+    ip.is_unspecified()
+        || ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_documentation()
+        || ip.is_multicast()
+        || ip.is_broadcast()
+        || first == 0
+        || first >= 240
+        || (first == 100 && second & 0xC0 == 64)
+        || (first == 198 && second & 0xFE == 18)
 }
 
-/// Check if an IPv6 address falls in a private or reserved range.
+/// True for an IPv6 address a public name must not resolve to: loopback,
+/// unspecified, unique-local, link-local, deprecated site-local and
+/// multicast. An address carrying an IPv4 address (IPv4-mapped, NAT64,
+/// 6to4) is judged by that IPv4 address: a DNS64 network synthesises
+/// `64:ff9b::/96` answers for every public IPv4 site.
 pub(crate) fn is_private_ipv6(ip: std::net::Ipv6Addr) -> bool {
-    let s = ip.segments();
-    ip.is_loopback()
-        || ip.is_unspecified()
+    if let Some(v4) = embedded_ipv4(ip) {
+        return is_private_ipv4(v4);
+    }
+    ip.is_unspecified()
+        || ip.is_loopback()
         || ip.is_unique_local()
         || ip.is_unicast_link_local()
-        || (s[0] == 0 && s[1] == 0 && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0xffff) // ::ffff:0:0/96 IPv4-mapped
-        || (s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0) // 64:ff9b::/96 NAT64
-        || s[0] == 0x2002 // 2002::/16 6to4
+        || ip.is_multicast()
+        || ip.segments()[0] & 0xffc0 == 0xfec0
+}
+
+/// The IPv4 address inside an IPv4-mapped (`::ffff:0:0/96`), NAT64
+/// well-known prefix (`64:ff9b::/96`, RFC 6052) or 6to4 (`2002::/16`,
+/// RFC 3056) address.
+fn embedded_ipv4(ip: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        return Some(v4);
+    }
+    let segments = ip.segments();
+    let octets = ip.octets();
+    if segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        return Some(std::net::Ipv4Addr::new(
+            octets[12], octets[13], octets[14], octets[15],
+        ));
+    }
+    if segments[0] == 0x2002 {
+        return Some(std::net::Ipv4Addr::new(
+            octets[2], octets[3], octets[4], octets[5],
+        ));
+    }
+    None
+}
+
+/// True when `domain` is one of the `[security.rebinding_shield]
+/// allowed_domains` or below one: names whose private answers are expected
+/// (LAN hosts published in a public zone). Matched on the queried name only,
+/// so a public name CNAMEd to an allowed one is still shielded.
+fn rebinding_allowed(domain: &str, allowed: &[String]) -> bool {
+    let domain = domain.strip_suffix('.').unwrap_or(domain).as_bytes();
+    allowed.iter().any(|entry| {
+        let entry = entry.strip_suffix('.').unwrap_or(entry).as_bytes();
+        if entry.is_empty() || domain.len() < entry.len() {
+            return false;
+        }
+        let split = domain.len() - entry.len();
+        domain[split..].eq_ignore_ascii_case(entry) && (split == 0 || domain[split - 1] == b'.')
+    })
 }
 
 /// Check if domain contains suspicious IDN/Punycode patterns.
@@ -460,23 +513,94 @@ mod tests {
 
     #[test]
     fn test_is_private_ipv6_ipv4_mapped() {
+        // Judged by the IPv4 address inside.
         assert!(is_private_ipv6("::ffff:192.168.1.1".parse().unwrap()));
-        assert!(is_private_ipv6("::ffff:8.8.8.8".parse().unwrap()));
+        assert!(is_private_ipv6("::ffff:127.0.0.1".parse().unwrap()));
+        assert!(!is_private_ipv6("::ffff:8.8.8.8".parse().unwrap()));
     }
 
     #[test]
     fn test_is_private_ipv6_nat64() {
-        assert!(is_private_ipv6("64:ff9b::8.8.8.8".parse().unwrap()));
+        // DNS64 synthesises these for every public IPv4 site.
+        assert!(!is_private_ipv6("64:ff9b::8.8.8.8".parse().unwrap()));
+        assert!(!is_private_ipv6("64:ff9b::5db8:d822".parse().unwrap()));
+        assert!(is_private_ipv6("64:ff9b::10.0.0.1".parse().unwrap()));
+        assert!(is_private_ipv6("64:ff9b::7f00:1".parse().unwrap()));
     }
 
     #[test]
     fn test_is_private_ipv6_6to4() {
-        assert!(is_private_ipv6("2002:c000:204::1".parse().unwrap()));
+        // 2002:WWXX:YYZZ:: carries WW.XX.YY.ZZ.
+        assert!(!is_private_ipv6("2002:0808:0808::1".parse().unwrap()));
+        assert!(is_private_ipv6("2002:c0a8:0101::1".parse().unwrap()));
+        assert!(
+            is_private_ipv6("2002:c000:204::1".parse().unwrap()),
+            "192.0.2.4"
+        );
     }
 
     #[test]
     fn test_is_private_ipv6_public() {
         assert!(!is_private_ipv6("2001:db8::1".parse().unwrap()));
+        assert!(!is_private_ipv6("2606:4700:4700::1111".parse().unwrap()));
+        // Not the NAT64 well-known prefix: no IPv4 decoded.
+        assert!(!is_private_ipv6("64:ff9c::a00:1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ipv6_multicast_and_site_local() {
+        assert!(is_private_ipv6("ff02::fb".parse().unwrap()));
+        assert!(is_private_ipv6("ff0e::1".parse().unwrap()));
+        assert!(is_private_ipv6("fec0::1".parse().unwrap()));
+        assert!(is_private_ipv6("feff::1".parse().unwrap()));
+        assert!(!is_private_ipv6("2001:4860::8888".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ipv4_reserved_ranges() {
+        for ip in [
+            "0.1.2.3",
+            "100.64.0.1",
+            "100.127.255.255",
+            "198.18.0.1",
+            "198.19.255.255",
+            "224.0.0.251",
+            "239.255.255.250",
+            "240.0.0.1",
+            "255.255.255.255",
+            "169.254.169.254",
+            "127.255.255.254",
+        ] {
+            assert!(is_private_ipv4(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in [
+            "100.63.255.255",
+            "100.128.0.0",
+            "198.17.255.255",
+            "198.20.0.0",
+            "223.255.255.255",
+            "172.32.0.1",
+            "93.184.216.34",
+        ] {
+            assert!(!is_private_ipv4(ip.parse().unwrap()), "{ip}");
+        }
+    }
+
+    #[test]
+    fn rebinding_allowed_matches_the_domain_and_its_subdomains() {
+        let allowed = vec!["home.example.com".to_string(), "lan.test.".to_string()];
+        assert!(rebinding_allowed("home.example.com", &allowed));
+        assert!(rebinding_allowed("nas.home.example.com", &allowed));
+        assert!(rebinding_allowed("NAS.Home.Example.com.", &allowed));
+        assert!(rebinding_allowed("printer.lan.test", &allowed));
+        assert!(
+            !rebinding_allowed("myhome.example.com", &allowed),
+            "label boundary"
+        );
+        assert!(!rebinding_allowed("example.com", &allowed));
+        assert!(!rebinding_allowed("home.example.com.evil.net", &allowed));
+        assert!(!rebinding_allowed("nas.home.example.com", &[]));
+        assert!(!rebinding_allowed("anything", &[String::new()]));
     }
 
     fn make_answer(
@@ -503,7 +627,7 @@ mod tests {
         let config = default_config();
         let mut score = SuspicionScore::new();
         let answer = make_answer(1, 0, 0, &[b"v=spf1 include:example.com ~all"]);
-        score_answer(&mut score, &answer, &engine, &config);
+        score_answer(&mut score, "example.com", &answer, &engine, &config);
         assert_eq!(score.total, 0);
     }
 
@@ -513,7 +637,7 @@ mod tests {
         let config = default_config();
         let mut score = SuspicionScore::new();
         let answer = make_answer(11, 0, 0, &[]);
-        score_answer(&mut score, &answer, &engine, &config);
+        score_answer(&mut score, "example.com", &answer, &engine, &config);
         assert_eq!(score.total, score_points::EXCESSIVE_ANSWERS);
     }
 
@@ -524,7 +648,7 @@ mod tests {
         let mut score = SuspicionScore::new();
         let long_payload = vec![b'A'; 200];
         let answer = make_answer(0, 0, 0, &[long_payload.as_slice()]);
-        score_answer(&mut score, &answer, &engine, &config);
+        score_answer(&mut score, "example.com", &answer, &engine, &config);
         assert_eq!(score.total, score_points::TXT_RECORD_TOO_LONG);
     }
 
@@ -540,7 +664,7 @@ mod tests {
             txt_records: vec![],
             min_ttl: None,
         };
-        score_answer(&mut score, &answer, &engine, &config);
+        score_answer(&mut score, "example.com", &answer, &engine, &config);
         assert_eq!(score.total, score_points::DNS_REBINDING);
     }
 
@@ -557,8 +681,82 @@ mod tests {
             txt_records: vec![],
             min_ttl: None,
         };
-        score_answer(&mut score, &answer, &engine, &config);
+        score_answer(&mut score, "example.com", &answer, &engine, &config);
         assert_eq!(score.total, 0);
+    }
+
+    fn answer_with(a: &[&str], aaaa: &[&str]) -> InspectedAnswer {
+        InspectedAnswer {
+            a_records: a.iter().map(|ip| ip.parse().unwrap()).collect(),
+            aaaa_records: aaaa.iter().map(|ip| ip.parse().unwrap()).collect(),
+            cname_targets: vec![],
+            txt_records: vec![],
+            min_ttl: None,
+        }
+    }
+
+    fn rebinding_score(domain: &str, answer: &InspectedAnswer, config: &Config) -> u8 {
+        let engine = init_test_engine();
+        let mut score = SuspicionScore::new();
+        score_answer(&mut score, domain, answer, &engine, config);
+        score.total
+    }
+
+    #[test]
+    fn dns64_answers_for_public_sites_are_not_rebinding() {
+        // On a DNS64 network every AAAA answer is synthesised under
+        // 64:ff9b::/96: 10 points each used to block every site.
+        let config = default_config();
+        let answer = answer_with(&[], &["64:ff9b::5db8:d822"]);
+        assert_eq!(rebinding_score("example.com", &answer, &config), 0);
+        let lan = answer_with(&[], &["64:ff9b::c0a8:101"]);
+        assert_eq!(
+            rebinding_score("example.com", &lan, &config),
+            score_points::DNS_REBINDING
+        );
+    }
+
+    #[test]
+    fn multicast_and_benchmarking_answers_are_rebinding() {
+        let config = default_config();
+        for ip in ["224.0.0.1", "198.18.0.1", "255.255.255.255", "240.1.2.3"] {
+            let answer = answer_with(&[ip], &[]);
+            assert_eq!(
+                rebinding_score("example.com", &answer, &config),
+                score_points::DNS_REBINDING,
+                "{ip}"
+            );
+        }
+    }
+
+    #[test]
+    fn allowed_domains_may_resolve_privately() {
+        let mut config = default_config();
+        config.security.rebinding_shield.allowed_domains = vec!["home.example.com".into()];
+        let lan = answer_with(&["192.168.1.10"], &["fd00::10"]);
+        assert_eq!(rebinding_score("nas.home.example.com", &lan, &config), 0);
+        assert_eq!(rebinding_score("home.example.com", &lan, &config), 0);
+        // Everything else stays shielded, whitelisted or not.
+        assert_eq!(
+            rebinding_score("attacker.example.net", &lan, &config),
+            score_points::DNS_REBINDING
+        );
+        assert_eq!(
+            rebinding_score("example.com", &lan, &config),
+            score_points::DNS_REBINDING
+        );
+    }
+
+    #[test]
+    fn whitelisted_names_stay_under_the_shield() {
+        // A downloaded whitelist must not open the LAN: only
+        // `allowed_domains` exempts a name from the rebinding check.
+        let engine = create_test_engine(&[], &["nas.example.com"], &[]);
+        let config = default_config();
+        let mut score = SuspicionScore::new();
+        let answer = answer_with(&["192.168.1.10"], &[]);
+        score_answer(&mut score, "nas.example.com", &answer, &engine, &config);
+        assert_eq!(score.total, score_points::DNS_REBINDING);
     }
 
     #[test]
@@ -573,7 +771,7 @@ mod tests {
             txt_records: vec![],
             min_ttl: None,
         };
-        score_answer(&mut score, &answer, &engine, &config);
+        score_answer(&mut score, "example.com", &answer, &engine, &config);
         assert_eq!(score.total, score_points::CNAME_CLOAKING);
     }
 
@@ -584,7 +782,7 @@ mod tests {
         config.security.geo_ip.enabled = false;
         let mut score = SuspicionScore::new();
         let answer = make_answer(1, 0, 0, &[]);
-        score_answer(&mut score, &answer, &engine, &config);
+        score_answer(&mut score, "example.com", &answer, &engine, &config);
         assert_eq!(score.total, 0);
     }
 
@@ -597,7 +795,7 @@ mod tests {
         config.security.geo_ip.suspicious_countries = vec!["RU".to_string()];
         let mut score = SuspicionScore::new();
         let answer = make_answer(1, 0, 0, &[]);
-        score_answer(&mut score, &answer, &engine, &config);
+        score_answer(&mut score, "example.com", &answer, &engine, &config);
         assert_eq!(score.total, 0);
     }
 
@@ -613,7 +811,7 @@ mod tests {
             txt_records: vec![],
             min_ttl: Some(5),
         };
-        score_answer(&mut score, &answer, &engine, &config);
+        score_answer(&mut score, "example.com", &answer, &engine, &config);
         assert_eq!(score.total, score_points::LOW_TTL);
     }
 

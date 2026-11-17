@@ -4,9 +4,9 @@
 //! never be forwarded to a public upstream resolver. Forwarding them exposes
 //! the internal host layout of the network to third-party DNS infrastructure.
 //!
-//! Covered ranges (same as the DNS rebinding shield):
-//! `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`,
-//! `169.254.0.0/16`, `100.64.0.0/10`, `::1/128`, `fc00::/7`, `fe80::/10`.
+//! Covered ranges: the same as the DNS rebinding shield (see
+//! `RebindingShieldConfig`), including IPv4-mapped / NAT64 / 6to4 addresses
+//! judged by the IPv4 address they carry.
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -221,6 +221,28 @@ mod tests {
     }
 
     // --- Trailing dot ---
+
+    /// Full `ip6.arpa` name of `ip`.
+    fn ip6_ptr(ip: &str) -> String {
+        let ip: Ipv6Addr = ip.parse().unwrap();
+        let mut labels: Vec<String> = ip
+            .octets()
+            .iter()
+            .flat_map(|byte| [byte >> 4, byte & 0xF])
+            .map(|nibble| format!("{nibble:x}"))
+            .collect();
+        labels.reverse();
+        format!("{}.ip6.arpa", labels.join("."))
+    }
+
+    #[test]
+    fn nat64_ptr_follows_the_embedded_ipv4() {
+        let cfg = config_enabled();
+        assert!(!is_ptr_leak_domain(&ip6_ptr("64:ff9b::8.8.8.8"), &cfg));
+        assert!(is_ptr_leak_domain(&ip6_ptr("64:ff9b::192.168.1.1"), &cfg));
+        assert!(!is_ptr_leak_domain(&ip6_ptr("::ffff:8.8.8.8"), &cfg));
+        assert!(is_ptr_leak_domain(&ip6_ptr("::ffff:10.0.0.1"), &cfg));
+    }
 
     #[test]
     fn strips_trailing_dot() {

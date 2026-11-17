@@ -593,22 +593,33 @@ impl LowTtlConfig {
 /// Rejects upstream DNS answers that map a public domain to a private or
 /// reserved IP address. This closes the DNS rebinding attack vector where
 /// an attacker's domain briefly resolves to a LAN IP to reach internal hosts.
+/// Whitelisted names are shielded too (a downloaded whitelist must not open
+/// the LAN); names expected to resolve privately go in `allowed_domains`.
 ///
 /// Maps to `[security.rebinding_shield]` in the configuration file.
 ///
 /// ## Covered private ranges
-/// | Range           | Spec       | Threat                              |
-/// |-----------------|------------|-------------------------------------|
-/// | 0.0.0.0/8       | RFC 1122   | "This" network, unroutable          |
-/// | 10.0.0.0/8      | RFC 1918   | Private LAN                         |
-/// | 100.64.0.0/10   | RFC 6598   | Shared address space / CGNAT        |
-/// | 127.0.0.0/8     | RFC 1122   | Loopback                            |
-/// | 169.254.0.0/16  | RFC 3927   | Link-local / APIPA                  |
-/// | 172.16.0.0/12   | RFC 1918   | Private LAN                         |
-/// | 192.168.0.0/16  | RFC 1918   | Private LAN                         |
-/// | ::1/128         | RFC 4291   | IPv6 loopback                       |
-/// | fc00::/7        | RFC 4193   | IPv6 unique local                   |
-/// | fe80::/10       | RFC 4291   | IPv6 link-local                     |
+/// | Range               | Spec       | Threat                              |
+/// |---------------------|------------|-------------------------------------|
+/// | 0.0.0.0/8           | RFC 1122   | "This" network, unroutable          |
+/// | 10.0.0.0/8          | RFC 1918   | Private LAN                         |
+/// | 100.64.0.0/10       | RFC 6598   | Shared address space / CGNAT        |
+/// | 127.0.0.0/8         | RFC 1122   | Loopback                            |
+/// | 169.254.0.0/16      | RFC 3927   | Link-local / APIPA                  |
+/// | 172.16.0.0/12       | RFC 1918   | Private LAN                         |
+/// | 192.168.0.0/16      | RFC 1918   | Private LAN                         |
+/// | 198.18.0.0/15       | RFC 2544   | Benchmarking                        |
+/// | 192.0.2.0/24 …      | RFC 5737   | Documentation (never a real answer) |
+/// | 224.0.0.0/4         | RFC 5771   | Multicast                           |
+/// | 240.0.0.0/4         | RFC 1112   | Reserved, broadcast                 |
+/// | ::1/128, ::/128     | RFC 4291   | IPv6 loopback, unspecified          |
+/// | fc00::/7            | RFC 4193   | IPv6 unique local                   |
+/// | fe80::/10           | RFC 4291   | IPv6 link-local                     |
+/// | fec0::/10           | RFC 3879   | IPv6 site-local (deprecated)        |
+/// | ff00::/8            | RFC 4291   | IPv6 multicast                      |
+///
+/// IPv4-mapped (`::ffff:0:0/96`), NAT64 (`64:ff9b::/96`) and 6to4
+/// (`2002::/16`) addresses are judged by the IPv4 address they carry.
 #[derive(Debug, PartialEq, Clone)]
 pub struct RebindingShieldConfig {
     /// Master switch — set to `false` to allow private-IP answers through.
@@ -618,6 +629,11 @@ pub struct RebindingShieldConfig {
     /// forwarded to a public upstream resolver. Prevents leaking the internal
     /// network topology to third-party DNS infrastructure.
     pub block_ptr_leak: bool,
+    /// Domains (and their subdomains) allowed to resolve to private
+    /// addresses, e.g. LAN hosts published in a public zone. Matched on the
+    /// queried name: a public name CNAMEd to one of them is still shielded.
+    /// Lowercase, no leading dot.
+    pub allowed_domains: Vec<String>,
 }
 
 impl Default for RebindingShieldConfig {
@@ -625,6 +641,7 @@ impl Default for RebindingShieldConfig {
         Self {
             enabled: true,
             block_ptr_leak: true,
+            allowed_domains: Vec::new(),
         }
     }
 }
@@ -1753,6 +1770,7 @@ mod tests {
         let r = RebindingShieldConfig {
             enabled: true,
             block_ptr_leak: false,
+            ..RebindingShieldConfig::default()
         };
         assert!(!r.block_ptr_leak);
     }

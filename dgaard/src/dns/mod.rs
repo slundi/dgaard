@@ -202,7 +202,7 @@ pub(crate) async fn forward_and_inspect(
     // DPI: score the upstream answer; block if it crosses the threshold.
     let inspected = InspectedAnswer::from_response(&upstream_bytes);
     if let Some(answer) = &inspected {
-        score_answer(&mut score, answer);
+        score_answer(&mut score, &packet.domain, answer);
     }
     let (is_blocked, stat_action) = classify_score(&score, &cfg.security.scoring, pass_action);
     if is_blocked {

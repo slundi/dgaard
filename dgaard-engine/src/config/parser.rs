@@ -601,6 +601,9 @@ fn parse_rebinding_shield(
     if let Some(b) = get_bool(table, "block_ptr_leak")? {
         cfg.block_ptr_leak = b;
     }
+    if let Some(domains) = get_tld_array(table, "allowed_domains")? {
+        cfg.allowed_domains = domains;
+    }
 
     Ok(cfg)
 }
@@ -913,13 +916,13 @@ fn parse_recursive(table: &toml_span::value::Table<'_>) -> Result<RecursiveConfi
 fn tld_canonicalization_error(tld: &str) -> Option<String> {
     if tld.starts_with('.') {
         return Some(format!(
-            "TLD '{tld}' must not start with a dot; write it as '{}'",
+            "'{tld}' must not start with a dot; write it as '{}'",
             tld.trim_start_matches('.').to_ascii_lowercase()
         ));
     }
     if tld.bytes().any(|byte| byte.is_ascii_uppercase()) {
         return Some(format!(
-            "TLD '{tld}' must be lowercase; write it as '{}'",
+            "'{tld}' must be lowercase; write it as '{}'",
             tld.to_ascii_lowercase()
         ));
     }
@@ -1966,6 +1969,36 @@ mod tests {
         let cfg = Config::parse(toml).unwrap();
         assert!(cfg.security.rebinding_shield.enabled);
         assert!(!cfg.security.rebinding_shield.block_ptr_leak);
+    }
+
+    #[test]
+    fn parse_rebinding_shield_allowed_domains() {
+        let cfg = Config::parse(
+            r#"
+            [security.rebinding_shield]
+            allowed_domains = ["home.example.com", "lan.test"]
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.security.rebinding_shield.allowed_domains,
+            ["home.example.com", "lan.test"]
+        );
+        assert!(
+            Config::default()
+                .security
+                .rebinding_shield
+                .allowed_domains
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn parse_rebinding_shield_rejects_non_canonical_domains() {
+        for bad in [r#"[".home.example.com"]"#, r#"["Home.Example.com"]"#, "[1]"] {
+            let toml = format!("[security.rebinding_shield]\nallowed_domains = {bad}\n");
+            assert!(Config::parse(&toml).is_err(), "{bad}");
+        }
     }
 
     #[test]

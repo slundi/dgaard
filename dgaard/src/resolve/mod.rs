@@ -31,11 +31,12 @@ pub fn check_qclass(qclass: u16) -> Option<BlockReason> {
     engine_check_qclass(qclass, &config)
 }
 
-/// Score the upstream DNS answer, accumulating DPI signals into the score.
-pub fn score_answer(score: &mut SuspicionScore, answer: &InspectedAnswer) {
+/// Score the upstream DNS answer to `domain`, accumulating DPI signals into
+/// the score.
+pub fn score_answer(score: &mut SuspicionScore, domain: &str, answer: &InspectedAnswer) {
     let filter = CURRENT_ENGINE.load();
     let config = CONFIG.load();
-    engine_score_answer(score, answer, &filter, &config);
+    engine_score_answer(score, domain, answer, &filter, &config);
 }
 
 #[cfg(test)]

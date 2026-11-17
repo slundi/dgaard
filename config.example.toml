@@ -402,13 +402,25 @@ enabled = true
 # Must be canonical: lowercase, no leading dot.
 # extra_local_tlds = ["corp", "lan", "internal", "home", "intranet"]
 
+# DNS rebinding shield: an answer mapping a name to a private or reserved
+# address (RFC 1918, loopback, link-local, CGNAT, unique-local, multicast,
+# reserved, documentation, benchmarking) adds enough points to block it.
+# IPv4-mapped, NAT64 (64:ff9b::/96, DNS64) and 6to4 addresses are judged by
+# the IPv4 address they carry, so DNS64 answers for public sites pass.
+# Whitelisted names are shielded too: a downloaded whitelist must not open the
+# LAN. Names expected to resolve privately go in `allowed_domains`.
 [security.rebinding_shield]
 enabled = true
-# Refuse PTR queries (*.in-addr.arpa / *.ip6.arpa) for RFC 1918, loopback,
-# and link-local IP ranges. Prevents forwarding these queries to a public
-# upstream resolver, which would expose internal host names and LAN topology
-# to third-party DNS infrastructure.
+# Refuse PTR queries (*.in-addr.arpa / *.ip6.arpa) for the same private
+# ranges. Prevents forwarding these queries to a public upstream resolver,
+# which would expose internal host names and LAN topology to third-party DNS
+# infrastructure.
 block_ptr_leak = true
+# Domains (and their subdomains) allowed to resolve to private addresses,
+# e.g. LAN hosts published in a public zone. Matched on the queried name: a
+# public name with a CNAME to one of them is still blocked.
+# Lowercase, no leading dot. Default: none.
+# allowed_domains = ["home.example.com"]
 
 # Low-TTL suspicion scoring configuration.
 #
