@@ -535,12 +535,73 @@ pub async fn reload_config() -> Result<(), String> {
         .get()
         .ok_or("Config path not set. Server was likely not initialized correctly.")?;
 
-    reload_config_from_path(config_path).await
+    reload_config_from_path(config_path).await.map(|_| ())
+}
+
+/// Settings read once at startup (sockets bound, runtime built, cache and
+/// workers sized, resolver snapshotted). A reload stores them in `CONFIG`,
+/// but nothing uses the new value before a restart. Returns those whose
+/// value differs between `old` and `new`.
+fn restart_required_changes(old: &Config, new: &Config) -> Vec<&'static str> {
+    let recursive_mode = matches!(new.server.mode, crate::config::ResolutionMode::Recursive);
+    [
+        (
+            "server.listen_addr",
+            old.server.listen_addr != new.server.listen_addr,
+        ),
+        (
+            "server.metrics_listen",
+            old.server.metrics_listen != new.server.metrics_listen,
+        ),
+        (
+            "server.stats_socket_path",
+            old.server.stats_socket_path != new.server.stats_socket_path,
+        ),
+        ("server.runtime", old.server.runtime != new.server.runtime),
+        ("cache.enabled", old.cache.enabled != new.cache.enabled),
+        (
+            "cache.max_entries",
+            old.cache.max_entries != new.cache.max_entries,
+        ),
+        (
+            "prefetch.enabled",
+            old.prefetch.enabled != new.prefetch.enabled,
+        ),
+        (
+            "prefetch.queue_capacity",
+            old.prefetch.queue_capacity != new.prefetch.queue_capacity,
+        ),
+        (
+            "prefetch.interval_ms",
+            old.prefetch.interval_ms != new.prefetch.interval_ms,
+        ),
+        (
+            "log.summary_interval_secs",
+            old.log.summary_interval_secs != new.log.summary_interval_secs,
+        ),
+        // The recursive resolver and the popularity snapshot task copy the
+        // whole section at startup.
+        ("recursive", old.recursive != new.recursive),
+        // The chain validator is attached to the recursive resolver at
+        // startup; the forwarder reads the switch on every query.
+        (
+            "security.dnssec.enabled",
+            recursive_mode && old.security.dnssec.enabled != new.security.dnssec.enabled,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(key, changed)| changed.then_some(key))
+    .collect()
 }
 
 /// Internal function to reload config from a specific path.
 /// Separated for testability.
-async fn reload_config_from_path(config_path: &std::path::Path) -> Result<(), String> {
+///
+/// On success, returns the changed settings that still need a restart
+/// (also logged): the rest of the new configuration is in effect.
+async fn reload_config_from_path(
+    config_path: &std::path::Path,
+) -> Result<Vec<&'static str>, String> {
     if config_path.as_os_str().is_empty() {
         return Err("Config path is empty".to_string());
     }
@@ -563,13 +624,20 @@ async fn reload_config_from_path(config_path: &std::path::Path) -> Result<(), St
             if let Err(e) = new_config.validate() {
                 return Err(format!("Failed to reload config: {}", e));
             }
+            let pending = restart_required_changes(&CONFIG.load(), &new_config);
             CONFIG.store(Arc::new(new_config));
             reload_lists().await;
             println!(
                 "Configuration reloaded successfully from {}",
                 config_path.display()
             );
-            Ok(())
+            if !pending.is_empty() {
+                eprintln!(
+                    "warn: changed settings that only take effect after a restart: {}",
+                    pending.join(", ")
+                );
+            }
+            Ok(pending)
         }
         Err(e) => Err(format!("Failed to reload config: {}", e)),
     }
@@ -880,6 +948,117 @@ mod tests {
     // -----------------------------------------------------------------------
     // Hot reload tests
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn unchanged_config_needs_no_restart() {
+        let config = Config::default();
+        assert!(restart_required_changes(&config, &config.clone()).is_empty());
+    }
+
+    #[test]
+    fn startup_only_settings_are_reported() {
+        let old = Config::default();
+        let mut new = old.clone();
+        new.server.listen_addr = "127.0.0.1:5353".into();
+        new.server.metrics_listen = Some("127.0.0.1:9153".into());
+        new.server.stats_socket_path = "/run/dgaard.sock".into();
+        new.server.runtime.max_concurrent_queries += 1;
+        new.cache.enabled = !old.cache.enabled;
+        new.cache.max_entries += 1;
+        new.prefetch.enabled = !old.prefetch.enabled;
+        new.prefetch.queue_capacity += 1;
+        new.prefetch.interval_ms += 1;
+        new.log.summary_interval_secs += 1;
+        new.recursive.query_timeout_ms += 1;
+        assert_eq!(
+            restart_required_changes(&old, &new),
+            [
+                "server.listen_addr",
+                "server.metrics_listen",
+                "server.stats_socket_path",
+                "server.runtime",
+                "cache.enabled",
+                "cache.max_entries",
+                "prefetch.enabled",
+                "prefetch.queue_capacity",
+                "prefetch.interval_ms",
+                "log.summary_interval_secs",
+                "recursive",
+            ]
+        );
+    }
+
+    #[test]
+    fn live_settings_are_not_reported() {
+        let old = Config::default();
+        let mut new = old.clone();
+        new.forwarder.servers = vec!["9.9.9.9:53".into()];
+        new.forwarder.timeout_ms += 1;
+        new.cache.ttl_override = 60;
+        new.prefetch.ttl_remaining_trigger_secs += 1;
+        new.server.allowed_networks = vec!["10.0.0.0/8".into()];
+        new.security.scoring.blocking_threshold += 1;
+        // The forwarder reads the DNSSEC switch on every query.
+        new.security.dnssec.enabled = !old.security.dnssec.enabled;
+        assert!(restart_required_changes(&old, &new).is_empty());
+    }
+
+    #[test]
+    fn dnssec_switch_needs_a_restart_in_recursive_mode() {
+        let mut old = Config::default();
+        old.server.mode = crate::config::ResolutionMode::Recursive;
+        let mut new = old.clone();
+        new.security.dnssec.enabled = !old.security.dnssec.enabled;
+        assert_eq!(
+            restart_required_changes(&old, &new),
+            ["security.dnssec.enabled"]
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn reload_applies_live_settings_and_reports_the_rest() {
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let dir =
+            std::env::temp_dir().join(format!("dgaard_reload_pending_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+
+        std::fs::write(&path, "[forwarder]\ntimeout_ms = 1000\n").unwrap();
+        reload_config_from_path(&path).await.unwrap();
+
+        std::fs::write(
+            &path,
+            "[server]\nlisten_addr = \"127.0.0.1:5455\"\n\
+             [forwarder]\ntimeout_ms = 2500\n\
+             [cache]\nmax_entries = 77\n",
+        )
+        .unwrap();
+        let pending = reload_config_from_path(&path).await.unwrap();
+        assert_eq!(pending, ["server.listen_addr", "cache.max_entries"]);
+        // Applied anyway; live settings take effect at once.
+        assert_eq!(CONFIG.load().forwarder.timeout_ms, 2500);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn reload_with_degenerate_values_is_refused() {
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("dgaard_reload_bounds_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[forwarder]\ntimeout_ms = 1200\n").unwrap();
+        reload_config_from_path(&path).await.unwrap();
+
+        std::fs::write(&path, "[forwarder]\ntimeout_ms = 0\n").unwrap();
+        let err = reload_config_from_path(&path).await.unwrap_err();
+        assert!(err.contains("forwarder.timeout_ms"), "{err}");
+        assert_eq!(CONFIG.load().forwarder.timeout_ms, 1200, "old config kept");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[tokio::test]
     async fn reload_config_from_path_fails_with_empty_path() {

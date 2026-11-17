@@ -68,15 +68,22 @@ worker_threads = "auto"
 
 # Stack size per thread (in bytes). 8 MiB matches the usual desktop/server default.
 # On OpenWrt, reducing this to 2 MiB (2 * 1024 * 1024 = 2097152) saves RAM.
+# Minimum: 262144 (256 KiB).
 stack_size = 8388608
 
-# Capacity of the request queue per worker before rejecting requests.
+# Capacity of the request queue per worker before rejecting requests (>= 1).
 max_blocking_threads = 512
 
 # Maximum number of DNS queries that may be in-flight simultaneously.
 # When this limit is reached, new queries receive a SERVFAIL response
 # immediately instead of spawning a new task, preventing OOM under UDP floods.
-# Reduce to 128–256 on memory-constrained OpenWrt devices.
+# Reduce to 128–256 on memory-constrained OpenWrt devices. Must be >= 1.
+#
+# Settings read once at startup — listen_addr, metrics_listen,
+# stats_socket_path, this [server.runtime] section, [cache] enabled /
+# max_entries, [prefetch] enabled / queue_capacity / interval_ms,
+# [log] summary_interval_secs and [recursive] — are stored by a SIGHUP reload
+# but only take effect after a restart; the reload logs the changed ones.
 max_concurrent_queries = 1024
 
 [security.structure]

@@ -89,13 +89,15 @@ export const ENGINE_SCHEMA = {
           type: 'int',
           rust: 'usize',
           default: 2097152,
-          doc: 'Stack size per worker thread, in bytes. 8388608 (8 MiB) matches the\nusual desktop default; 2097152 (2 MiB) saves RAM on OpenWrt.',
+          min: 262144,
+          doc: 'Stack size per worker thread, in bytes. 8388608 (8 MiB) matches the\nusual desktop default; 2097152 (2 MiB) saves RAM on OpenWrt. At least\n262144 (256 KiB).',
         },
         {
           key: 'max_blocking_threads',
           type: 'int',
           rust: 'usize',
           default: 512,
+          min: 1,
           doc: 'Depth of the per-worker blocking task queue before requests are\nrejected with a backpressure error.',
         },
         {
@@ -103,6 +105,7 @@ export const ENGINE_SCHEMA = {
           type: 'int',
           rust: 'usize',
           default: 1024,
+          min: 1,
           doc: 'Maximum DNS queries in flight simultaneously. Beyond this limit new\nqueries get an immediate SERVFAIL instead of spawning a task, which\nprevents OOM under a UDP flood. Use 128–256 on constrained devices.',
         },
       ],
@@ -563,6 +566,7 @@ export const ENGINE_SCHEMA = {
           type: 'int',
           rust: 'u64',
           default: 2000,
+          min: 1,
           doc: 'Per-query timeout. Unanswered queries are retried on the next server.',
         },
         {
@@ -591,6 +595,7 @@ export const ENGINE_SCHEMA = {
           type: 'int',
           rust: 'u8',
           default: 8,
+          min: 1,
           doc: 'Hard ceiling on delegation hops; defence in depth on top of the\ncycle detector.',
         },
         {
@@ -598,6 +603,7 @@ export const ENGINE_SCHEMA = {
           type: 'int',
           rust: 'u32',
           default: 64,
+          min: 1,
           doc: 'Cap on total upstream queries per client resolution. CNAME chase and\nout-of-zone NS lookups are amortised against the same budget so an\namplifying chain cannot escape it.',
         },
         {
@@ -612,6 +618,7 @@ export const ENGINE_SCHEMA = {
           type: 'int',
           rust: 'u64',
           default: 3000,
+          min: 1,
           doc: 'Per-nameserver UDP query timeout.',
         },
         {

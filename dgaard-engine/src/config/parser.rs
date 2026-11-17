@@ -1290,6 +1290,8 @@ impl Config {
     /// engine, so a misconfigured reload leaves the running engine untouched rather than silently
     /// degrading service.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        self.validate_bounds()?;
+
         let listen = &self.server.listen_addr;
         if listen.parse::<std::net::SocketAddr>().is_err() {
             return Err(ConfigError::InvalidValue {
@@ -1425,6 +1427,53 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    /// Numeric settings whose degenerate values break the daemon instead of
+    /// tuning it: a zero semaphore answers every query with SERVFAIL, zero
+    /// blocking threads panics the tokio builder, a zero timeout fails
+    /// every upstream query, a tiny stack overflows on the first deep
+    /// resolution.
+    fn validate_bounds(&self) -> Result<(), ConfigError> {
+        let runtime = &self.server.runtime;
+        let recursive = &self.recursive;
+        let checks: [(&str, u64, u64); 7] = [
+            (
+                "server.runtime.max_concurrent_queries",
+                runtime.max_concurrent_queries as u64,
+                1,
+            ),
+            (
+                "server.runtime.max_blocking_threads",
+                runtime.max_blocking_threads as u64,
+                1,
+            ),
+            (
+                "server.runtime.stack_size",
+                runtime.stack_size as u64,
+                MIN_STACK_SIZE as u64,
+            ),
+            ("forwarder.timeout_ms", self.forwarder.timeout_ms, 1),
+            ("recursive.query_timeout_ms", recursive.query_timeout_ms, 1),
+            (
+                "recursive.max_queries_per_resolution",
+                u64::from(recursive.max_queries_per_resolution),
+                1,
+            ),
+            (
+                "recursive.max_delegation_depth",
+                u64::from(recursive.max_delegation_depth),
+                1,
+            ),
+        ];
+        match checks.iter().find(|(_, value, min)| value < min) {
+            Some((key, value, min)) => Err(ConfigError::InvalidValue {
+                key: (*key).to_string(),
+                message: format!("must be at least {min}, got {value}"),
+                span: toml_span::Span::default(),
+            }),
+            None => Ok(()),
+        }
     }
 }
 
@@ -3206,6 +3255,59 @@ list_path = []
     fn validate_rejects_first_bad_server_in_mixed_list() {
         let mut cfg = Config::default();
         cfg.forwarder.servers = vec!["1.1.1.1:53".into(), "bad".into(), "9.9.9.9:53".into()];
+        assert!(cfg.validate().is_err());
+    }
+
+    /// A setting key and how to break it.
+    type BreakCase = (&'static str, fn(&mut Config));
+
+    #[test]
+    fn validate_rejects_degenerate_numeric_settings() {
+        let cases: [BreakCase; 7] = [
+            ("server.runtime.max_concurrent_queries", |cfg| {
+                cfg.server.runtime.max_concurrent_queries = 0
+            }),
+            ("server.runtime.max_blocking_threads", |cfg| {
+                cfg.server.runtime.max_blocking_threads = 0
+            }),
+            ("server.runtime.stack_size", |cfg| {
+                cfg.server.runtime.stack_size = MIN_STACK_SIZE - 1
+            }),
+            ("forwarder.timeout_ms", |cfg| cfg.forwarder.timeout_ms = 0),
+            ("recursive.query_timeout_ms", |cfg| {
+                cfg.recursive.query_timeout_ms = 0
+            }),
+            ("recursive.max_queries_per_resolution", |cfg| {
+                cfg.recursive.max_queries_per_resolution = 0
+            }),
+            ("recursive.max_delegation_depth", |cfg| {
+                cfg.recursive.max_delegation_depth = 0
+            }),
+        ];
+        for (key, break_it) in cases {
+            let mut cfg = Config::default();
+            break_it(&mut cfg);
+            let err = cfg.validate().unwrap_err().to_string();
+            assert!(err.contains(key), "{key}: {err}");
+        }
+    }
+
+    #[test]
+    fn validate_accepts_the_smallest_sane_values() {
+        let mut cfg = Config::default();
+        cfg.server.runtime.max_concurrent_queries = 1;
+        cfg.server.runtime.max_blocking_threads = 1;
+        cfg.server.runtime.stack_size = MIN_STACK_SIZE;
+        cfg.forwarder.timeout_ms = 1;
+        cfg.recursive.query_timeout_ms = 1;
+        cfg.recursive.max_queries_per_resolution = 1;
+        cfg.recursive.max_delegation_depth = 1;
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn degenerate_values_in_a_file_fail_at_load() {
+        let cfg = Config::parse("[server.runtime]\nmax_concurrent_queries = 0\n").unwrap();
         assert!(cfg.validate().is_err());
     }
 

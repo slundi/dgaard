@@ -51,7 +51,8 @@ pipeline = ["Whitelist", "HotCache", "StaticBlock", "SuffixMatch", "Upstream"]
 worker_threads = 1
 
 # Stack size per worker thread, in bytes. 8388608 (8 MiB) matches the
-# usual desktop default; 2097152 (2 MiB) saves RAM on OpenWrt.
+# usual desktop default; 2097152 (2 MiB) saves RAM on OpenWrt. At least
+# 262144 (256 KiB).
 stack_size = 2097152
 
 # Depth of the per-worker blocking task queue before requests are

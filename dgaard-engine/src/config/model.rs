@@ -48,6 +48,10 @@ pub struct RuntimeConfig {
     pub max_concurrent_queries: usize,
 }
 
+/// Smallest accepted `server.runtime.stack_size` (256 KiB): below it, a
+/// deep resolution (CNAME chase, DNSSEC chain) may overflow a thread stack.
+pub const MIN_STACK_SIZE: usize = 256 * 1024;
+
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
