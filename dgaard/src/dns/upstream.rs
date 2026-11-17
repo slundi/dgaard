@@ -154,6 +154,9 @@ pub(crate) async fn forward_to_upstream(
                             // Restore the original client TXID before returning.
                             response[0] = original_txid[0];
                             response[1] = original_txid[1];
+                            // Hand back the client's own spelling, not the
+                            // 0x20 one (or whatever case the server chose).
+                            crate::cache::copy_question_case(packet, &mut response);
                             return Ok(response);
                         }
                         ResponseCheck::Ignore => continue 'recv,
@@ -812,6 +815,70 @@ mod tests {
                 parsed.queries[0].name().to_ascii().to_ascii_lowercase(),
                 "example.com."
             );
+        });
+    }
+
+    // --- the client sees its own question case (review M4) ---
+
+    fn client_query_for(id: u16, name: &str) -> Vec<u8> {
+        let mut msg = Message::query();
+        msg.metadata.id = id;
+        msg.add_query(Query::query(Name::from_ascii(name).unwrap(), RecordType::A));
+        msg.to_vec().unwrap()
+    }
+
+    fn question_name(bytes: &[u8]) -> String {
+        Message::from_vec(bytes).unwrap().queries[0]
+            .name()
+            .to_ascii()
+    }
+
+    #[test]
+    fn randomized_0x20_case_never_reaches_the_client() {
+        run_with_globals(async {
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            let seen = Arc::clone(&sent);
+            let behaviour: Behaviour = Arc::new(move |query| {
+                seen.lock().unwrap().push(question_name(query));
+                vec![echo_response(query)]
+            });
+            let (addr, _) = spawn_upstream(behaviour, Duration::ZERO).await;
+            set_forwarder(&[&addr], 1000, true);
+            let name = "www.long-enough-name.example.com.";
+            for id in 0..8 {
+                let response = forward_to_upstream(&client_query_for(id, name), false)
+                    .await
+                    .unwrap();
+                assert_eq!(question_name(&response), name);
+            }
+            // The upstream did see randomized case (2^-28 per query that it
+            // would not, with 28 letters).
+            assert!(sent.lock().unwrap().iter().any(|asked| asked != name));
+        });
+    }
+
+    #[test]
+    fn upstream_case_changes_are_undone() {
+        // Without 0x20 a case-folding server is accepted; the client still
+        // gets back the spelling it asked with.
+        run_with_globals(async {
+            let behaviour: Behaviour = Arc::new(|query| {
+                let mut lowered = Message::from_vec(query).unwrap();
+                lowered.metadata.message_type = MessageType::Response;
+                let question = lowered.queries[0].clone();
+                lowered.queries.clear();
+                lowered.add_query(Query::query(
+                    Name::from_ascii(question.name().to_ascii().to_ascii_lowercase()).unwrap(),
+                    question.query_type(),
+                ));
+                vec![lowered.to_vec().unwrap()]
+            });
+            let (addr, _) = spawn_upstream(behaviour, Duration::ZERO).await;
+            set_forwarder(&[&addr], 1000, false);
+            let response = forward_to_upstream(&client_query_for(7, "ExAmPlE.CoM."), false)
+                .await
+                .unwrap();
+            assert_eq!(question_name(&response), "ExAmPlE.CoM.");
         });
     }
 

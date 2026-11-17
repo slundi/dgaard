@@ -105,24 +105,38 @@ impl DnsPacket {
     ///
     /// Used by the Phase 5 prefetch worker, which needs to feed an
     /// [`UpstreamResolver`] but has no incoming wire packet to parse —
-    /// only the cache key (`(domain, qtype)`). The resulting `DnsPacket`
-    /// matches what a stub resolver would send: a single standard query
-    /// in class IN with RD=1 (forwarder mode uses RD when it forwards;
-    /// recursive mode ignores RD and walks the chain itself).
+    /// only the cache key (name, type, class, DO/CD). The resulting
+    /// `DnsPacket` matches what a stub resolver would send: a single
+    /// standard query with RD=1 (forwarder mode uses RD when it forwards;
+    /// recursive mode ignores RD and walks the chain itself), EDNS with DO
+    /// when the cached entry was for a DNSSEC-aware client, and CD when the
+    /// client disabled validation.
     ///
     /// Returns `None` if `domain` cannot be parsed as a DNS name. The
     /// prefetch worker drops such requests silently — they can only
     /// happen if a cache entry was inserted with a malformed key, which
     /// today is impossible (cache keys are derived from validated
     /// incoming packets).
-    pub fn new_query(domain: &str, qtype: u16) -> Option<Self> {
+    pub fn new_query(
+        domain: &str,
+        qtype: u16,
+        qclass: u16,
+        flags: crate::cache::QueryFlags,
+    ) -> Option<Self> {
         let name = Name::parse(domain, Some(&Name::root())).ok()?;
         let mut message = Message::query();
         message.metadata.op_code = OpCode::Query;
         message.metadata.recursion_desired = true;
+        message.metadata.checking_disabled = flags.checking_disabled;
+        if flags.dnssec_ok {
+            let mut edns = hickory_resolver::proto::op::Edns::new();
+            edns.set_max_payload(1232);
+            edns.set_dnssec_ok(true);
+            message.set_edns(edns);
+        }
 
         let q = Query::query(name, RecordType::from(qtype))
-            .set_query_class(DNSClass::IN)
+            .set_query_class(DNSClass::from(qclass))
             .clone();
         message.add_query(q);
 
@@ -130,7 +144,7 @@ impl DnsPacket {
             message,
             domain: domain.to_ascii_lowercase(),
             qtype,
-            qclass: u16::from(DNSClass::IN),
+            qclass,
             transport: Transport::Udp,
         })
     }
@@ -274,6 +288,34 @@ impl DnsPacket {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- new_query carries the whole cache key (review M4) ----
+
+    #[test]
+    fn new_query_sets_class_and_dnssec_bits() {
+        let flags = crate::cache::QueryFlags {
+            dnssec_ok: true,
+            checking_disabled: true,
+        };
+        let packet = DnsPacket::new_query("Example.com", 28, 3, flags).unwrap();
+        assert_eq!(packet.domain, "example.com");
+        assert_eq!((packet.qtype, packet.qclass), (28, 3));
+        let question = &packet.message.queries[0];
+        assert_eq!(question.query_class(), DNSClass::CH);
+        assert_eq!(question.query_type(), RecordType::AAAA);
+        assert!(packet.message.metadata.checking_disabled);
+        assert!(packet.message.edns.as_ref().unwrap().flags().dnssec_ok);
+        assert_eq!(crate::cache::CacheQuery::of(&packet).flags, flags);
+    }
+
+    #[test]
+    fn new_query_without_flags_has_no_edns() {
+        let packet =
+            DnsPacket::new_query("example.com", 1, 1, crate::cache::QueryFlags::default()).unwrap();
+        assert!(packet.message.edns.is_none());
+        assert!(!packet.message.metadata.checking_disabled);
+        assert_eq!(packet.message.queries[0].query_class(), DNSClass::IN);
+    }
 
     #[test]
     fn test_dns_packet_from_bytes_valid() {

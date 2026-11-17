@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use tokio::net::UdpSocket;
 
+use crate::cache::{CacheQuery, CachedAnswer, TtlPolicy};
 use crate::config::Config;
 use crate::config::DnssecAction;
 use crate::config::ResolutionMode;
@@ -140,10 +141,10 @@ pub(crate) enum ForwardOutcome {
     UpstreamError,
 }
 
-/// Drop any cached answer for `packet`'s name and type.
-pub(crate) fn evict_cached(domain: &str, qtype: u16) {
+/// Drop any cached answer for `packet`'s question and DNSSEC bits.
+pub(crate) fn evict_cached(packet: &DnsPacket) {
     if let Some(cache) = crate::RESPONSE_CACHE.get() {
-        cache.remove(domain, qtype);
+        cache.remove(CacheQuery::of(packet));
     }
 }
 
@@ -155,8 +156,8 @@ pub(crate) fn evict_cached(domain: &str, qtype: u16) {
 ///
 /// `upstream` is the pending resolution, run alongside the DNSSEC side
 /// channel. An accepted answer is cached; a rejected one evicts the cached
-/// entry for the same name and type, so a previous answer stops being
-/// served once its refresh is refused.
+/// entry for the same question and DNSSEC bits, so a previous answer stops
+/// being served once its refresh is refused.
 pub(crate) async fn forward_and_inspect(
     packet: &DnsPacket,
     upstream: impl std::future::Future<Output = std::io::Result<Vec<u8>>>,
@@ -177,13 +178,13 @@ pub(crate) async fn forward_and_inspect(
     // the chain validator below judges the answer bytes instead.
     if dnssec_status == DnssecStatus::Bogus {
         if dnssec_cfg.action == DnssecAction::Block {
-            evict_cached(&packet.domain, packet.qtype);
+            evict_cached(packet);
             return ForwardOutcome::Bogus;
         }
         log::warn!("DNSSEC BOGUS (log-only): {}", packet.domain);
     }
 
-    let Ok(upstream_bytes) = upstream_result else {
+    let Ok(mut upstream_bytes) = upstream_result else {
         return ForwardOutcome::UpstreamError;
     };
 
@@ -205,7 +206,7 @@ pub(crate) async fn forward_and_inspect(
     ) == DnssecStatus::Bogus
     {
         if dnssec_cfg.action == DnssecAction::Block {
-            evict_cached(&packet.domain, packet.qtype);
+            evict_cached(packet);
             return ForwardOutcome::Bogus;
         }
         log::warn!("DNSSEC BOGUS (recursive, log-only): {}", packet.domain);
@@ -218,26 +219,19 @@ pub(crate) async fn forward_and_inspect(
     }
     let (is_blocked, stat_action) = classify_score(&score, &cfg.security.scoring, pass_action);
     if is_blocked {
-        evict_cached(&packet.domain, packet.qtype);
+        evict_cached(packet);
         return ForwardOutcome::Blocked(stat_action);
     }
 
-    if let (Some(cache), Some(ttl)) = (
-        crate::RESPONSE_CACHE.get(),
-        inspected.and_then(|a| a.min_ttl),
-    ) {
-        let floored = cfg
-            .security
-            .low_ttl
-            .min_ttl_floor_secs
-            .map_or(ttl, |floor| ttl.max(floor));
-        cache.insert(
-            &packet.domain,
-            packet.qtype,
-            &upstream_bytes,
-            floored,
-            cfg.cache.ttl_override,
-        );
+    if let Some(cache) = crate::RESPONSE_CACHE.get() {
+        // The cache derives the lifetime (positive or negative, RFC 2308)
+        // and rewrites the served TTLs under the same policy.
+        let policy = TtlPolicy {
+            override_secs: cfg.cache.ttl_override,
+            floor_secs: cfg.security.low_ttl.min_ttl_floor_secs.unwrap_or(0),
+        };
+        cache.insert(CacheQuery::of(packet), &upstream_bytes, policy);
+        crate::cache::apply_policy(&mut upstream_bytes, policy);
     }
     ForwardOutcome::Serve {
         bytes: upstream_bytes,
@@ -321,35 +315,35 @@ pub(crate) async fn answer_query(
 
     // 2c. Hot cache: serve a cached response before touching the filter pipeline.
     //     A hit skips resolve_with_score, upstream forwarding, and DNSSEC entirely.
-    if let Some(cache) = crate::RESPONSE_CACHE.get() {
-        let txid = [packet[0], packet[1]];
-        if let Some((cached, remaining_ttl)) =
-            cache.get_with_remaining_ttl(&dns_packet.domain, dns_packet.qtype, txid)
-        {
-            STATS_COUNTERS.increment_cached();
-            // Popularity is recorded only here — by the time a response
-            // is in the cache, the full filter pipeline has already
-            // judged the domain "allowed", so the tracker never sees
-            // blocked names. Blocklist reloads (Phase 4) clear both
-            // RESPONSE_CACHE and POPULARITY_TRACKER together to keep
-            // this invariant valid across policy changes.
-            crate::POPULARITY_TRACKER.record_hit(&dns_packet.domain);
+    if let Some(cache) = crate::RESPONSE_CACHE.get()
+        && let Some(CachedAnswer {
+            bytes: cached,
+            remaining_ttl,
+        }) = cache.get(CacheQuery::of(&dns_packet), packet)
+    {
+        STATS_COUNTERS.increment_cached();
+        // Popularity is recorded only here — by the time a response
+        // is in the cache, the full filter pipeline has already
+        // judged the domain "allowed", so the tracker never sees
+        // blocked names. Blocklist reloads (Phase 4) clear both
+        // RESPONSE_CACHE and POPULARITY_TRACKER together to keep
+        // this invariant valid across policy changes.
+        crate::POPULARITY_TRACKER.record_hit(&dns_packet.domain);
 
-            // Phase 5: enqueue a prefetch when the entry is about to
-            // expire so the next client hit stays cached. Fire-and-
-            // forget — a full queue or absent worker is a no-op.
-            let trigger = CONFIG.load().prefetch.ttl_remaining_trigger_secs;
-            if trigger > 0 && remaining_ttl < trigger {
-                crate::prefetch::try_enqueue(&dns_packet.domain, dns_packet.qtype);
-            }
-
-            // Cache hits are often most of the traffic: they must show up
-            // in the summary, the monitors and per-client logs too.
-            if let Some(sender) = STATS_SENDER.get() {
-                sender.send_event(&dns_packet.domain, peer, StatAction::Cached);
-            }
-            return Some(cached);
+        // Phase 5: enqueue a prefetch when the entry is about to
+        // expire so the next client hit stays cached. Fire-and-
+        // forget — a full queue or absent worker is a no-op.
+        let trigger = CONFIG.load().prefetch.ttl_remaining_trigger_secs;
+        if trigger > 0 && remaining_ttl < trigger {
+            crate::prefetch::try_enqueue(CacheQuery::of(&dns_packet));
         }
+
+        // Cache hits are often most of the traffic: they must show up
+        // in the summary, the monitors and per-client logs too.
+        if let Some(sender) = STATS_SENDER.get() {
+            sender.send_event(&dns_packet.domain, peer, StatAction::Cached);
+        }
+        return Some(cached);
     }
 
     // 2d. Run domain through the filter pipeline
@@ -569,6 +563,28 @@ mod tests {
             let mut response = query.message.clone();
             response.metadata.message_type = MessageType::Response;
             response.metadata.response_code = ResponseCode::NoError;
+            // `missing-site.com` does not exist: NXDOMAIN with the zone SOA,
+            // negative TTL min(900, 120) = 120 (RFC 2308).
+            if query.domain == "missing-site.com" {
+                response.metadata.response_code = ResponseCode::NXDomain;
+                let soa = hickory_resolver::proto::rr::rdata::SOA::new(
+                    Name::from_ascii("ns.missing-site.com.").unwrap(),
+                    Name::from_ascii("admin.missing-site.com.").unwrap(),
+                    1,
+                    7200,
+                    900,
+                    1_209_600,
+                    120,
+                );
+                response.add_authority(Record::from_rdata(
+                    Name::from_ascii("missing-site.com.").unwrap(),
+                    900,
+                    RData::SOA(soa),
+                ));
+                return response
+                    .to_vec()
+                    .map_err(|e| std::io::Error::other(e.to_string()));
+            }
             if let Some(question) = query.message.queries.first() {
                 // `intranet.com` answers with a private address, which the
                 // post-answer inspection (rebinding shield) must catch.
@@ -600,6 +616,16 @@ mod tests {
             response
                 .to_vec()
                 .map_err(|e| std::io::Error::other(e.to_string()))
+        }
+    }
+
+    /// Cache key of an A/IN query without DO or CD.
+    fn plain_key(domain: &str) -> CacheQuery<'_> {
+        CacheQuery {
+            domain,
+            qtype: 1,
+            qclass: 1,
+            flags: crate::cache::QueryFlags::default(),
         }
     }
 
@@ -849,7 +875,7 @@ mod tests {
             install_big_answer_policy();
             let cache =
                 crate::RESPONSE_CACHE.get_or_init(|| crate::cache::ResponseCache::new(1024));
-            cache.remove("big-answer.com", 1);
+            cache.remove(plain_key("big-answer.com"));
 
             let (first, calls) = run_raw(query_with_edns("big-answer.com", Some(4096))).await;
             assert_eq!(
@@ -863,6 +889,120 @@ mod tests {
             let second = second.unwrap();
             assert!(second.len() <= 512);
             assert!(Message::from_vec(&second).unwrap().metadata.truncation);
+        });
+    }
+
+    // ---- cache key, TTLs, negative answers and question case (review M4) ----
+
+    /// A/IN query for `domain` with EDNS, optionally DO, and CD.
+    fn query_with_flags(domain: &str, dnssec_ok: bool, checking_disabled: bool) -> Vec<u8> {
+        let mut msg = Message::from_vec(&query_bytes(domain)).unwrap();
+        msg.metadata.checking_disabled = checking_disabled;
+        let mut edns = hickory_resolver::proto::op::Edns::new();
+        edns.set_max_payload(1232);
+        edns.set_dnssec_ok(dnssec_ok);
+        msg.set_edns(edns);
+        msg.to_vec().unwrap()
+    }
+
+    fn reply_of(reply: Option<Vec<u8>>) -> Message {
+        Message::from_vec(&reply.expect("a reply")).unwrap()
+    }
+
+    fn install_cache() -> &'static crate::cache::ResponseCache {
+        crate::RESPONSE_CACHE.get_or_init(|| crate::cache::ResponseCache::new(1024))
+    }
+
+    #[test]
+    fn dnssec_and_plain_clients_never_share_a_cached_answer() {
+        run_with_globals(async {
+            install_policy(&[], "dnssec-key-site.com");
+            install_cache().clear();
+
+            let (_, calls) = run_raw(query_with_flags("dnssec-key-site.com", true, false)).await;
+            assert_eq!(calls, 1);
+            let (_, calls) = run_raw(query_with_flags("dnssec-key-site.com", false, false)).await;
+            assert_eq!(calls, 1, "a plain client misses the DO entry");
+            let (_, calls) = run_raw(query_with_flags("dnssec-key-site.com", false, true)).await;
+            assert_eq!(calls, 1, "a CD client misses both");
+
+            for (dnssec_ok, checking_disabled) in [(true, false), (false, false), (false, true)] {
+                let query = query_with_flags("dnssec-key-site.com", dnssec_ok, checking_disabled);
+                let (_, calls) = run_raw(query).await;
+                assert_eq!(calls, 0, "DO={dnssec_ok} CD={checking_disabled}: cached");
+            }
+        });
+    }
+
+    #[test]
+    fn cache_hit_keeps_the_client_question_case() {
+        run_with_globals(async {
+            install_policy(&[], "case-site.com");
+            install_cache().remove(plain_key("case-site.com"));
+
+            run_raw(query_bytes("case-site.com")).await;
+            let (reply, calls) = run_raw(query_bytes("CaSe-SiTe.CoM")).await;
+            assert_eq!(calls, 0);
+            assert_eq!(
+                reply_of(reply).queries[0].name().to_ascii(),
+                "CaSe-SiTe.CoM."
+            );
+        });
+    }
+
+    #[test]
+    fn nxdomain_is_answered_from_the_cache() {
+        run_with_globals(async {
+            install_policy(&[], "missing-site.com");
+            install_cache().remove(plain_key("missing-site.com"));
+
+            let (first, calls) = run_raw(query_bytes("missing-site.com")).await;
+            assert_eq!(calls, 1);
+            let first = reply_of(first);
+            assert_eq!(first.metadata.response_code, ResponseCode::NXDomain);
+            assert_eq!(first.authorities[0].ttl, 120, "SOA TTL capped (RFC 2308)");
+
+            let (second, calls) = run_raw(query_bytes("missing-site.com")).await;
+            assert_eq!(calls, 0, "negative answer cached");
+            let second = reply_of(second);
+            assert_eq!(second.metadata.response_code, ResponseCode::NXDomain);
+            assert!(second.authorities[0].ttl <= 120);
+        });
+    }
+
+    #[test]
+    fn ttl_override_is_what_every_client_sees() {
+        run_with_globals(async {
+            install_policy(&[], "override-site.com");
+            install_cache().remove(plain_key("override-site.com"));
+            let mut config = (*CONFIG.load_full()).clone();
+            config.cache.ttl_override = 42;
+            CONFIG.store(Arc::new(config));
+
+            let (first, calls) = run_raw(query_bytes("override-site.com")).await;
+            assert_eq!(calls, 1);
+            assert_eq!(reply_of(first).answers[0].ttl, 42);
+            let (second, calls) = run_raw(query_bytes("override-site.com")).await;
+            assert_eq!(calls, 0);
+            assert!((41..=42).contains(&reply_of(second).answers[0].ttl));
+        });
+    }
+
+    #[test]
+    fn ttl_floor_is_what_every_client_sees() {
+        run_with_globals(async {
+            install_policy(&[], "floor-site.com");
+            install_cache().remove(plain_key("floor-site.com"));
+            let mut config = (*CONFIG.load_full()).clone();
+            config.security.low_ttl.min_ttl_floor_secs = Some(600);
+            CONFIG.store(Arc::new(config));
+
+            // Upstream says 300; the floor raises it.
+            let (first, _) = run_raw(query_bytes("floor-site.com")).await;
+            assert_eq!(reply_of(first).answers[0].ttl, 600);
+            let (second, calls) = run_raw(query_bytes("floor-site.com")).await;
+            assert_eq!(calls, 0);
+            assert!((599..=600).contains(&reply_of(second).answers[0].ttl));
         });
     }
 
@@ -906,7 +1046,7 @@ mod tests {
             install_policy(&[], "cached-site.com");
             let cache =
                 crate::RESPONSE_CACHE.get_or_init(|| crate::cache::ResponseCache::new(1024));
-            cache.remove("cached-site.com", 1);
+            cache.remove(plain_key("cached-site.com"));
             events_for("cached-site.com");
 
             run_query("cached-site.com").await;

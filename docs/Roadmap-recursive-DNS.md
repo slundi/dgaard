@@ -343,16 +343,17 @@ No domain name is stored. The hash is sufficient because the domain name is prov
 ## Prefetch Worker
 
 ```
-prefetch_worker(rx: Receiver<(String, u16)>, resolver: Arc<dyn UpstreamResolver>):
+prefetch_worker(rx: Receiver<PrefetchRequest>, resolver: Arc<dyn UpstreamResolver>):
   interval = tokio::time::interval(interval_ms)
 
-  while (domain, qtype) = rx.recv():
+  // PrefetchRequest = the full cache key: domain, qtype, qclass, DO/CD flags
+  while request = rx.recv():
     interval.tick().await          // rate limit: at most one prefetch per interval_ms
 
-    query = DnsPacket::new_query(domain, qtype)
+    query = DnsPacket::new_query(domain, qtype, qclass, flags)   // same DO/CD as the entry
     match resolver.resolve(&query).await:
       Ok(response):
-        cache.insert(domain, qtype, response)
+        cache.insert(CacheQuery::of(&query), response, ttl_policy)
         popularity_tracker.record_hit(domain)
       Err(_): // silently drop; client will resolve on next TTL miss
 ```
@@ -360,8 +361,8 @@ prefetch_worker(rx: Receiver<(String, u16)>, resolver: Arc<dyn UpstreamResolver>
 **Trigger**: in `handle_query`, after serving from cache and updating `PopularityTracker`:
 
 ```rust
-if expires_at.saturating_duration_since(Instant::now()).as_secs() < ttl_remaining_trigger_secs {
-    let _ = prefetch_tx.try_send((dns_packet.domain.clone(), dns_packet.qtype)); // drops if full
+if remaining_ttl < ttl_remaining_trigger_secs {
+    crate::prefetch::try_enqueue(CacheQuery::of(&dns_packet)); // drops if full
 }
 ```
 

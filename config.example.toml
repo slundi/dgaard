@@ -411,7 +411,7 @@ enabled = true
 # add `LOW_TTL` suspicion points (default: 10 s).
 threshold_secs = 10
 # Optional cache TTL floor in seconds. When set, any TTL below this value is
-# clamped upward before the result is written to the cache. Prevents fast-flux
+# clamped upward, in the cache and in the answers clients receive. Prevents fast-flux
 # domains from bypassing the cache with near-zero TTLs. Omit or comment out
 # to leave observed TTLs unchanged (default: no floor).
 # min_ttl_floor_secs = 30
@@ -577,15 +577,20 @@ update_interval = 24
 # cache without hitting the upstream resolver, reducing latency and upstream
 # load. Entries expire after the DNS TTL elapses and are evicted lazily.
 #
-# The response bytes are stored verbatim; the transaction ID (bytes 0–1) is
-# patched per-query before sending so each client receives a valid response.
+# Entries are keyed by name, type, class and the DNSSEC bits of the query
+# (DO, CD), so DNSSEC-aware and plain clients never share an answer. On a hit
+# the transaction ID and the question case are the client's own, and record
+# TTLs are counted down by the time spent in the cache.
 #
-# Only answers that contain at least one resource record (i.e., non-NXDOMAIN
-# responses) are cached. SERVFAIL and blocked responses are never stored.
+# Positive answers live as long as their shortest answer TTL. Negative
+# answers (NXDOMAIN, NODATA) are cached for min(SOA TTL, SOA MINIMUM) from
+# the authority section (RFC 2308), at most 1 hour, and not at all without a
+# SOA. SERVFAIL, truncated and blocked responses are never stored.
 #
-# If `security.low_ttl.min_ttl_floor_secs` is set, that floor is applied to
-# the TTL before caching, preventing fast-flux domains from bypassing the
-# cache with near-zero TTLs.
+# If `security.low_ttl.min_ttl_floor_secs` is set, that floor raises low TTLs
+# before caching, preventing fast-flux domains from bypassing the cache with
+# near-zero TTLs. The floor and `ttl_override` also apply to the TTLs clients
+# receive, first answer included.
 [cache]
 # Master switch — set to `false` to disable response caching entirely.
 enabled = true

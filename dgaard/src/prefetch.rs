@@ -43,16 +43,34 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 
+use crate::cache::{CacheQuery, QueryFlags};
 use crate::debug::debug_print;
 use crate::dns::packet::DnsPacket;
 use crate::dns::resolver::UpstreamResolver;
 use crate::dns::{ForwardOutcome, block_before_upstream, evict_cached, forward_and_inspect};
 use crate::model::{Action, StatAction};
 
-/// Public alias — what the channel carries. Plain `(String, u16)` keeps
-/// the surface unsurprising and avoids leaking module-private types
-/// across the `handle_query`/worker boundary.
-pub type PrefetchRequest = (String, u16);
+/// What the channel carries: the full cache key of the entry to refresh,
+/// so the refresh asks upstream with the same DNSSEC bits and lands in the
+/// same entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrefetchRequest {
+    pub domain: String,
+    pub qtype: u16,
+    pub qclass: u16,
+    pub flags: QueryFlags,
+}
+
+impl PrefetchRequest {
+    pub fn of(query: CacheQuery<'_>) -> Self {
+        Self {
+            domain: query.domain.to_owned(),
+            qtype: query.qtype,
+            qclass: query.qclass,
+            flags: query.flags,
+        }
+    }
+}
 
 /// Process-wide sender slot. Set exactly once during runtime startup
 /// (see [`init_global_sender`]); `handle_query` reads through this to
@@ -77,11 +95,11 @@ pub fn init_global_sender(tx: mpsc::Sender<PrefetchRequest>) {
 /// The caller should not retry: the cache hit it just served still
 /// covers the client, and a future client query within the TTL window
 /// will trigger again.
-pub fn try_enqueue(domain: &str, qtype: u16) -> bool {
+pub fn try_enqueue(query: CacheQuery<'_>) -> bool {
     let Some(tx) = PREFETCH_SENDER.get() else {
         return false;
     };
-    match tx.try_send((domain.to_owned(), qtype)) {
+    match tx.try_send(PrefetchRequest::of(query)) {
         Ok(()) => true,
         Err(mpsc::error::TrySendError::Full(_)) => {
             crate::STATS_COUNTERS.increment_prefetch_dropped();
@@ -151,7 +169,7 @@ pub async fn run_prefetch_worker(
         }
         next_allowed = Instant::now() + interval;
 
-        process_one(&req.0, req.1, &resolver).await;
+        process_one(&req, &resolver).await;
     }
 }
 
@@ -159,8 +177,13 @@ pub async fn run_prefetch_worker(
 /// and the fresh answer post-processed exactly like a client query's; a
 /// rejection evicts the entry. Pulled out of the loop so tests can drive it
 /// directly.
-pub async fn process_one(domain: &str, qtype: u16, resolver: &Arc<dyn UpstreamResolver>) {
-    let Some(query) = DnsPacket::new_query(domain, qtype) else {
+pub async fn process_one(request: &PrefetchRequest, resolver: &Arc<dyn UpstreamResolver>) {
+    let Some(query) = DnsPacket::new_query(
+        &request.domain,
+        request.qtype,
+        request.qclass,
+        request.flags,
+    ) else {
         // Unreachable in practice — cache keys come from validated
         // queries. Count it as a failure instead of panicking so a
         // malformed key from a future code path doesn't tear the worker
@@ -207,7 +230,7 @@ pub async fn process_one(domain: &str, qtype: u16, resolver: &Arc<dyn UpstreamRe
 /// Refuse a refresh before any upstream traffic: evict the entry.
 fn reject(query: &DnsPacket) {
     debug_print!("Prefetch rejected name: {}", query.domain);
-    evict_cached(&query.domain, query.qtype);
+    evict_cached(query);
     crate::STATS_COUNTERS.increment_prefetch_failed();
 }
 
@@ -222,20 +245,45 @@ mod tests {
     use hickory_resolver::proto::rr::rdata::A;
     use hickory_resolver::proto::rr::{Name, RData, Record};
 
-    use crate::cache::ResponseCache;
+    use crate::cache::{ResponseCache, TtlPolicy};
     use crate::config::Config;
     use crate::dns::resolver::UpstreamResolver;
     use crate::resolve::tests::{create_test_engine, run_with_globals};
     use crate::{CONFIG, CURRENT_ENGINE, RESPONSE_CACHE};
 
     const QTYPE_A: u16 = 1;
+    const CLASS_IN: u16 = 1;
 
-    /// Test double: records every domain it's asked to resolve and answers
-    /// with a single A record (`ip`, `ttl`), or fails.
+    const DO_BIT: QueryFlags = QueryFlags {
+        dnssec_ok: true,
+        checking_disabled: false,
+    };
+
+    /// Prefetch request (and cache key) for `domain` A/IN with `flags`.
+    fn request(domain: &str, flags: QueryFlags) -> PrefetchRequest {
+        PrefetchRequest {
+            domain: domain.into(),
+            qtype: QTYPE_A,
+            qclass: CLASS_IN,
+            flags,
+        }
+    }
+
+    fn key(request: &PrefetchRequest) -> CacheQuery<'_> {
+        CacheQuery {
+            domain: &request.domain,
+            qtype: request.qtype,
+            qclass: request.qclass,
+            flags: request.flags,
+        }
+    }
+
+    /// Test double: records the key of every query it's asked to resolve
+    /// and answers with a single A record (`ip`, `ttl`), or fails.
     struct FakeResolver {
         ttl: u32,
         ip: Ipv4Addr,
-        calls: Mutex<Vec<String>>,
+        calls: Mutex<Vec<PrefetchRequest>>,
         fail: bool,
     }
 
@@ -260,7 +308,10 @@ mod tests {
     #[async_trait]
     impl UpstreamResolver for FakeResolver {
         async fn resolve(&self, query: &DnsPacket) -> std::io::Result<Vec<u8>> {
-            self.calls.lock().unwrap().push(query.domain.clone());
+            self.calls
+                .lock()
+                .unwrap()
+                .push(PrefetchRequest::of(CacheQuery::of(query)));
             if self.fail {
                 return Err(std::io::Error::other("upstream down"));
             }
@@ -295,12 +346,20 @@ mod tests {
 
     /// Seed the cache with a previously accepted (public) answer.
     fn seed_cache(domain: &str) {
-        let bytes = canned_a_response(domain, 300, Ipv4Addr::new(1, 1, 1, 1));
-        cache().insert(domain, QTYPE_A, &bytes, 300, 0);
+        seed_entry(&request(domain, QueryFlags::default()));
+    }
+
+    fn seed_entry(request: &PrefetchRequest) {
+        let bytes = canned_a_response(&request.domain, 300, Ipv4Addr::new(1, 1, 1, 1));
+        cache().insert(key(request), &bytes, TtlPolicy::default());
     }
 
     fn cached_ip(domain: &str) -> Option<Ipv4Addr> {
-        let bytes = cache().get(domain, QTYPE_A, [0, 0])?;
+        entry_ip(&request(domain, QueryFlags::default()))
+    }
+
+    fn entry_ip(request: &PrefetchRequest) -> Option<Ipv4Addr> {
+        let bytes = cache().get(key(request), &[0, 0])?.bytes;
         Message::from_vec(&bytes)
             .unwrap()
             .answers
@@ -327,7 +386,7 @@ mod tests {
             let (_, resolver) =
                 resolver_of(FakeResolver::answering(Ipv4Addr::new(93, 184, 216, 34)));
 
-            process_one(domain, QTYPE_A, &resolver).await;
+            process_one(&request(domain, QueryFlags::default()), &resolver).await;
 
             assert_eq!(cached_ip(domain), Some(Ipv4Addr::new(93, 184, 216, 34)));
             assert!(crate::STATS_COUNTERS.get_prefetch_completed() > baseline);
@@ -346,7 +405,7 @@ mod tests {
             let baseline = crate::STATS_COUNTERS.get_prefetch_failed();
             let (_, resolver) = resolver_of(FakeResolver::answering(Ipv4Addr::new(192, 168, 1, 1)));
 
-            process_one(domain, QTYPE_A, &resolver).await;
+            process_one(&request(domain, QueryFlags::default()), &resolver).await;
 
             assert_eq!(
                 cached_ip(domain),
@@ -367,7 +426,7 @@ mod tests {
             let (fake, resolver) =
                 resolver_of(FakeResolver::answering(Ipv4Addr::new(93, 184, 216, 34)));
 
-            process_one(domain, QTYPE_A, &resolver).await;
+            process_one(&request(domain, QueryFlags::default()), &resolver).await;
 
             assert_eq!(cached_ip(domain), None);
             assert!(fake.calls.lock().unwrap().is_empty());
@@ -391,7 +450,7 @@ mod tests {
             let (fake, resolver) =
                 resolver_of(FakeResolver::answering(Ipv4Addr::new(93, 184, 216, 34)));
 
-            process_one(&domain, QTYPE_A, &resolver).await;
+            process_one(&request(&domain, QueryFlags::default()), &resolver).await;
 
             assert_eq!(cached_ip(&domain), None);
             assert!(fake.calls.lock().unwrap().is_empty());
@@ -407,7 +466,7 @@ mod tests {
             let baseline = crate::STATS_COUNTERS.get_prefetch_failed();
             let (_, resolver) = resolver_of(FakeResolver::failing());
 
-            process_one(domain, QTYPE_A, &resolver).await;
+            process_one(&request(domain, QueryFlags::default()), &resolver).await;
 
             // Still valid until its own TTL.
             assert_eq!(cached_ip(domain), Some(Ipv4Addr::new(1, 1, 1, 1)));
@@ -420,7 +479,7 @@ mod tests {
         let baseline = crate::STATS_COUNTERS.get_prefetch_failed();
         let (_, resolver) = resolver_of(FakeResolver::answering(Ipv4Addr::new(93, 184, 216, 34)));
         // A leading dot fails `Name::parse`; the worker must not panic.
-        process_one("..bad..", QTYPE_A, &resolver).await;
+        process_one(&request("..bad..", QueryFlags::default()), &resolver).await;
         assert!(
             crate::STATS_COUNTERS.get_prefetch_failed() > baseline,
             "malformed-domain branch must bump the failed counter"
@@ -433,10 +492,11 @@ mod tests {
         // bumps `prefetch_dropped_total`. OnceLock can't be reset, so the
         // global path is exercised through the same local sender logic.
         let (tx, _rx) = mpsc::channel::<PrefetchRequest>(1);
-        tx.try_send(("first.example".into(), 1)).unwrap();
+        tx.try_send(request("first.example", QueryFlags::default()))
+            .unwrap();
 
         let baseline_dropped = crate::STATS_COUNTERS.get_prefetch_dropped();
-        let attempt = tx.try_send(("second.example".into(), 1));
+        let attempt = tx.try_send(request("second.example", QueryFlags::default()));
         assert!(matches!(attempt, Err(mpsc::error::TrySendError::Full(_))));
         // Simulate the increment that try_enqueue performs.
         crate::STATS_COUNTERS.increment_prefetch_dropped();
@@ -471,7 +531,9 @@ mod tests {
             let (_sd_tx, sd_rx) = watch::channel(false);
             tokio::spawn(run_prefetch_worker(rx, resolver, fake_cfg(), sd_rx));
 
-            tx.send((domain.into(), QTYPE_A)).await.unwrap();
+            tx.send(request(domain, QueryFlags::default()))
+                .await
+                .unwrap();
             for _ in 0..50 {
                 if cached_ip(domain).is_some() {
                     break;
@@ -479,8 +541,72 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
 
-            assert_eq!(*fake.calls.lock().unwrap(), [domain]);
+            assert_eq!(
+                *fake.calls.lock().unwrap(),
+                [request(domain, QueryFlags::default())]
+            );
             assert_eq!(cached_ip(domain), Some(Ipv4Addr::new(93, 184, 216, 34)));
         });
+    }
+
+    // ---- the refresh keeps the whole cache key (review M4) ----
+
+    #[test]
+    fn refresh_asks_with_the_entry_dnssec_bits_and_refills_it() {
+        run_with_globals(async {
+            install_policy(&[]);
+            let with_do = request("dnssec-refresh-site.com", DO_BIT);
+            let plain = request("dnssec-refresh-site.com", QueryFlags::default());
+            seed_entry(&with_do);
+            seed_entry(&plain);
+            let (fake, resolver) =
+                resolver_of(FakeResolver::answering(Ipv4Addr::new(93, 184, 216, 34)));
+
+            process_one(&with_do, &resolver).await;
+
+            assert_eq!(*fake.calls.lock().unwrap(), std::slice::from_ref(&with_do));
+            assert_eq!(entry_ip(&with_do), Some(Ipv4Addr::new(93, 184, 216, 34)));
+            // The plain entry is another key: left as it was.
+            assert_eq!(entry_ip(&plain), Some(Ipv4Addr::new(1, 1, 1, 1)));
+        });
+    }
+
+    #[test]
+    fn rejected_refresh_evicts_only_its_own_entry() {
+        run_with_globals(async {
+            install_policy(&[]);
+            let checking_disabled = request(
+                "cd-rebinding-site.com",
+                QueryFlags {
+                    dnssec_ok: false,
+                    checking_disabled: true,
+                },
+            );
+            let plain = request("cd-rebinding-site.com", QueryFlags::default());
+            seed_entry(&checking_disabled);
+            seed_entry(&plain);
+            let (fake, resolver) = resolver_of(FakeResolver::answering(Ipv4Addr::new(10, 0, 0, 1)));
+
+            process_one(&checking_disabled, &resolver).await;
+
+            assert_eq!(
+                *fake.calls.lock().unwrap(),
+                std::slice::from_ref(&checking_disabled)
+            );
+            assert_eq!(entry_ip(&checking_disabled), None);
+            assert_eq!(entry_ip(&plain), Some(Ipv4Addr::new(1, 1, 1, 1)));
+        });
+    }
+
+    #[test]
+    fn request_of_a_cache_key_copies_every_field() {
+        let query = CacheQuery {
+            domain: "example.com",
+            qtype: 28,
+            qclass: 3,
+            flags: DO_BIT,
+        };
+        let req = PrefetchRequest::of(query);
+        assert_eq!(key(&req), query);
     }
 }
