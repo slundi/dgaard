@@ -15,7 +15,7 @@ use crate::config::ResolutionMode;
 use crate::config::ScoringConfig;
 use crate::debug::debug_print;
 use crate::dns::dnssec_chain::DnssecVerdict;
-use crate::dns::packet::DnsPacket;
+use crate::dns::packet::{DnsPacket, Incoming};
 use crate::dns::resolver::UPSTREAM_RESOLVER;
 use crate::dnssec::DnssecStatus;
 use crate::model::{Action, StatAction, StatBlockReason, SuspicionScore};
@@ -125,7 +125,8 @@ fn block_before_upstream(
 /// Handle an incoming DNS query by running it through the filter pipeline.
 ///
 /// This function:
-/// 1. Parses the DNS packet
+/// 1. Parses the DNS packet; drops responses and malformed datagrams,
+///    answers other opcodes with NOTIMP and question counts ≠ 1 with FORMERR
 /// 2. QType/QClass wardens (cheap static checks)
 /// 3. Hot-cache lookup — serves instantly if cached, skipping steps 4–6
 /// 4. Runs the domain through the resolve pipeline, and blocks it before any
@@ -139,11 +140,13 @@ pub(crate) async fn handle_query(
     packet: Vec<u8>,
     peer: std::net::SocketAddr,
 ) -> std::io::Result<()> {
-    // 1. Parse DNS packet
-    let dns_packet = match DnsPacket::from_bytes(&packet) {
-        Some(p) => p,
-        None => {
-            // Malformed packet - silently drop
+    // 1. Parse and screen: only standard queries reach the pipeline, and a
+    //    response is never answered (no reflection loop).
+    let dns_packet = match DnsPacket::screen(&packet) {
+        Incoming::Query(p) => p,
+        Incoming::Drop => return Ok(()),
+        Incoming::Reject(response) => {
+            socket.send_to(&response, peer).await?;
             return Ok(());
         }
     };
@@ -738,6 +741,67 @@ mod tests {
             let (rcode, calls) = run_query("intranet.com").await;
             assert_eq!(rcode, ResponseCode::NXDomain);
             assert_eq!(calls, 1);
+        });
+    }
+
+    // ---- packet screening in handle_query (review E3) ----
+
+    /// Feed raw `bytes` to `handle_query`; return the reply, if any, and
+    /// how many upstream calls it caused.
+    async fn run_raw(bytes: Vec<u8>) -> (Option<Vec<u8>>, usize) {
+        let server = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let before = UPSTREAM_CALLS.load(Ordering::SeqCst);
+        handle_query(server, bytes, client.local_addr().unwrap())
+            .await
+            .unwrap();
+        let mut buf = [0u8; 4096];
+        let reply = tokio::time::timeout(Duration::from_millis(200), client.recv_from(&mut buf))
+            .await
+            .ok()
+            .map(|received| buf[..received.unwrap().0].to_vec());
+        (reply, UPSTREAM_CALLS.load(Ordering::SeqCst) - before)
+    }
+
+    fn response_bytes(domain: &str) -> Vec<u8> {
+        let mut msg = Message::from_vec(&query_bytes(domain)).unwrap();
+        msg.metadata.message_type = MessageType::Response;
+        msg.add_answer(Record::from_rdata(
+            Name::from_ascii(format!("{domain}.")).unwrap(),
+            300,
+            RData::A(A(std::net::Ipv4Addr::new(93, 184, 216, 34))),
+        ));
+        msg.to_vec().unwrap()
+    }
+
+    #[test]
+    fn response_packet_is_never_answered_nor_forwarded() {
+        // A forged response whose source is another resolver (or dgaard
+        // itself) must not start a reflection loop.
+        run_with_globals(async {
+            install_policy(&[], "clean-domain.com");
+            let (reply, calls) = run_raw(response_bytes("clean-domain.com")).await;
+            assert!(reply.is_none(), "a response must never be answered");
+            assert_eq!(calls, 0);
+        });
+    }
+
+    #[test]
+    fn notify_gets_one_notimp_and_the_loop_stops() {
+        run_with_globals(async {
+            install_policy(&[], "clean-domain.com");
+            let mut notify = Message::from_vec(&query_bytes("clean-domain.com")).unwrap();
+            notify.metadata.op_code = hickory_resolver::proto::op::OpCode::Notify;
+            let (reply, calls) = run_raw(notify.to_vec().unwrap()).await;
+            let reply = reply.expect("a NOTIMP is sent once");
+            let parsed = Message::from_vec(&reply).unwrap();
+            assert_eq!(parsed.metadata.response_code, ResponseCode::NotImp);
+            assert_eq!(calls, 0);
+
+            // The NOTIMP bounced back (spoofed source) is dropped.
+            let (bounced, calls) = run_raw(reply).await;
+            assert!(bounced.is_none());
+            assert_eq!(calls, 0);
         });
     }
 }

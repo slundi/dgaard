@@ -4,6 +4,16 @@ use hickory_resolver::proto::op::{Message, MessageType, OpCode, Query, ResponseC
 use hickory_resolver::proto::rr::rdata::{A, AAAA};
 use hickory_resolver::proto::rr::{DNSClass, Name, RData, Record, RecordType};
 
+/// What to do with a datagram received on the listening socket.
+pub enum Incoming {
+    /// A standard query with exactly one question: run the pipeline.
+    Query(DnsPacket),
+    /// Malformed bytes or a response: never answered.
+    Drop,
+    /// A request dgaard does not serve: send this error response once.
+    Reject(Vec<u8>),
+}
+
 pub struct DnsPacket {
     pub message: Message,
     pub domain: String,
@@ -70,25 +80,70 @@ impl DnsPacket {
         })
     }
 
-    /// Parses raw UDP bytes into a DNS Message and extracts the query domain
-    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        let message = Message::from_vec(bytes).ok()?;
+    /// Screen a datagram received on the listening socket before any
+    /// filtering (RFC 1035 §4.1.1).
+    ///
+    /// Only standard queries (QR=0, opcode QUERY) with exactly one question
+    /// reach the pipeline. A response (QR=1) is never answered: answering
+    /// it would let a forged packet whose source is another resolver, or
+    /// dgaard itself, bounce between the two forever. Other opcodes
+    /// (NOTIFY, UPDATE…) get a single NOTIMP and other question counts a
+    /// single FORMERR; both are responses, which the peer drops in turn.
+    pub fn screen(bytes: &[u8]) -> Incoming {
+        let Ok(message) = Message::from_vec(bytes) else {
+            return Incoming::Drop;
+        };
+        if message.metadata.message_type == MessageType::Response {
+            return Incoming::Drop;
+        }
+        if message.metadata.op_code != OpCode::Query {
+            return Incoming::Reject(Self::build_error_response(&message, ResponseCode::NotImp));
+        }
+        if message.queries.len() != 1 {
+            return Incoming::Reject(Self::build_error_response(&message, ResponseCode::FormErr));
+        }
 
-        // DNS packets usually have 1 question. We take the first one.
-        let query = message.queries.first()?;
-        let domain = query.name().to_string().to_lowercase();
-
-        // Remove trailing dot if present (e.g., "example.com." -> "example.com")
-        let clean_domain = domain.trim_end_matches('.').to_string();
+        let query = &message.queries[0];
+        // Remove trailing dot (e.g., "example.com." -> "example.com")
+        let domain = query
+            .name()
+            .to_string()
+            .to_lowercase()
+            .trim_end_matches('.')
+            .to_string();
         let qtype = u16::from(query.query_type());
         let qclass = u16::from(query.query_class());
 
-        Some(DnsPacket {
+        Incoming::Query(DnsPacket {
             message,
-            domain: clean_domain,
+            domain,
             qtype,
             qclass,
         })
+    }
+
+    /// Parse raw bytes into a standard query; `None` for anything
+    /// [`Self::screen`] would not send through the pipeline.
+    #[cfg(test)]
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        match Self::screen(bytes) {
+            Incoming::Query(packet) => Some(packet),
+            Incoming::Drop | Incoming::Reject(_) => None,
+        }
+    }
+
+    /// Error response to a request dgaard does not serve: same ID, opcode
+    /// and question section, `rcode`, and none of the request's records.
+    fn build_error_response(request: &Message, rcode: ResponseCode) -> Vec<u8> {
+        let mut response = request.clone();
+        response.metadata.message_type = MessageType::Response;
+        response.metadata.response_code = rcode;
+        response.metadata.authoritative = false;
+        response.metadata.recursion_available = true;
+        response.answers.clear();
+        response.authorities.clear();
+        response.additionals.clear();
+        encode_response(response)
     }
 
     /// Generates a standard NXDOMAIN (Non-Existent Domain) response
@@ -422,5 +477,126 @@ mod tests {
         assert_eq!(response_msg.metadata.message_type, MessageType::Response);
         assert_eq!(response_msg.metadata.response_code, ResponseCode::NoError);
         assert_eq!(response_msg.answers.len(), 1);
+    }
+
+    // --- screen: only standard queries reach the pipeline (review E3) ---
+
+    fn message_bytes(configure: impl FnOnce(&mut Message)) -> Vec<u8> {
+        let mut msg = Message::query();
+        msg.metadata.id = 0x4242;
+        msg.add_query(Query::query(
+            Name::from_ascii("example.com.").unwrap(),
+            RecordType::A,
+        ));
+        configure(&mut msg);
+        msg.to_vec().unwrap()
+    }
+
+    fn rejection(bytes: &[u8]) -> Message {
+        match DnsPacket::screen(bytes) {
+            Incoming::Reject(response) => Message::from_vec(&response).unwrap(),
+            Incoming::Query(_) => panic!("expected a rejection, got a query"),
+            Incoming::Drop => panic!("expected a rejection, got a drop"),
+        }
+    }
+
+    fn a_record() -> Record {
+        Record::from_rdata(
+            Name::from_ascii("example.com.").unwrap(),
+            60,
+            RData::A(A(std::net::Ipv4Addr::new(192, 0, 2, 1))),
+        )
+    }
+
+    #[test]
+    fn screen_accepts_a_standard_query() {
+        match DnsPacket::screen(&message_bytes(|_| {})) {
+            Incoming::Query(packet) => assert_eq!(packet.domain, "example.com"),
+            _ => panic!("a standard query must reach the pipeline"),
+        }
+    }
+
+    #[test]
+    fn screen_drops_responses() {
+        // Whatever they carry, responses are never answered.
+        let responses = [
+            message_bytes(|msg| {
+                msg.metadata.message_type = MessageType::Response;
+                msg.add_answer(a_record());
+            }),
+            message_bytes(|msg| {
+                msg.metadata.message_type = MessageType::Response;
+                msg.metadata.response_code = ResponseCode::NXDomain;
+            }),
+            message_bytes(|msg| {
+                msg.metadata.message_type = MessageType::Response;
+                msg.metadata.op_code = OpCode::Notify;
+            }),
+            message_bytes(|msg| {
+                msg.metadata.message_type = MessageType::Response;
+                msg.queries.clear();
+            }),
+        ];
+        for bytes in responses {
+            assert!(matches!(DnsPacket::screen(&bytes), Incoming::Drop));
+            assert!(DnsPacket::from_bytes(&bytes).is_none());
+        }
+    }
+
+    #[test]
+    fn screen_drops_malformed_bytes() {
+        assert!(matches!(DnsPacket::screen(&[0x00, 0x01]), Incoming::Drop));
+        assert!(matches!(DnsPacket::screen(&[]), Incoming::Drop));
+    }
+
+    #[test]
+    fn screen_rejects_other_opcodes_with_notimp() {
+        for op_code in [OpCode::Notify, OpCode::Update, OpCode::Status] {
+            let request = message_bytes(|msg| {
+                msg.metadata.op_code = op_code;
+                // UPDATE carries records; none may be echoed back.
+                msg.add_authority(a_record());
+            });
+            let response = rejection(&request);
+            assert_eq!(response.metadata.id, 0x4242);
+            assert_eq!(response.metadata.message_type, MessageType::Response);
+            assert_eq!(response.metadata.response_code, ResponseCode::NotImp);
+            assert_eq!(response.metadata.op_code, op_code);
+            assert!(response.answers.is_empty());
+            assert!(response.authorities.is_empty());
+            assert!(response.additionals.is_empty());
+            assert!(DnsPacket::from_bytes(&request).is_none());
+        }
+    }
+
+    #[test]
+    fn screen_rejects_question_counts_other_than_one_with_formerr() {
+        let no_question = message_bytes(|msg| msg.queries.clear());
+        let two_questions = message_bytes(|msg| {
+            msg.add_query(Query::query(
+                Name::from_ascii("other.example.").unwrap(),
+                RecordType::AAAA,
+            ));
+        });
+        for request in [no_question, two_questions] {
+            let response = rejection(&request);
+            assert_eq!(response.metadata.id, 0x4242);
+            assert_eq!(response.metadata.message_type, MessageType::Response);
+            assert_eq!(response.metadata.response_code, ResponseCode::FormErr);
+        }
+    }
+
+    #[test]
+    fn rejections_are_dropped_if_they_come_back() {
+        // Two servers applying the same rule exchange at most one packet.
+        for request in [
+            message_bytes(|msg| msg.metadata.op_code = OpCode::Notify),
+            message_bytes(|msg| msg.queries.clear()),
+        ] {
+            let Incoming::Reject(response) = DnsPacket::screen(&request) else {
+                panic!("expected a rejection");
+            };
+            assert!(matches!(DnsPacket::screen(&response), Incoming::Drop));
+        }
     }
 }
