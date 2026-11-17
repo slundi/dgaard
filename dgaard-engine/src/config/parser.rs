@@ -1069,6 +1069,15 @@ fn parse_sources(table: &toml_span::value::Table<'_>) -> Result<SourcesConfig, C
     if let Some(n) = get_typed_integer::<u32>(table, "reload_timeout_secs")? {
         cfg.reload_timeout_secs = n;
     }
+    if let Some(b) = get_bool(table, "allow_insecure_http")? {
+        cfg.allow_insecure_http = b;
+    }
+    if let Some(n) = get_typed_integer::<u32>(table, "max_list_size_mb")? {
+        cfg.max_list_size_mb = n;
+    }
+    if let Some(s) = get_str(table, "list_cache_dir")? {
+        cfg.list_cache_dir = s.to_string();
+    }
 
     Ok(cfg)
 }
@@ -2396,6 +2405,28 @@ mod tests {
         assert_eq!(cfg.sources.host_index_path, "/tmp/my_index.bin");
         assert_eq!(cfg.sources.browser_rules_path, "/tmp/browser.txt");
         assert_eq!(cfg.sources.reload_timeout_secs, 30);
+    }
+
+    #[test]
+    fn parse_sources_download_safety_keys() {
+        let toml = r#"
+            [sources]
+            allow_insecure_http = true
+            max_list_size_mb = 8
+            list_cache_dir = ""
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert!(cfg.sources.allow_insecure_http);
+        assert_eq!(cfg.sources.max_list_size_mb, 8);
+        assert_eq!(cfg.sources.list_cache_dir, "");
+    }
+
+    #[test]
+    fn parse_sources_download_safety_defaults() {
+        let cfg = Config::parse("[sources]").unwrap();
+        assert!(!cfg.sources.allow_insecure_http, "plain HTTP is opt-in");
+        assert_eq!(cfg.sources.max_list_size_mb, 64);
+        assert_eq!(cfg.sources.list_cache_dir, "/var/dgaard/lists");
     }
 
     #[test]

@@ -66,19 +66,45 @@ pub fn validate_input(input: &str) -> Result<Resource, ResourceError> {
     Err(ResourceError::InvalidFilePath(input.to_string()))
 }
 
-pub async fn spawn_update_task() {
+/// Delay before the next scheduled reload: `update_interval_hours`
+/// normally, `retry_delay_mins` after a degraded reload (a list served from
+/// its last valid copy, missing, or a timeout), so a list missed at boot or
+/// during an outage comes back without waiting a full interval. `None`
+/// disables scheduled updates.
+pub fn next_update_delay(interval_hours: u32, retry_mins: u32, degraded: bool) -> Option<Duration> {
+    if interval_hours == 0 {
+        return None;
+    }
+    let interval = Duration::from_hours(interval_hours.into());
+    if degraded && retry_mins > 0 {
+        Some(Duration::from_mins(retry_mins.into()).min(interval))
+    } else {
+        Some(interval)
+    }
+}
+
+/// Run scheduled list updates. `degraded` is the state of the reload that
+/// just happened (startup), deciding the first delay.
+pub async fn spawn_update_task(mut degraded: bool) {
     tokio::spawn(async move {
         loop {
             // Re-read on every iteration so a SIGHUP config reload takes effect
             // without restarting the process.
-            let hours = CONFIG.load().sources.update_interval_hours;
-            if hours == 0 {
+            let delay = {
+                let sources = &CONFIG.load().sources;
+                next_update_delay(
+                    sources.update_interval_hours,
+                    sources.retry_delay_mins,
+                    degraded,
+                )
+            };
+            let Some(delay) = delay else {
                 return;
-            }
-            tokio::time::sleep(Duration::from_hours(hours.into())).await;
+            };
+            tokio::time::sleep(delay).await;
 
             println!("Starting scheduled rule update...");
-            reload_lists().await;
+            degraded = reload_lists().await.is_degraded();
         }
     });
 }
@@ -130,6 +156,37 @@ mod tests {
             }
             other => panic!("expected InvalidFilePath, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn next_update_delay_uses_the_interval_when_healthy() {
+        assert_eq!(
+            next_update_delay(24, 30, false),
+            Some(Duration::from_hours(24))
+        );
+    }
+
+    #[test]
+    fn next_update_delay_retries_early_when_degraded() {
+        assert_eq!(
+            next_update_delay(24, 30, true),
+            Some(Duration::from_mins(30))
+        );
+        // Never later than the regular interval.
+        assert_eq!(
+            next_update_delay(1, 90, true),
+            Some(Duration::from_hours(1))
+        );
+        // retry_delay_mins = 0 disables early retries.
+        assert_eq!(
+            next_update_delay(24, 0, true),
+            Some(Duration::from_hours(24))
+        );
+    }
+
+    #[test]
+    fn next_update_delay_disabled_without_interval() {
+        assert_eq!(next_update_delay(0, 30, true), None);
     }
 
     #[test]

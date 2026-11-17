@@ -1189,6 +1189,22 @@ pub struct SourcesConfig {
     /// aborted and an error is printed; the previously loaded engine remains
     /// active.  Set to `0` to disable the timeout entirely.
     pub reload_timeout_secs: u32,
+
+    /// Allow `http://` list URLs. Off by default: a plain-HTTP list can be
+    /// rewritten in transit, and a tampered whitelist lets malicious domains
+    /// through. Redirects to `http://` are refused under the same rule.
+    pub allow_insecure_http: bool,
+
+    /// Largest list body accepted from a URL, in MiB. A bigger (or endless)
+    /// response is refused instead of exhausting the router's memory.
+    pub max_list_size_mb: u32,
+
+    /// Directory keeping the last valid copy of every URL list. When a
+    /// download fails (network down at boot, server error, oversized or
+    /// insecure response) the cached copy is used instead of dropping the
+    /// list. Set to an empty string `""` to keep the copies in memory only,
+    /// which does not survive a restart.
+    pub list_cache_dir: String,
 }
 
 impl Default for SourcesConfig {
@@ -1208,6 +1224,9 @@ impl Default for SourcesConfig {
             host_index_path: String::from("/var/dgaard/host_mapping.bin"),
             browser_rules_path: String::from("/var/dgaard/browser_rules.txt"),
             reload_timeout_secs: 15,
+            allow_insecure_http: false,
+            max_list_size_mb: 64,
+            list_cache_dir: String::from("/var/dgaard/lists"),
         }
     }
 }

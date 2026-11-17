@@ -884,6 +884,25 @@ export const ENGINE_SCHEMA = {
           default: 15,
           doc: 'Maximum seconds for a full list reload. On timeout the operation is\naborted and the previously loaded engine stays active. 0 disables the\ntimeout.',
         },
+        {
+          key: 'allow_insecure_http',
+          type: 'bool',
+          default: false,
+          doc: 'Allow http:// list URLs (and redirects to http://). Off by default: a\nplain-HTTP list can be rewritten in transit, and a tampered whitelist\nlets malicious domains through.',
+        },
+        {
+          key: 'max_list_size_mb',
+          type: 'int',
+          rust: 'u32',
+          default: 64,
+          doc: 'Largest list body accepted from a URL, in MiB. Bigger responses are\nrefused instead of exhausting memory.',
+        },
+        {
+          key: 'list_cache_dir',
+          type: 'path',
+          default: '/var/dgaard/lists',
+          doc: 'Keeps the last valid copy of every URL list. A failed download\n(network down at boot, server error, oversized or insecure response)\nuses that copy instead of dropping the list. Empty keeps copies in\nmemory only, lost on restart.',
+        },
       ],
     },
     {

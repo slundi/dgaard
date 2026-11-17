@@ -579,6 +579,21 @@ browser_rules_path = "/var/dgaard/browser_rules.txt"
 # timeout.
 reload_timeout_secs = 15
 
+# Allow http:// list URLs (and redirects to http://). Off by default: a
+# plain-HTTP list can be rewritten in transit, and a tampered whitelist
+# lets malicious domains through.
+allow_insecure_http = false
+
+# Largest list body accepted from a URL, in MiB. Bigger responses are
+# refused instead of exhausting memory.
+max_list_size_mb = 64
+
+# Keeps the last valid copy of every URL list. A failed download
+# (network down at boot, server error, oversized or insecure response)
+# uses that copy instead of dropping the list. Empty keeps copies in
+# memory only, lost on restart.
+list_cache_dir = "/var/dgaard/lists"
+
 # -----------------------------------------------------------------------------
 # [abp] — AdBlock Plus lists
 # -----------------------------------------------------------------------------

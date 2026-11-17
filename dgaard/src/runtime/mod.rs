@@ -174,9 +174,9 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
         let guard = ShutdownGuard::new(shutdown_rx.clone());
 
         // Initial list load (supports both file paths and URLs)
-        reload_lists().await;
+        let initial = reload_lists().await;
 
-        tokio::spawn(spawn_update_task());
+        tokio::spawn(spawn_update_task(initial.is_degraded()));
 
         // Initialize stats channel and spawn collector
         let stats_receiver = init_stats_channel();
@@ -251,10 +251,9 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
         tokio::spawn(watch_for_reloads(shutdown_rx.clone()));
 
         // Initial list load (supports both file paths and URLs)
-        println!("Loading filter lists...");
-        reload_lists().await;
+        let initial = reload_lists().await;
 
-        tokio::spawn(spawn_update_task());
+        tokio::spawn(spawn_update_task(initial.is_degraded()));
 
         // Initialize stats channel and spawn collector
         let stats_receiver = init_stats_channel();
