@@ -196,6 +196,8 @@ walk_delegations(domain, qtype, &mut budget) -> Result<(Message, zone)>:
 
     queries_used += 1
     response = query_any(ns_addrs, domain, qtype, timeout, ns_concurrency)
+    // (zone, ns_addrs) start at the deepest cached cut, else the root; a
+    // failing first hop on cached servers evicts them and restarts at the root.
 
     match response:
       ANSWER (rcode=NOERROR, answer non-empty):
@@ -225,7 +227,9 @@ walk_delegations(domain, qtype, &mut budget) -> Result<(Message, zone)>:
         // Prefer glue (A/AAAA in additional section). Only accept glue for NS names
         // that are IN-BAILIWICK relative to new_zone. Out-of-bailiwick glue is a
         // classic cache-poisoning vector (CVE-2008-1447 family); discard it.
-        glue = extract_in_bailiwick_glue(response.additional, ns_names, new_zone)
+        // Glue on loopback / LAN ranges is dropped too (a hostile zone must
+        // not aim dgaard at itself or at the LAN).
+        glue = public_only(extract_in_bailiwick_glue(response.additional, ns_names, new_zone))
         if glue is not empty:
           ns_addrs = glue
         else:
@@ -234,6 +238,7 @@ walk_delegations(domain, qtype, &mut budget) -> Result<(Message, zone)>:
           ns_addrs = resolve_ns_addresses(ns_names, &mut budget)
           if ns_addrs is empty: return SERVFAIL
 
+        delegation_cache.insert(new_zone, ns_addrs, min(NS TTL, 1 day))
         zone   = new_zone
         depth += 1
 
@@ -246,21 +251,24 @@ walk_delegations(domain, qtype, &mut budget) -> Result<(Message, zone)>:
 
 **Key correctness properties:**
 
-| Property                      | Mechanism                                                                                                                                                             |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Delegation cycle detection    | `visited_zones: Vec<u64>` of `xxh3_64(zone)`; linear scan, ≤ `max_delegation_depth` entries; per delegation walk (sharing it across sub-resolves caused false cycles) |
-| CNAME cycle detection         | `visited_cnames: Vec<u64>` of `xxh3_64(name)`; covers the whole chain of one resolution, including in-message chains                                                  |
-| Sub-resolution cycles         | `ResolutionBudget.in_progress` stack of `xxh3_64(qname, qtype)`; a glueless NS loop re-enters a resolution already in progress and fails fast                         |
-| CNAME answer shape            | Client gets `CNAME…` + terminal records under its own question; out-of-zone records in an answer are dropped and the target is resolved from its own servers          |
-| Delegation depth cap          | `depth >= max_delegation_depth` (default 8) — fallback for non-repeating deep chains                                                                                  |
-| Query amplification cap       | `queries_used >= max_queries_per_resolution` (default 64) — defence in depth over cycle + depth checks; one u32 += 1 per upstream query                               |
-| Bailiwick enforcement         | Referral zone must be subdomain of current zone. Strict (SERVFAIL on first bad referral) or lenient (try next ns_addr) per `strict_bailiwick`                         |
-| In-bailiwick glue             | Glue A/AAAA records only accepted for NS names inside `new_zone`. Out-of-bailiwick glue is discarded silently                                                         |
-| Out-of-zone NS resolution     | `resolve_ns_addresses` shares the `ResolutionBudget` (query cap + in-progress stack) so it cannot escape the per-query budget                                         |
-| UDP truncation (TC=1)         | Retry the same query over TCP (RFC 7766 framing, fresh connection, one more query from the budget); still truncated → SERVFAIL                                        |
-| IPv4 + IPv6 root hints        | Both address families stored; prefer IPv4 on single-stack hosts                                                                                                       |
-| QNAME minimization (RFC 9156) | Each delegation hop queries only the next label, not the full QNAME                                                                                                   |
-| EDNS0 OPT record              | Advertised on every outgoing query when `edns0_enabled = true`                                                                                                        |
+| Property                      | Mechanism                                                                                                                                                                                                                                                                                                                                                                         |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Delegation cycle detection    | `visited_zones: Vec<u64>` of `xxh3_64(zone)`; linear scan, ≤ `max_delegation_depth` entries; per delegation walk (sharing it across sub-resolves caused false cycles)                                                                                                                                                                                                             |
+| CNAME cycle detection         | `visited_cnames: Vec<u64>` of `xxh3_64(name)`; covers the whole chain of one resolution, including in-message chains                                                                                                                                                                                                                                                              |
+| Sub-resolution cycles         | `ResolutionBudget.in_progress` stack of `xxh3_64(qname, qtype)`; a glueless NS loop re-enters a resolution already in progress and fails fast                                                                                                                                                                                                                                     |
+| CNAME answer shape            | Client gets `CNAME…` + terminal records under its own question; out-of-zone records in an answer are dropped and the target is resolved from its own servers                                                                                                                                                                                                                      |
+| Delegation depth cap          | `depth >= max_delegation_depth` (default 8) — fallback for non-repeating deep chains                                                                                                                                                                                                                                                                                              |
+| Query amplification cap       | `queries_used >= max_queries_per_resolution` (default 64) — defence in depth over cycle + depth checks; one u32 += 1 per upstream query                                                                                                                                                                                                                                           |
+| Bailiwick enforcement         | Referral zone must be subdomain of current zone. Strict (SERVFAIL on first bad referral) or lenient (try next ns_addr) per `strict_bailiwick`                                                                                                                                                                                                                                     |
+| In-bailiwick glue             | Glue A/AAAA records only accepted for NS names inside `new_zone`. Out-of-bailiwick glue is discarded silently                                                                                                                                                                                                                                                                     |
+| Public NS addresses only      | Glue and NS-lookup addresses on loopback, RFC 1918, CGNAT, link-local, ULA, multicast or reserved ranges are never queried                                                                                                                                                                                                                                                        |
+| Delegation cache              | Zone cuts (zone → server addresses) kept for min(NS TTL, 1 day) in a bounded LRU; a walk starts at the deepest cached cut enclosing the name (the parent for DS). Servers failing on the first hop (error, SERVFAIL/REFUSED, non-narrowing referral) are forgotten and the walk restarts from the root. With DNSSEC, a cut is used only while the validator knows its trust state |
+| Forged datagrams              | Connected UDP sockets (other sources dropped by the kernel); a datagram with a wrong TXID, QR=0, another question or unparsable is ignored until the timeout                                                                                                                                                                                                                      |
+| Out-of-zone NS resolution     | `resolve_ns_addresses` shares the `ResolutionBudget` (query cap + in-progress stack) so it cannot escape the per-query budget                                                                                                                                                                                                                                                     |
+| UDP truncation (TC=1)         | Retry the same query over TCP (RFC 7766 framing, fresh connection, one more query from the budget); still truncated → SERVFAIL                                                                                                                                                                                                                                                    |
+| IPv4 + IPv6 root hints        | Both address families stored; IPv4 servers tried first, IPv6 ones skipped when the host has no IPv6 route (checked once)                                                                                                                                                                                                                                                          |
+| QNAME minimization (RFC 9156) | Each delegation hop queries only the next label, not the full QNAME                                                                                                                                                                                                                                                                                                               |
+| EDNS0 OPT record              | Advertised on every outgoing query when `edns0_enabled = true`                                                                                                                                                                                                                                                                                                                    |
 
 #### Nameserver query concurrency (`query_any`)
 

@@ -17,6 +17,12 @@
 //! - Hard caps on delegation depth + total queries per resolution
 //! - EDNS0 OPT advertisement
 //! - Sequential `ns_concurrency`
+//! - Delegation cache: a walk starts at the deepest known zone cut (bounded
+//!   LRU, NS TTL capped at a day), back to the root if its servers fail
+//! - Nameserver addresses on loopback / LAN ranges are never queried
+//!   (glue or NS lookups); IPv6 servers only with an IPv6 route, IPv4 first
+//! - Connected sockets, and a datagram that does not answer the query
+//!   (TXID, QR, question) is ignored rather than failing the query
 //! - TCP fallback when an authoritative answer is truncated (`TC=1`)
 //! - Root hints compiled-in (with optional `root_hints_path` override)
 //! - Metrics counters into [`crate::STATS_COUNTERS`]
@@ -32,19 +38,20 @@
 use std::future::Future;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::num::NonZeroUsize;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use hickory_resolver::proto::dnssec::rdata::DNSSECRData;
 use hickory_resolver::proto::op::{Edns, Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_resolver::proto::rr::{DNSClass, Name, RData, Record, RecordType};
+use lru::LruCache;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 use twox_hash::XxHash3_64;
 
-use crate::CONFIG;
 use crate::dns::dnssec_chain::{
     DnssecVerdict, RecursiveDnssecValidator, ZoneStatus, extract_dnskey_rrset_from_answers,
     extract_ds_rrset_from_authority, extract_signed_rrset, rrsig_signers,
@@ -133,8 +140,28 @@ pub const ROOT_HINTS_V6: &[(char, Ipv6Addr)] = &[
 /// `PopularityTracker` uses the same seed so the hash spaces can be
 /// reused if we ever cross-reference them.
 fn hash_zone_label(name: &Name) -> u64 {
-    let lower = name.to_string().to_ascii_lowercase();
-    XxHash3_64::oneshot_with_seed(0, lower.as_bytes())
+    hash_name(name, 0)
+}
+
+/// xxh3_64 of the lowercase wire form of `name` (length-prefixed labels),
+/// built on the stack: hashing sits on every hop of the walk.
+fn hash_name(name: &Name, seed: u64) -> u64 {
+    let mut buf = [0u8; 255];
+    let mut len = 0;
+    for label in name.iter() {
+        // A valid name fits in 255 wire bytes, length octets included.
+        let end = len + 1 + label.len();
+        if end > buf.len() {
+            break;
+        }
+        // Labels are at most 63 bytes long.
+        buf[len] = label.len() as u8;
+        for (slot, byte) in buf[len + 1..end].iter_mut().zip(label) {
+            *slot = byte.to_ascii_lowercase();
+        }
+        len = end;
+    }
+    XxHash3_64::oneshot_with_seed(seed, &buf[..len])
 }
 
 /// Bailiwick test: returns true iff `child` is at or below `zone`. A
@@ -237,8 +264,7 @@ fn unsigned_names(response: &Message, qname: &Name) -> Vec<Name> {
 
 /// Key of one `(qname, qtype)` resolution in [`ResolutionBudget::in_progress`].
 fn hash_resolution(qname: &Name, qtype: RecordType) -> u64 {
-    let lower = qname.to_string().to_ascii_lowercase();
-    XxHash3_64::oneshot_with_seed(u64::from(u16::from(qtype)), lower.as_bytes())
+    hash_name(qname, u64::from(u16::from(qtype)))
 }
 
 /// The CNAME chain an answer section describes for one queried name.
@@ -326,6 +352,173 @@ pub struct ResolutionBudget {
     /// [`hash_resolution`] of every `(qname, qtype)` on the current call
     /// stack. Re-entering one (`ns.a` needs `ns.b` needs `ns.a`) is a cycle.
     in_progress: Vec<u64>,
+}
+
+/// True for an address dgaard may query on behalf of a zone. A hostile
+/// zone must not be able to point its servers (glue or NS lookups) at
+/// dgaard itself or at the LAN: loopback, unspecified, RFC 1918, CGNAT,
+/// link-local, unique-local, multicast, broadcast and reserved ranges are
+/// refused. IPv4-mapped IPv6 addresses are judged as their IPv4 address.
+pub fn is_public_ns_address(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [first, second, ..] = v4.octets();
+            !(v4.is_unspecified()
+                || v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_multicast()
+                || first == 0
+                || first >= 240 // reserved, broadcast
+                || (first == 100 && (64..=127).contains(&second))) // CGNAT
+        }
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => is_public_ns_address(IpAddr::V4(v4)),
+            None => {
+                !(v6.is_unspecified()
+                    || v6.is_loopback()
+                    || v6.is_multicast()
+                    || v6.is_unique_local()
+                    || v6.is_unicast_link_local())
+            }
+        },
+    }
+}
+
+/// Whether this host has an IPv6 route to the Internet. Checked once by
+/// "connecting" a UDP socket to a root server, which only consults the
+/// routing table (no packet is sent). Without a route, every IPv6 server
+/// tried would cost a timeout or an immediate error.
+fn ipv6_reachable() -> bool {
+    static REACHABLE: OnceLock<bool> = OnceLock::new();
+    *REACHABLE.get_or_init(|| {
+        let probe = SocketAddr::new(IpAddr::V6(ROOT_HINTS_V6[0].1), 53);
+        std::net::UdpSocket::bind("[::]:0")
+            .and_then(|socket| socket.connect(probe))
+            .is_ok()
+    })
+}
+
+/// Order nameserver addresses for a sequential walk: IPv4 first (IPv6
+/// after, or dropped when `ipv6` is false), original order otherwise kept.
+fn order_ns_addrs(addrs: impl IntoIterator<Item = SocketAddr>, ipv6: bool) -> Vec<SocketAddr> {
+    let (mut ordered, v6): (Vec<_>, Vec<_>) = addrs.into_iter().partition(SocketAddr::is_ipv4);
+    if ipv6 {
+        ordered.extend(v6);
+    }
+    ordered
+}
+
+/// Upper bound on cached delegations.
+const MAX_CACHED_DELEGATIONS: usize = 4096;
+
+/// Longest a delegation is trusted, whatever its NS TTL says (one day,
+/// like common resolvers' `max-cache-ttl` for infrastructure records).
+const MAX_DELEGATION_TTL: u32 = 86_400;
+
+/// How long the delegation to `zone` in `authorities` may be cached: the
+/// smallest TTL of its NS records, capped at [`MAX_DELEGATION_TTL`].
+fn delegation_ttl(authorities: &[Record], zone: &Name) -> u32 {
+    authorities
+        .iter()
+        .filter(|record| record.name == *zone && matches!(record.data, RData::NS(_)))
+        .map(|record| record.ttl)
+        .min()
+        .unwrap_or(0)
+        .min(MAX_DELEGATION_TTL)
+}
+
+/// One zone cut and the addresses of its servers.
+struct Delegation {
+    zone: Name,
+    servers: Vec<SocketAddr>,
+    expires_at: Instant,
+}
+
+/// Zone cuts learned from referrals, so a resolution starts at the deepest
+/// known cut instead of the root: one round trip for a warm zone instead
+/// of three or more. Bounded (LRU) and TTL-driven.
+pub(crate) struct DelegationCache {
+    inner: Mutex<LruCache<u64, Delegation>>,
+}
+
+impl DelegationCache {
+    fn new(max_entries: usize) -> Self {
+        let cap = NonZeroUsize::new(max_entries.max(1)).expect("capacity >= 1");
+        Self {
+            inner: Mutex::new(LruCache::new(cap)),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, LruCache<u64, Delegation>> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Remember `servers` for `zone` during `ttl` seconds (0: not stored).
+    fn insert(&self, zone: &Name, servers: &[SocketAddr], ttl: u32) {
+        if ttl == 0 || servers.is_empty() {
+            return;
+        }
+        let expires_at = Instant::now() + Duration::from_secs(u64::from(ttl));
+        self.put(zone, servers, expires_at);
+    }
+
+    fn put(&self, zone: &Name, servers: &[SocketAddr], expires_at: Instant) {
+        let entry = Delegation {
+            zone: zone.clone(),
+            servers: servers.to_vec(),
+            expires_at,
+        };
+        self.lock().put(hash_zone_label(zone), entry);
+    }
+
+    /// Live servers of exactly `zone`; an expired entry is dropped.
+    fn get(&self, zone: &Name) -> Option<Vec<SocketAddr>> {
+        let key = hash_zone_label(zone);
+        let mut guard = self.lock();
+        let entry = guard.get(&key)?;
+        if entry.zone != *zone {
+            return None;
+        }
+        if entry.expires_at <= Instant::now() {
+            guard.pop(&key);
+            return None;
+        }
+        Some(entry.servers.clone())
+    }
+
+    fn remove(&self, zone: &Name) {
+        let key = hash_zone_label(zone);
+        let mut guard = self.lock();
+        if guard.peek(&key).is_some_and(|entry| entry.zone == *zone) {
+            guard.pop(&key);
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.lock().len()
+    }
+}
+
+/// Check one datagram (or TCP message) against the query it should answer:
+/// a response (QR=1) with the same TXID and the same single question.
+/// Anything else is a stray, a forgery or garbage — `None`.
+fn accept_response(bytes: &[u8], query: &Message) -> Option<Message> {
+    let response = Message::from_vec(bytes).ok()?;
+    let same_question = match (response.queries.as_slice(), query.queries.first()) {
+        ([answered], Some(asked)) => {
+            // `Name` equality is case-insensitive.
+            answered.name() == asked.name()
+                && answered.query_type() == asked.query_type()
+                && answered.query_class() == asked.query_class()
+        }
+        _ => false,
+    };
+    (response.metadata.id == query.metadata.id
+        && response.metadata.message_type == MessageType::Response
+        && same_question)
+        .then_some(response)
 }
 
 /// Build a UDP-bound DNS query for `qname` of `qtype`, with the requested
@@ -419,6 +612,14 @@ pub struct RecursiveResolver {
     /// Destination port for nameserver addresses learned from glue or NS
     /// lookups. Always 53 in production; tests point it at mock servers.
     pub(crate) ns_port: u16,
+    /// Zone cuts learned from referrals (see [`DelegationCache`]).
+    pub(crate) delegations: DelegationCache,
+    /// Accept nameserver addresses on loopback and LAN ranges (see
+    /// [`is_public_ns_address`]). Never set in production; the mock
+    /// hierarchies of the tests listen on 127.0.0.x.
+    pub(crate) private_ns_allowed: bool,
+    /// Whether IPv6 nameservers are worth trying (see [`ipv6_reachable`]).
+    pub(crate) ipv6_usable: bool,
 }
 
 impl RecursiveResolver {
@@ -436,12 +637,7 @@ impl RecursiveResolver {
                 "no usable root server addresses; supply a valid root hints file",
             ));
         }
-        Ok(Self {
-            config,
-            roots,
-            validator: None,
-            ns_port: 53,
-        })
+        Ok(Self::with_roots(config, roots))
     }
 
     /// Builder: attach a DNSSEC validator. The iterative loop will then
@@ -455,14 +651,53 @@ impl RecursiveResolver {
     /// Convenience: build with an explicit root-server list. Used by
     /// integration tests that point the resolver at an in-process mock
     /// instead of the real IANA servers.
-    #[allow(dead_code)]
     pub fn with_roots(config: RecursiveConfig, roots: Vec<SocketAddr>) -> Self {
         Self {
             config,
             roots,
             validator: None,
             ns_port: 53,
+            delegations: DelegationCache::new(MAX_CACHED_DELEGATIONS),
+            private_ns_allowed: false,
+            ipv6_usable: ipv6_reachable(),
         }
+    }
+
+    /// Socket addresses of the nameservers at `ips` this resolver may
+    /// query: public ones only, IPv4 first, IPv6 only when reachable.
+    fn usable_ns_addrs(&self, ips: impl IntoIterator<Item = IpAddr>) -> Vec<SocketAddr> {
+        let addrs = ips
+            .into_iter()
+            .filter(|ip| self.private_ns_allowed || is_public_ns_address(*ip))
+            .map(|ip| SocketAddr::new(ip, self.ns_port));
+        order_ns_addrs(addrs, self.ipv6_usable)
+    }
+
+    /// Where a walk for `qname` / `qtype` starts: the deepest cached zone
+    /// cut enclosing it, or the root. A DS rrset lives in the parent, so
+    /// for DS the search starts above `qname`. With DNSSEC, a cut is used
+    /// only while the validator still knows its trust state: skipping the
+    /// hops above it must not skip the chain of trust.
+    fn start_point(&self, qname: &Name, qtype: RecordType) -> (Name, Vec<SocketAddr>) {
+        let mut candidate = if qtype == RecordType::DS && !qname.is_root() {
+            qname.base_name()
+        } else {
+            qname.clone()
+        };
+        while !candidate.is_root() {
+            let chain_known = self
+                .validator
+                .as_ref()
+                .is_none_or(|validator| validator.zone_status(&candidate).is_some());
+            if chain_known && let Some(servers) = self.delegations.get(&candidate) {
+                return (candidate, servers);
+            }
+            candidate = candidate.base_name();
+        }
+        (
+            Name::root(),
+            pick_initial_ns_addrs(&self.roots, self.ipv6_usable),
+        )
     }
 
     /// Resolve `qname` / `qtype`, following CNAMEs, and return a `Message`
@@ -556,25 +791,19 @@ impl RecursiveResolver {
         qtype: RecordType,
         budget: &mut ResolutionBudget,
     ) -> io::Result<(Message, Name)> {
-        let mut ns_addrs: Vec<SocketAddr> = pick_initial_ns_addrs(&self.roots);
-        let mut current_zone = Name::root();
+        let (mut current_zone, mut ns_addrs) = self.start_point(qname, qtype);
+        // Starting below the root on cached servers that may have moved:
+        // if they fail on the first hop, forget them and start over.
+        let mut from_cache = !current_zone.is_root();
         let mut depth: u8 = 0;
         let mut visited_zones: Vec<u64> =
             Vec::with_capacity(usize::from(self.config.max_delegation_depth));
 
-        // Anchor the chain: validate the root DNSKEY rrset against the
-        // compiled-in trust anchors before following the first referral.
-        if let Some(validator) = self.validator.clone()
-            && validator.needs_keys(&current_zone)
-        {
-            self.fetch_zone_keys(
-                &validator,
-                &current_zone,
-                &ns_addrs,
-                &mut budget.queries_used,
-            )
+        // Anchor the chain: validate the starting zone's DNSKEY rrset (for
+        // the root, against the compiled-in trust anchors) before following
+        // the first referral.
+        self.ensure_zone_keys(&current_zone, &ns_addrs, &mut budget.queries_used)
             .await;
-        }
 
         loop {
             if budget.queries_used >= self.config.max_queries_per_resolution {
@@ -586,9 +815,29 @@ impl RecursiveResolver {
                 return Err(io::Error::other("max_delegation_depth exceeded"));
             }
 
-            let response = self
+            let result = self
                 .query_any_ns(&ns_addrs, qname, qtype, &mut budget.queries_used)
-                .await?;
+                .await;
+            // Lame: no answer, an error, or a referral that does not lead
+            // further down (the zone moved and these servers dropped it).
+            let lame = match result.as_ref().map(classify_response) {
+                Ok(ResponseKind::Empty) | Err(_) => true,
+                Ok(ResponseKind::Referral { new_zone, .. }) => {
+                    new_zone == current_zone || !is_in_bailiwick(&current_zone, &new_zone)
+                }
+                Ok(_) => false,
+            };
+            if from_cache && lame {
+                self.delegations.remove(&current_zone);
+                current_zone = Name::root();
+                ns_addrs = pick_initial_ns_addrs(&self.roots, self.ipv6_usable);
+                from_cache = false;
+                self.ensure_zone_keys(&current_zone, &ns_addrs, &mut budget.queries_used)
+                    .await;
+                continue;
+            }
+            from_cache = false;
+            let response = result?;
 
             let classified = classify_response(&response);
             if matches!(classified, ResponseKind::Answer | ResponseKind::NxDomain)
@@ -633,13 +882,14 @@ impl RecursiveResolver {
                     }
                     visited_zones.push(zone_hash);
 
-                    let glue = collect_in_bailiwick_glue(&response, &ns_names, &new_zone);
+                    // Glue pointing at the LAN or at dgaard itself is
+                    // dropped like missing glue.
+                    let glue = self.usable_ns_addrs(collect_in_bailiwick_glue(
+                        &response, &ns_names, &new_zone,
+                    ));
                     if !glue.is_empty() {
                         crate::STATS_COUNTERS.increment_recursive_glue_hit();
-                        ns_addrs = glue
-                            .into_iter()
-                            .map(|ip| SocketAddr::new(ip, self.ns_port))
-                            .collect();
+                        ns_addrs = glue;
                     } else {
                         crate::STATS_COUNTERS.increment_recursive_glue_miss();
                         ns_addrs = self.resolve_ns_addresses(&ns_names, budget).await?;
@@ -647,6 +897,11 @@ impl RecursiveResolver {
                             return Err(io::Error::other("no usable NS addresses"));
                         }
                     }
+                    self.delegations.insert(
+                        &new_zone,
+                        &ns_addrs,
+                        delegation_ttl(&response.authorities, &new_zone),
+                    );
 
                     // Phase 6 session 2: harvest the DS rrset that
                     // the *parent* zone served in the referral, then
@@ -684,8 +939,19 @@ impl RecursiveResolver {
         }
     }
 
+    /// Fetch `zone`'s DNSKEY rrset from `ns_addrs` when the validator has
+    /// its DS (or, for the root, its anchors) but no validated keys yet.
+    async fn ensure_zone_keys(&self, zone: &Name, ns_addrs: &[SocketAddr], queries_used: &mut u32) {
+        if let Some(validator) = self.validator.clone()
+            && validator.needs_keys(zone)
+        {
+            self.fetch_zone_keys(&validator, zone, ns_addrs, queries_used)
+                .await;
+        }
+    }
+
     /// Sequentially walk `ns_addrs`, send `qname / qtype` to each, return
-    /// the first parseable response. Increments `queries_used` per
+    /// the first acceptable response. Increments `queries_used` per
     /// launched query so amplification accounts correctly.
     async fn query_any_ns(
         &self,
@@ -740,15 +1006,20 @@ impl RecursiveResolver {
             .map_err(|e| io::Error::other(format!("encode query: {e}")))?;
         let deadline = Duration::from_millis(self.config.query_timeout_ms);
         let raw = crate::dns::tcp::exchange(addr, &bytes, deadline).await?;
-        let response = Message::from_vec(&raw)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parse: {e}")))?;
-        if response.metadata.id != query.metadata.id {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "TXID mismatch"));
-        }
-        Ok(response)
+        accept_response(&raw, &query).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "TCP answer does not match the query",
+            )
+        })
     }
 
     /// One UDP exchange. Caller has already paid the `queries_used` cost.
+    ///
+    /// The socket is connected, so the kernel drops datagrams from any
+    /// other source. Datagrams that still do not answer the query (wrong
+    /// TXID, QR=0, other question, garbage) are ignored until the deadline:
+    /// a flood of forged packets must not turn into a SERVFAIL.
     async fn query_single_ns(
         &self,
         addr: SocketAddr,
@@ -772,26 +1043,22 @@ impl RecursiveResolver {
         let bytes = query
             .to_vec()
             .map_err(|e| io::Error::other(format!("encode query: {e}")))?;
-        socket.send_to(&bytes, addr).await?;
+        socket.connect(addr).await?;
+        socket.send(&bytes).await?;
 
         let mut buf = [0u8; 4096];
-        let to = Duration::from_millis(self.config.query_timeout_ms);
-        let (len, peer) = match timeout(to, socket.recv_from(&mut buf)).await {
-            Ok(res) => res?,
-            Err(_) => return Err(io::Error::new(io::ErrorKind::TimedOut, "NS UDP timeout")),
-        };
-        if peer != addr {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "response source mismatch",
-            ));
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_millis(self.config.query_timeout_ms);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let len = match timeout(remaining, socket.recv(&mut buf)).await {
+                Ok(received) => received?,
+                Err(_) => return Err(io::Error::new(io::ErrorKind::TimedOut, "NS UDP timeout")),
+            };
+            if let Some(response) = accept_response(&buf[..len], &query) {
+                return Ok(response);
+            }
         }
-        let response = Message::from_vec(&buf[..len])
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parse: {e}")))?;
-        if response.metadata.id != query.metadata.id {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "TXID mismatch"));
-        }
-        Ok(response)
     }
 
     /// Extend the chain of trust through one delegation hop.
@@ -1043,11 +1310,13 @@ impl RecursiveResolver {
                     .await
                 {
                     Ok(msg) => {
-                        for rec in msg.answers {
-                            if let RData::A(a) = &rec.data {
-                                out.push(SocketAddr::new(IpAddr::V4(a.0), self.ns_port));
-                            }
-                        }
+                        out =
+                            self.usable_ns_addrs(msg.answers.iter().filter_map(
+                                |rec| match &rec.data {
+                                    RData::A(a) => Some(IpAddr::V4(a.0)),
+                                    _ => None,
+                                },
+                            ));
                     }
                     Err(_) => continue,
                 }
@@ -1086,12 +1355,6 @@ fn build_client_response(client_query: &DnsPacket, mut upstream: Message) -> io:
 #[async_trait]
 impl UpstreamResolver for RecursiveResolver {
     async fn resolve(&self, query: &DnsPacket) -> io::Result<Vec<u8>> {
-        let cfg = CONFIG.load();
-        // Refresh per-call: while the resolver caches a snapshot at
-        // startup (root hints, primarily), runtime tuning still flows
-        // through CONFIG so SIGHUP-reloaded values take effect.
-        let _ = cfg; // currently no per-call config knobs read here
-
         let q = query
             .message
             .queries
@@ -1301,10 +1564,13 @@ fn diff_one_family(
 
 /// Pick three NS addresses at random from `roots`, falling back to the
 /// full list if fewer than three are available. Sequential ns_concurrency
-/// then tries them in order until one answers.
-fn pick_initial_ns_addrs(roots: &[SocketAddr]) -> Vec<SocketAddr> {
+/// then tries them in order until one answers. IPv4 roots come first;
+/// IPv6 ones are used only when `ipv6` is true or no IPv4 root exists.
+fn pick_initial_ns_addrs(roots: &[SocketAddr], ipv6: bool) -> Vec<SocketAddr> {
+    let ipv6 = ipv6 || roots.iter().all(SocketAddr::is_ipv6);
+    let roots = order_ns_addrs(roots.iter().copied(), ipv6);
     if roots.len() <= 3 {
-        return roots.to_vec();
+        return roots;
     }
     // Cheap, biased shuffle is fine — we just want some spread, not
     // cryptographic randomness.
@@ -1317,7 +1583,9 @@ fn pick_initial_ns_addrs(roots: &[SocketAddr]) -> Vec<SocketAddr> {
         let j = (seed as usize) % (i + 1);
         indices.swap(i, j);
     }
-    indices.into_iter().take(3).map(|i| roots[i]).collect()
+    let picked: Vec<SocketAddr> = indices.into_iter().map(|i| roots[i]).collect();
+    // Shuffled within each family, still IPv4 first.
+    order_ns_addrs(picked, ipv6).into_iter().take(3).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1366,15 +1634,15 @@ mod tests {
     #[test]
     fn pick_initial_ns_addrs_returns_three_or_fewer() {
         let roots = default_roots();
-        assert_eq!(pick_initial_ns_addrs(&roots).len(), 3);
+        assert_eq!(pick_initial_ns_addrs(&roots, true).len(), 3);
         let small: Vec<_> = roots.into_iter().take(2).collect();
-        assert_eq!(pick_initial_ns_addrs(&small).len(), 2);
+        assert_eq!(pick_initial_ns_addrs(&small, true).len(), 2);
     }
 
     #[test]
     fn pick_initial_ns_addrs_returns_distinct_indices() {
         let roots = default_roots();
-        let picked = pick_initial_ns_addrs(&roots);
+        let picked = pick_initial_ns_addrs(&roots, true);
         let mut sorted = picked.clone();
         sorted.sort();
         sorted.dedup();
@@ -2047,6 +2315,7 @@ mod tests {
             vec![SocketAddr::new(IpAddr::V4(ROOT_IP), port)],
         );
         resolver.ns_port = port;
+        resolver.private_ns_allowed = true;
         let packet = make_dns_packet(qname, qtype);
         let bytes = resolver.resolve(&packet).await?;
         Ok(Message::from_vec(&bytes).unwrap())
@@ -2338,6 +2607,7 @@ mod tests {
         let mut resolver =
             RecursiveResolver::with_roots(cfg, vec![SocketAddr::new(IpAddr::V4(ROOT_IP), port)]);
         resolver.ns_port = port;
+        resolver.private_ns_allowed = true;
         let packet = make_dns_packet("n0.a.com.", RecordType::A);
         let err = resolver.resolve(&packet).await.unwrap_err();
         assert!(err.to_string().contains("max_cname_depth"), "got {err}");
@@ -2476,6 +2746,7 @@ mod tests {
         )
         .with_validator(Arc::clone(&validator));
         resolver.ns_port = port;
+        resolver.private_ns_allowed = true;
         let packet = make_dns_packet(qname, RecordType::A);
         let bytes = resolver.resolve(&packet).await.expect("resolution");
         let msg = Message::from_vec(&bytes).unwrap();
@@ -3041,5 +3312,508 @@ mod tests {
         let bytes = build_client_response(&client, upstream).unwrap();
         let parsed = Message::from_vec(&bytes).unwrap();
         assert_question(&parsed, "www.a.com.", RecordType::A);
+    }
+
+    // ---- review M5: delegation cache, NS address hygiene, forged packets ----
+
+    #[test]
+    fn name_hash_ignores_case_and_tells_names_apart() {
+        assert_eq!(
+            hash_zone_label(&name("Example.COM.")),
+            hash_zone_label(&name("example.com."))
+        );
+        assert_ne!(
+            hash_zone_label(&name("example.com.")),
+            hash_zone_label(&name("example.net."))
+        );
+        // Label boundaries count: `ab.c.` is not `a.bc.`.
+        assert_ne!(
+            hash_zone_label(&name("ab.c.")),
+            hash_zone_label(&name("a.bc."))
+        );
+        assert_ne!(
+            hash_resolution(&name("example.com."), RecordType::A),
+            hash_resolution(&name("example.com."), RecordType::AAAA)
+        );
+        assert_eq!(
+            hash_resolution(&name("WWW.example.com."), RecordType::A),
+            hash_resolution(&name("www.example.com."), RecordType::A)
+        );
+        // The root hashes like any other name, without panicking.
+        let _ = hash_zone_label(&Name::root());
+    }
+
+    #[test]
+    fn ns_addresses_on_the_lan_or_local_host_are_refused() {
+        let refused = [
+            "127.0.0.1",
+            "0.0.0.0",
+            "0.1.2.3",
+            "10.0.0.53",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.1.1",
+            "100.64.0.1",
+            "224.0.0.251",
+            "255.255.255.255",
+            "240.0.0.1",
+            "::1",
+            "::",
+            "fc00::1",
+            "fd12::53",
+            "fe80::1",
+            "ff02::fb",
+            "::ffff:192.168.1.1",
+            "::ffff:127.0.0.1",
+        ];
+        for ip in refused {
+            let ip: IpAddr = ip.parse().unwrap();
+            assert!(!is_public_ns_address(ip), "{ip} must be refused");
+        }
+        let accepted = [
+            "198.41.0.4",
+            "8.8.8.8",
+            "100.128.0.1",
+            "172.32.0.1",
+            "2001:503:ba3e::2:30",
+            "::ffff:8.8.8.8",
+        ];
+        for ip in accepted {
+            let ip: IpAddr = ip.parse().unwrap();
+            assert!(is_public_ns_address(ip), "{ip} must be accepted");
+        }
+    }
+
+    #[test]
+    fn usable_ns_addrs_filters_and_puts_ipv4_first() {
+        let mut resolver = RecursiveResolver::with_roots(cfg_for_tests(), Vec::new());
+        resolver.ipv6_usable = true;
+        let ips: Vec<IpAddr> = ["2001:db8::53", "192.168.1.1", "198.51.100.53", "::1"]
+            .iter()
+            .map(|ip| ip.parse().unwrap())
+            .collect();
+        let addrs = resolver.usable_ns_addrs(ips.clone());
+        assert_eq!(
+            addrs,
+            [
+                "198.51.100.53:53".parse::<SocketAddr>().unwrap(),
+                "[2001:db8::53]:53".parse().unwrap()
+            ]
+        );
+
+        resolver.ipv6_usable = false;
+        assert_eq!(
+            resolver.usable_ns_addrs(ips.clone()),
+            ["198.51.100.53:53".parse::<SocketAddr>().unwrap()]
+        );
+
+        resolver.private_ns_allowed = true;
+        assert_eq!(resolver.usable_ns_addrs(ips).len(), 2, "no IPv6 still");
+    }
+
+    #[test]
+    fn initial_roots_skip_ipv6_without_a_route() {
+        let roots = default_roots();
+        for _ in 0..20 {
+            let picked = pick_initial_ns_addrs(&roots, false);
+            assert_eq!(picked.len(), 3);
+            assert!(picked.iter().all(SocketAddr::is_ipv4), "{picked:?}");
+        }
+        // With IPv6, IPv4 roots still come first.
+        let picked = pick_initial_ns_addrs(&roots, true);
+        assert!(picked.iter().all(SocketAddr::is_ipv4), "{picked:?}");
+        // IPv6-only hints are used whatever the route check says.
+        let v6_only: Vec<SocketAddr> = roots.iter().copied().filter(SocketAddr::is_ipv6).collect();
+        let picked = pick_initial_ns_addrs(&v6_only, false);
+        assert_eq!(picked.len(), 3);
+        assert!(picked.iter().all(SocketAddr::is_ipv6));
+    }
+
+    #[test]
+    fn order_ns_addrs_keeps_order_within_a_family() {
+        let addrs: Vec<SocketAddr> = [
+            "[2001:db8::1]:53",
+            "192.0.2.1:53",
+            "[2001:db8::2]:53",
+            "192.0.2.2:53",
+        ]
+        .iter()
+        .map(|addr| addr.parse().unwrap())
+        .collect();
+        let ordered = order_ns_addrs(addrs.clone(), true);
+        assert_eq!(ordered, [addrs[1], addrs[3], addrs[0], addrs[2]]);
+        assert_eq!(order_ns_addrs(addrs.clone(), false), [addrs[1], addrs[3]]);
+    }
+
+    #[test]
+    fn delegation_ttl_is_the_smallest_ns_ttl_capped() {
+        let mut authorities = vec![
+            Record::from_rdata(name("a.com."), 7200, RData::NS(NS(name("ns1.a.com.")))),
+            Record::from_rdata(name("a.com."), 3600, RData::NS(NS(name("ns2.a.com.")))),
+            // Other owners do not count.
+            Record::from_rdata(name("b.com."), 5, RData::NS(NS(name("ns.b.com.")))),
+        ];
+        assert_eq!(delegation_ttl(&authorities, &name("a.com.")), 3600);
+        authorities.truncate(1);
+        authorities[0].ttl = 7 * 86_400;
+        assert_eq!(
+            delegation_ttl(&authorities, &name("a.com.")),
+            MAX_DELEGATION_TTL
+        );
+        assert_eq!(delegation_ttl(&authorities, &name("c.com.")), 0);
+    }
+
+    #[test]
+    fn delegation_cache_lifecycle() {
+        let cache = DelegationCache::new(2);
+        let servers = ["192.0.2.1:53".parse::<SocketAddr>().unwrap()];
+        cache.insert(&name("a.com."), &servers, 300);
+        assert_eq!(cache.get(&name("A.com.")), Some(servers.to_vec()));
+        assert_eq!(cache.get(&name("b.com.")), None);
+
+        // Not stored: no TTL, no servers.
+        cache.insert(&name("b.com."), &servers, 0);
+        cache.insert(&name("b.com."), &[], 300);
+        assert_eq!(cache.len(), 1);
+
+        // Expired entries are dropped on lookup.
+        let past = Instant::now() - Duration::from_secs(1);
+        cache.put(&name("old.com."), &servers, past);
+        assert_eq!(cache.get(&name("old.com.")), None);
+        assert_eq!(cache.len(), 1);
+
+        // Bounded.
+        cache.insert(&name("b.com."), &servers, 300);
+        cache.insert(&name("c.com."), &servers, 300);
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.get(&name("a.com.")), None);
+
+        cache.remove(&name("c.com."));
+        assert_eq!(cache.get(&name("c.com.")), None);
+        assert!(cache.get(&name("b.com.")).is_some());
+    }
+
+    #[test]
+    fn walk_starts_at_the_deepest_cached_cut() {
+        let resolver = RecursiveResolver::with_roots(cfg_for_tests(), default_roots());
+        let com = ["192.0.2.1:53".parse::<SocketAddr>().unwrap()];
+        let example = ["192.0.2.2:53".parse::<SocketAddr>().unwrap()];
+        resolver.delegations.insert(&name("com."), &com, 300);
+        resolver
+            .delegations
+            .insert(&name("example.com."), &example, 300);
+
+        let (zone, servers) = resolver.start_point(&name("www.example.com."), RecordType::A);
+        assert_eq!((zone, servers), (name("example.com."), example.to_vec()));
+        let (zone, _) = resolver.start_point(&name("other.com."), RecordType::A);
+        assert_eq!(zone, name("com."));
+        // The zone apex itself is served by the child...
+        let (zone, _) = resolver.start_point(&name("example.com."), RecordType::A);
+        assert_eq!(zone, name("example.com."));
+        // ...but its DS lives in the parent.
+        let (zone, _) = resolver.start_point(&name("example.com."), RecordType::DS);
+        assert_eq!(zone, name("com."));
+        let (zone, servers) = resolver.start_point(&name("example.org."), RecordType::A);
+        assert!(zone.is_root());
+        assert_eq!(servers.len(), 3);
+    }
+
+    #[test]
+    fn walk_ignores_cuts_whose_trust_state_is_unknown() {
+        let validator = Arc::new(RecursiveDnssecValidator::default());
+        let resolver = RecursiveResolver::with_roots(cfg_for_tests(), default_roots())
+            .with_validator(validator);
+        let servers = ["192.0.2.2:53".parse::<SocketAddr>().unwrap()];
+        resolver
+            .delegations
+            .insert(&name("example.com."), &servers, 300);
+        let (zone, _) = resolver.start_point(&name("www.example.com."), RecordType::A);
+        assert!(
+            zone.is_root(),
+            "the chain of trust to example.com is unknown"
+        );
+    }
+
+    fn query_for(qname: &str, qtype: RecordType) -> Message {
+        build_outgoing_query(&name(qname), qtype, None, false)
+    }
+
+    fn answer_to(query: &Message) -> Message {
+        let mut response = query.clone();
+        response.metadata.message_type = MessageType::Response;
+        response
+    }
+
+    #[test]
+    fn accept_response_checks_txid_qr_and_question() {
+        let query = query_for("www.example.com.", RecordType::A);
+        let good = answer_to(&query);
+        assert!(accept_response(&good.to_vec().unwrap(), &query).is_some());
+
+        // Name comparison is case-insensitive.
+        let mut upper = good.clone();
+        upper.queries[0].set_name(name("WWW.Example.COM."));
+        assert!(accept_response(&upper.to_vec().unwrap(), &query).is_some());
+
+        let mut wrong_id = good.clone();
+        wrong_id.metadata.id = query.metadata.id.wrapping_add(1);
+        let reflected = query.clone();
+        let mut other_name = good.clone();
+        other_name.queries[0].set_name(name("bank.example."));
+        let mut other_type = good.clone();
+        other_type.queries[0].set_query_type(RecordType::AAAA);
+        let mut other_class = good.clone();
+        other_class.queries[0].set_query_class(DNSClass::CH);
+        let mut no_question = good.clone();
+        no_question.queries.clear();
+        let mut two_questions = good.clone();
+        two_questions.add_query(good.queries[0].clone());
+        for (label, msg) in [
+            ("wrong TXID", wrong_id),
+            ("QR=0", reflected),
+            ("other name", other_name),
+            ("other type", other_type),
+            ("other class", other_class),
+            ("no question", no_question),
+            ("two questions", two_questions),
+        ] {
+            assert!(
+                accept_response(&msg.to_vec().unwrap(), &query).is_none(),
+                "{label} must be rejected"
+            );
+        }
+        assert!(accept_response(b"\x00\x01garbage", &query).is_none());
+    }
+
+    /// Mock authoritative that, before each real answer, sends forged and
+    /// garbled datagrams with the right TXID, plus a well-formed forged
+    /// answer from another port. Real answer: 192.0.2.80.
+    async fn spawn_noisy_ns() -> SocketAddr {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let spoofer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = socket.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 4096];
+            while let Ok((len, peer)) = socket.recv_from(&mut buf).await {
+                let Ok(query) = Message::from_vec(&buf[..len]) else {
+                    continue;
+                };
+                let qname = qname_of(&query);
+                let forged_data = |qname: Name| {
+                    let mut msg = answer_to(&query);
+                    msg.add_answer(Record::from_rdata(qname, 300, RData::A(A::new(6, 6, 6, 6))));
+                    msg
+                };
+                let mut other_question = forged_data(name("bank.example."));
+                other_question.queries[0].set_name(name("bank.example."));
+                let mut wrong_id = forged_data(qname.clone());
+                wrong_id.metadata.id = query.metadata.id.wrapping_add(1);
+                let mut garbage = buf[..2].to_vec();
+                garbage.extend_from_slice(b"\x81\x80garbage");
+
+                let _ = spoofer
+                    .send_to(&forged_data(qname.clone()).to_vec().unwrap(), peer)
+                    .await;
+                for noise in [
+                    garbage,
+                    buf[..len].to_vec(), // the query reflected (QR=0)
+                    wrong_id.to_vec().unwrap(),
+                    other_question.to_vec().unwrap(),
+                ] {
+                    let _ = socket.send_to(&noise, peer).await;
+                }
+                let mut real = answer_to(&query);
+                real.add_answer(Record::from_rdata(
+                    qname,
+                    300,
+                    RData::A(A::new(192, 0, 2, 80)),
+                ));
+                let _ = socket.send_to(&real.to_vec().unwrap(), peer).await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn forged_and_garbled_datagrams_do_not_abort_the_query() {
+        let root = spawn_noisy_ns().await;
+        let resolver = RecursiveResolver::with_roots(cfg_for_tests(), vec![root]);
+        let bytes = resolver
+            .resolve(&make_dns_packet("www.example.com.", RecordType::A))
+            .await
+            .expect("the real answer arrives after the noise");
+        let msg = Message::from_vec(&bytes).unwrap();
+        assert_eq!(msg.answers, [a_record("www.example.com.", [192, 0, 2, 80])]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn warm_zone_is_resolved_without_walking_from_the_root() {
+        let root_queries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let com_queries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let servers = [
+            (ROOT_IP, counting(&root_queries, mock_root())),
+            (
+                COM_IP,
+                counting(
+                    &com_queries,
+                    mock_com(vec![("a.com.", "ns.a.com.", Some(ZONE1_IP))]),
+                ),
+            ),
+            (
+                ZONE1_IP,
+                mock(|q: &Message| {
+                    answer_msg(vec![a_record(&qname_of(q).to_string(), [192, 0, 2, 1])])
+                }),
+            ),
+        ];
+        let port = spawn_mock_hierarchy(&servers).await;
+        let resolver = hierarchy_resolver(port);
+        for qname in ["www.a.com.", "mail.a.com.", "www.a.com."] {
+            let bytes = resolver
+                .resolve(&make_dns_packet(qname, RecordType::A))
+                .await
+                .unwrap();
+            let msg = Message::from_vec(&bytes).unwrap();
+            assert_eq!(msg.answers, [a_record(qname, [192, 0, 2, 1])]);
+        }
+        let relaxed = std::sync::atomic::Ordering::Relaxed;
+        assert_eq!(root_queries.load(relaxed), 1, "root asked once");
+        assert_eq!(com_queries.load(relaxed), 1, "com. asked once");
+        assert_eq!(
+            resolver.delegations.get(&name("a.com.")),
+            Some(vec![SocketAddr::new(IpAddr::V4(ZONE1_IP), port)])
+        );
+    }
+
+    fn hierarchy_resolver(port: u16) -> RecursiveResolver {
+        let mut resolver = RecursiveResolver::with_roots(
+            cfg_for_tests(),
+            vec![SocketAddr::new(IpAddr::V4(ROOT_IP), port)],
+        );
+        resolver.ns_port = port;
+        resolver.private_ns_allowed = true;
+        resolver
+    }
+
+    /// `a.com.` really lives on [`ZONE1_IP`]; the cache says [`ZONE2_IP`],
+    /// whose server behaves as `stale`. The walk must recover from the root.
+    async fn recovers_from_stale_delegation(stale: MockHandler) {
+        let root_queries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let servers = [
+            (ROOT_IP, counting(&root_queries, mock_root())),
+            (
+                COM_IP,
+                mock_com(vec![("a.com.", "ns.a.com.", Some(ZONE1_IP))]),
+            ),
+            (
+                ZONE1_IP,
+                mock(|_q| answer_msg(vec![a_record("www.a.com.", [192, 0, 2, 1])])),
+            ),
+            (ZONE2_IP, stale),
+        ];
+        let port = spawn_mock_hierarchy(&servers).await;
+        let resolver = hierarchy_resolver(port);
+        let stale_addr = SocketAddr::new(IpAddr::V4(ZONE2_IP), port);
+        resolver
+            .delegations
+            .insert(&name("a.com."), &[stale_addr], 300);
+
+        let bytes = resolver
+            .resolve(&make_dns_packet("www.a.com.", RecordType::A))
+            .await
+            .expect("recovered through the root");
+        let msg = Message::from_vec(&bytes).unwrap();
+        assert_eq!(msg.answers, [a_record("www.a.com.", [192, 0, 2, 1])]);
+        assert_eq!(root_queries.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            resolver.delegations.get(&name("a.com.")),
+            Some(vec![SocketAddr::new(IpAddr::V4(ZONE1_IP), port)]),
+            "the stale entry is replaced"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn refusing_cached_server_falls_back_to_the_root() {
+        recovers_from_stale_delegation(mock(|_q| {
+            let mut refused = Message::query();
+            refused.metadata.response_code = ResponseCode::Refused;
+            refused
+        }))
+        .await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn upward_referral_from_cached_server_falls_back_to_the_root() {
+        recovers_from_stale_delegation(mock(|_q| referral_msg("com.", "ns.com.", Some(COM_IP))))
+            .await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn unreachable_cached_server_falls_back_to_the_root() {
+        // Nothing listens on 127.0.0.9: the connected socket gets the ICMP
+        // port-unreachable at once.
+        let servers = [
+            (ROOT_IP, mock_root()),
+            (
+                COM_IP,
+                mock_com(vec![("a.com.", "ns.a.com.", Some(ZONE1_IP))]),
+            ),
+            (
+                ZONE1_IP,
+                mock(|_q| answer_msg(vec![a_record("www.a.com.", [192, 0, 2, 1])])),
+            ),
+        ];
+        let port = spawn_mock_hierarchy(&servers).await;
+        let resolver = hierarchy_resolver(port);
+        let dead = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 9)), port);
+        resolver.delegations.insert(&name("a.com."), &[dead], 300);
+        let bytes = resolver
+            .resolve(&make_dns_packet("www.a.com.", RecordType::A))
+            .await
+            .expect("recovered through the root");
+        let msg = Message::from_vec(&bytes).unwrap();
+        assert_eq!(msg.answers, [a_record("www.a.com.", [192, 0, 2, 1])]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn private_glue_is_never_queried() {
+        // The root delegates `evil.` with glue on the loopback, where a
+        // server answers. Production rules drop that glue.
+        let glue_queries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let servers = [
+            (
+                ROOT_IP,
+                mock(|_q| referral_msg("evil.", "ns.evil.", Some(COM_IP))),
+            ),
+            (
+                COM_IP,
+                counting(
+                    &glue_queries,
+                    mock(|_q| answer_msg(vec![a_record("www.evil.", [192, 0, 2, 66])])),
+                ),
+            ),
+        ];
+        let port = spawn_mock_hierarchy(&servers).await;
+        let mut resolver = hierarchy_resolver(port);
+        resolver.private_ns_allowed = false;
+        let result = resolver
+            .resolve(&make_dns_packet("www.evil.", RecordType::A))
+            .await;
+        assert!(result.is_err(), "no public server for evil.");
+        assert_eq!(glue_queries.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert!(resolver.delegations.get(&name("evil.")).is_none());
+
+        // Control: the same hierarchy with private servers allowed.
+        resolver.private_ns_allowed = true;
+        resolver
+            .resolve(&make_dns_packet("www.evil.", RecordType::A))
+            .await
+            .expect("reachable once private servers are allowed");
+        assert_eq!(glue_queries.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 }
