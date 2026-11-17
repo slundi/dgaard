@@ -144,22 +144,51 @@ Post-resolution filters (DPI, DNSSEC, rebinding shield, response scoring) are ap
 
 Uses `hickory-proto` (already in the workspace via `hickory-resolver`) for DNS wire-format encoding/decoding. No additional crate is required.
 
-**State threaded through the resolve loop** (and through every recursive sub-call — CNAME chase, out-of-zone NS lookup):
+**State of one resolution.** Only the `ResolutionBudget` is shared by every
+sub-resolution (CNAME chase hop, out-of-zone NS lookup). Each sub-resolution
+restarts from the root and legitimately crosses the same TLDs again, so
+delegation cycles are tracked per sub-resolution — sharing `visited_zones`
+made any CNAME or glueless NS within an already-crossed TLD fail with a false
+"delegation cycle".
 
-| Variable         | Type       | Purpose                                                                                                      |
-| ---------------- | ---------- | ------------------------------------------------------------------------------------------------------------ |
-| `visited_zones`  | `Vec<u64>` | xxh3_64(lowercase zone) for each zone delegated through; rejects delegation cycles                           |
-| `visited_cnames` | `Vec<u64>` | xxh3_64(lowercase CNAME target) for each chain hop; rejects CNAME cycles                                     |
-| `depth`          | `u8`       | Delegation hops in the _current_ sub-loop; reset to 0 per CNAME follow; capped at `max_delegation_depth`     |
-| `queries_used`   | `u32`      | Total upstream UDP/TCP queries across the whole top-level resolution; capped at `max_queries_per_resolution` |
+| Variable              | Scope               | Purpose                                                                                                                    |
+| --------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `budget.queries_used` | shared              | Total upstream queries across the whole client query; capped at `max_queries_per_resolution`                               |
+| `budget.in_progress`  | shared (stack)      | xxh3_64(qname, qtype) of every resolution on the call stack; re-entering one (`ns.a` needs `ns.b` needs `ns.a`) is a cycle |
+| `visited_cnames`      | per CNAME chain     | xxh3_64(lowercase name) of the queried name and each target; rejects CNAME cycles; capped at `max_cname_depth` targets     |
+| `visited_zones`       | per delegation walk | xxh3_64(lowercase zone) for each zone delegated through in this walk; rejects delegation cycles                            |
+| `depth`               | per delegation walk | Delegation hops in this walk; capped at `max_delegation_depth`                                                             |
 
 ```
-resolve(domain, qtype, &mut visited_zones, &mut visited_cnames, &mut queries_used)
-  -> Result<Vec<u8>>:
+resolve(domain, qtype, &mut budget) -> Result<Message>:
+  key = xxh3_64(domain, qtype)
+  if budget.in_progress.contains(key): return SERVFAIL     // re-entrant sub-resolve
+  budget.in_progress.push(key)
+  chain = []; visited_cnames = [hash(domain)]; current = domain
+  loop:
+    (response, zone) = walk_delegations(current, qtype, &mut budget)
+    if qtype == CNAME: return response
+    // Follow the CNAME chain inside the answer, trusting only records
+    // owned by names inside `zone` (the zone that answered).
+    walk = cname_chain(response.answer, current, zone)
+    for target in walk.targets:
+      if visited_cnames.contains(hash(target)): return SERVFAIL   // CNAME cycle
+      if too many targets: return SERVFAIL                         // max_cname_depth
+      visited_cnames.push(hash(target))
+    if walk has targets and rcode == NOERROR and no in-zone data for walk.terminal:
+      chain += records owned by walk.aliases   // CNAMEs (+ RRSIGs)
+      current = walk.terminal                  // chase from the root
+      continue
+    // Final answer: every CNAME from `domain`, then the terminal records.
+    response.answer = chain + records owned by walk.owners (in zone)
+    budget.in_progress.pop()
+    return response   // the client response echoes the client's question
 
+walk_delegations(domain, qtype, &mut budget) -> Result<(Message, zone)>:
   ns_addrs = select_random(root_hints, count=3)
   zone     = "."
   depth    = 0
+  visited_zones = []
 
   loop:
     if queries_used >= max_queries_per_resolution: return SERVFAIL
@@ -170,14 +199,7 @@ resolve(domain, qtype, &mut visited_zones, &mut visited_cnames, &mut queries_use
 
     match response:
       ANSWER (rcode=NOERROR, answer non-empty):
-        if answer contains CNAME and qtype != CNAME:
-          if visited_cnames.len() >= max_cname_depth: return SERVFAIL
-          target = extract_cname_target(answer)
-          target_hash = xxh3_64(lowercase(target))
-          if visited_cnames.contains(target_hash): return SERVFAIL   // CNAME cycle
-          visited_cnames.push(target_hash)
-          return resolve(target, qtype, visited_zones, visited_cnames, queries_used)
-        return response
+        return (response, zone)   // CNAMEs are followed by resolve()
 
       REFERRAL (rcode=NOERROR, answer empty, authority has NS records):
         new_zone = extract_zone_from_authority(response)
@@ -207,17 +229,16 @@ resolve(domain, qtype, &mut visited_zones, &mut visited_cnames, &mut queries_use
         if glue is not empty:
           ns_addrs = glue
         else:
-          // Out-of-zone NS: resolve each NS name's address.
-          // The recursive resolve_ns_addresses shares visited_zones, visited_cnames,
-          // and queries_used so it cannot blow the budget allocated to this client query.
-          ns_addrs = resolve_ns_addresses(ns_names, visited_zones, visited_cnames, queries_used)
+          // Out-of-zone NS: resolve each NS name's address with resolve().
+          // The shared budget caps the queries and catches glueless loops.
+          ns_addrs = resolve_ns_addresses(ns_names, &mut budget)
           if ns_addrs is empty: return SERVFAIL
 
         zone   = new_zone
         depth += 1
 
       NXDOMAIN:
-        return NXDOMAIN
+        return (response, zone)
 
       SERVFAIL | timeout | error:
         return SERVFAIL   // all tried ns_addrs failed
@@ -225,19 +246,21 @@ resolve(domain, qtype, &mut visited_zones, &mut visited_cnames, &mut queries_use
 
 **Key correctness properties:**
 
-| Property                      | Mechanism                                                                                                                                                               |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Delegation cycle detection    | `visited_zones: Vec<u64>` of `xxh3_64(zone)`; linear scan, ≤ `max_delegation_depth` entries; threaded into sub-resolves                                                 |
-| CNAME cycle detection         | `visited_cnames: Vec<u64>` of `xxh3_64(target)`; threaded across CNAME-follow recursion (the original spec's bug: previously per-chain only inside one resolve() frame) |
-| Delegation depth cap          | `depth >= max_delegation_depth` (default 8) — fallback for non-repeating deep chains                                                                                    |
-| Query amplification cap       | `queries_used >= max_queries_per_resolution` (default 64) — defence in depth over cycle + depth checks; one u32 += 1 per upstream query                                 |
-| Bailiwick enforcement         | Referral zone must be subdomain of current zone. Strict (SERVFAIL on first bad referral) or lenient (try next ns_addr) per `strict_bailiwick`                           |
-| In-bailiwick glue             | Glue A/AAAA records only accepted for NS names inside `new_zone`. Out-of-bailiwick glue is discarded silently                                                           |
-| Out-of-zone NS resolution     | `resolve_ns_addresses` shares the same `visited_zones`, `visited_cnames`, `queries_used` so it cannot escape the per-query budget                                       |
-| UDP truncation (TC=1)         | Retry same query over TCP on port 53 via pooled TCP connection (see Phase 2)                                                                                            |
-| IPv4 + IPv6 root hints        | Both address families stored; prefer IPv4 on single-stack hosts                                                                                                         |
-| QNAME minimization (RFC 9156) | Each delegation hop queries only the next label, not the full QNAME                                                                                                     |
-| EDNS0 OPT record              | Advertised on every outgoing query when `edns0_enabled = true`                                                                                                          |
+| Property                      | Mechanism                                                                                                                                                             |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Delegation cycle detection    | `visited_zones: Vec<u64>` of `xxh3_64(zone)`; linear scan, ≤ `max_delegation_depth` entries; per delegation walk (sharing it across sub-resolves caused false cycles) |
+| CNAME cycle detection         | `visited_cnames: Vec<u64>` of `xxh3_64(name)`; covers the whole chain of one resolution, including in-message chains                                                  |
+| Sub-resolution cycles         | `ResolutionBudget.in_progress` stack of `xxh3_64(qname, qtype)`; a glueless NS loop re-enters a resolution already in progress and fails fast                         |
+| CNAME answer shape            | Client gets `CNAME…` + terminal records under its own question; out-of-zone records in an answer are dropped and the target is resolved from its own servers          |
+| Delegation depth cap          | `depth >= max_delegation_depth` (default 8) — fallback for non-repeating deep chains                                                                                  |
+| Query amplification cap       | `queries_used >= max_queries_per_resolution` (default 64) — defence in depth over cycle + depth checks; one u32 += 1 per upstream query                               |
+| Bailiwick enforcement         | Referral zone must be subdomain of current zone. Strict (SERVFAIL on first bad referral) or lenient (try next ns_addr) per `strict_bailiwick`                         |
+| In-bailiwick glue             | Glue A/AAAA records only accepted for NS names inside `new_zone`. Out-of-bailiwick glue is discarded silently                                                         |
+| Out-of-zone NS resolution     | `resolve_ns_addresses` shares the `ResolutionBudget` (query cap + in-progress stack) so it cannot escape the per-query budget                                         |
+| UDP truncation (TC=1)         | Retry same query over TCP on port 53 via pooled TCP connection (see Phase 2)                                                                                          |
+| IPv4 + IPv6 root hints        | Both address families stored; prefer IPv4 on single-stack hosts                                                                                                       |
+| QNAME minimization (RFC 9156) | Each delegation hop queries only the next label, not the full QNAME                                                                                                   |
+| EDNS0 OPT record              | Advertised on every outgoing query when `edns0_enabled = true`                                                                                                        |
 
 #### Nameserver query concurrency (`query_any`)
 
@@ -427,7 +450,7 @@ Added to `STATS_COUNTERS`:
 - [x] Compile-in root hint constants (IPv4 + IPv6, all 13 operators)
 - [x] Implement `root_hints_path` override at startup
 - [x] Iterative delegation loop: referral extraction, **in-bailiwick glue check**, configurable bailiwick policy (`strict_bailiwick`)
-- [x] Two threaded visited sets: `visited_zones: Vec<u64>` and `visited_cnames: Vec<u64>` — passed into CNAME-follow recursion and out-of-zone NS resolution so cycles spanning sub-resolves are detected
+- [x] Cycle detection: per-walk `visited_zones`, per-chain `visited_cnames`, and a shared `ResolutionBudget` (query cap + in-progress stack) threaded into CNAME-follow and out-of-zone NS resolution so loops spanning sub-resolves are detected without false "delegation cycle" errors
 - [x] `queries_used: u32` global query counter capped by `max_queries_per_resolution` (default 64)
 - [x] `max_delegation_depth = 8` hard fallback guard with SERVFAIL
 - [x] **EDNS0 OPT record** on every outgoing query; advertise `edns0_udp_payload_size`

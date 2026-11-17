@@ -9,8 +9,11 @@
 //! - Full iterative loop (referral → glue → next zone)
 //! - Strict / lenient bailiwick policy
 //! - In-bailiwick glue extraction (out-of-bailiwick glue is dropped)
-//! - CNAME chase with budget sharing
-//! - Cycle detection: `visited_zones` and `visited_cnames` (xxh3_64 hashes)
+//! - CNAME chase with budget sharing; the client gets the whole chain
+//!   (`CNAME…` + target records) under its own question
+//! - Cycle detection (xxh3_64 hashes): delegation cycles per sub-resolution,
+//!   CNAME cycles per chain, and re-entrant sub-resolutions (glueless NS
+//!   loops) through the shared [`ResolutionBudget`]
 //! - Hard caps on delegation depth + total queries per resolution
 //! - EDNS0 OPT advertisement
 //! - Sequential `ns_concurrency`
@@ -193,12 +196,97 @@ pub fn extract_referral_zone(authority: &[Record]) -> Option<Name> {
         .map(|r| r.name.clone())
 }
 
-/// First CNAME target in the answer section, lowercased once for hashing.
-pub fn extract_cname_target(answers: &[Record]) -> Option<Name> {
-    answers.iter().find_map(|r| match &r.data {
-        RData::CNAME(c) => Some(c.0.clone()),
-        _ => None,
+/// Key of one `(qname, qtype)` resolution in [`ResolutionBudget::in_progress`].
+fn hash_resolution(qname: &Name, qtype: RecordType) -> u64 {
+    let lower = qname.to_string().to_ascii_lowercase();
+    XxHash3_64::oneshot_with_seed(u64::from(u16::from(qtype)), lower.as_bytes())
+}
+
+/// The CNAME chain an answer section describes for one queried name.
+#[derive(Debug)]
+pub struct CnameWalk {
+    /// The queried name, then every CNAME target in chain order. The last
+    /// entry is the terminal name (the queried name when there is no CNAME).
+    pub owners: Vec<Name>,
+}
+
+impl CnameWalk {
+    /// Last name of the chain: where the answer data should live.
+    pub fn terminal(&self) -> &Name {
+        // `owners` always starts with the queried name.
+        &self.owners[self.owners.len() - 1]
+    }
+
+    /// CNAME targets followed, in chain order.
+    pub fn targets(&self) -> &[Name] {
+        &self.owners[1..]
+    }
+
+    /// Names that own a CNAME, i.e. every owner but the terminal one.
+    pub fn aliases(&self) -> &[Name] {
+        &self.owners[..self.owners.len() - 1]
+    }
+}
+
+/// Follow the CNAME chain for `start` through `answers`, trusting only
+/// records owned by names inside `zone` (the zone that served them).
+///
+/// An out-of-zone CNAME stops the walk, so a server cannot vouch for names
+/// it is not authoritative for. Each hop consumes a distinct record, so
+/// `answers.len()` bounds an in-message loop (`a → b → a`); the caller
+/// detects the cycle itself from the returned owners.
+pub fn walk_cname_chain(answers: &[Record], start: &Name, zone: &Name) -> CnameWalk {
+    let mut owners = vec![start.clone()];
+    for _ in 0..answers.len() {
+        let current = &owners[owners.len() - 1];
+        let next = answers.iter().find_map(|r| match &r.data {
+            RData::CNAME(target) if r.name == *current && is_in_bailiwick(zone, &r.name) => {
+                Some(target.0.clone())
+            }
+            _ => None,
+        });
+        match next {
+            Some(target) => owners.push(target),
+            None => break,
+        }
+    }
+    CnameWalk { owners }
+}
+
+/// True when `answers` hold data of `qtype` for `name`, served in `zone`.
+/// For `ANY`, any non-CNAME record counts.
+fn has_answer_for(answers: &[Record], name: &Name, qtype: RecordType, zone: &Name) -> bool {
+    answers.iter().any(|r| {
+        let rtype = r.record_type();
+        r.name == *name
+            && is_in_bailiwick(zone, &r.name)
+            && (rtype == qtype || (qtype == RecordType::ANY && rtype != RecordType::CNAME))
     })
+}
+
+/// Records of `answers` owned by one of `owners` and served in `zone`
+/// (CNAMEs, target data, and the RRSIGs covering them).
+fn records_owned_by(answers: &[Record], owners: &[Name], zone: &Name) -> Vec<Record> {
+    answers
+        .iter()
+        .filter(|r| owners.contains(&r.name) && is_in_bailiwick(zone, &r.name))
+        .cloned()
+        .collect()
+}
+
+/// State shared by every sub-resolution of one client query: CNAME chase
+/// hops and glueless NS lookups.
+///
+/// Only the query budget and the stack of in-progress resolutions are
+/// shared. Delegation cycles are tracked per sub-resolution: each one
+/// restarts from the root and legitimately crosses the same TLD again.
+#[derive(Debug, Default)]
+pub struct ResolutionBudget {
+    /// Upstream queries sent so far, capped by `max_queries_per_resolution`.
+    pub queries_used: u32,
+    /// [`hash_resolution`] of every `(qname, qtype)` on the current call
+    /// stack. Re-entering one (`ns.a` needs `ns.b` needs `ns.a`) is a cycle.
+    in_progress: Vec<u64>,
 }
 
 /// Build a UDP-bound DNS query for `qname` of `qtype`, with the requested
@@ -289,6 +377,9 @@ pub struct RecursiveResolver {
     /// the hot path branch-predictable and lets tests construct an
     /// isolated resolver.
     pub(crate) validator: Option<Arc<RecursiveDnssecValidator>>,
+    /// Destination port for nameserver addresses learned from glue or NS
+    /// lookups. Always 53 in production; tests point it at mock servers.
+    pub(crate) ns_port: u16,
 }
 
 impl RecursiveResolver {
@@ -310,6 +401,7 @@ impl RecursiveResolver {
             config,
             roots,
             validator: None,
+            ns_port: 53,
         })
     }
 
@@ -330,149 +422,198 @@ impl RecursiveResolver {
             config,
             roots,
             validator: None,
+            ns_port: 53,
         }
     }
 
-    /// Resolve `qname` / `qtype`, returning the final upstream `Message`.
-    /// Cycle-detection state is threaded through every recursion (CNAME
-    /// chase + out-of-zone NS resolve) so a malicious chain cannot escape
-    /// the per-query budget by hopping into a sub-resolve.
+    /// Resolve `qname` / `qtype`, following CNAMEs, and return a `Message`
+    /// whose answer section is the whole chain: every CNAME from `qname` to
+    /// the terminal name, then the terminal name's records.
+    ///
+    /// `budget` is shared by every sub-resolution (CNAME hops, glueless NS
+    /// lookups) so a malicious chain cannot escape the per-query caps; a
+    /// sub-resolution that re-enters one already in progress is a cycle.
     pub fn resolve_iterative<'a>(
         &'a self,
         qname: Name,
         qtype: RecordType,
-        visited_zones: &'a mut Vec<u64>,
-        visited_cnames: &'a mut Vec<u64>,
-        queries_used: &'a mut u32,
+        budget: &'a mut ResolutionBudget,
     ) -> Pin<Box<dyn Future<Output = io::Result<Message>> + Send + 'a>> {
         Box::pin(async move {
-            let mut ns_addrs: Vec<SocketAddr> = pick_initial_ns_addrs(&self.roots);
-            let mut current_zone = Name::root();
-            let mut depth: u8 = 0;
+            let key = hash_resolution(&qname, qtype);
+            if budget.in_progress.contains(&key) {
+                crate::STATS_COUNTERS.increment_recursive_cycle_detected();
+                return Err(io::Error::other("resolution cycle"));
+            }
+            budget.in_progress.push(key);
+            let result = self.resolve_following_cnames(qname, qtype, budget).await;
+            budget.in_progress.pop();
+            result
+        })
+    }
 
-            loop {
-                if *queries_used >= self.config.max_queries_per_resolution {
-                    crate::STATS_COUNTERS.increment_recursive_query_cap_hit();
-                    return Err(io::Error::other("max_queries_per_resolution exceeded"));
+    /// CNAME chase loop behind [`Self::resolve_iterative`].
+    ///
+    /// Each hop walks the delegations for the current name. Only records
+    /// served by the zone that answered are trusted: an in-zone chain is
+    /// taken as is, while a target outside that zone (or one the server did
+    /// not answer for) is resolved again from the root.
+    async fn resolve_following_cnames(
+        &self,
+        qname: Name,
+        qtype: RecordType,
+        budget: &mut ResolutionBudget,
+    ) -> io::Result<Message> {
+        let mut chain: Vec<Record> = Vec::new();
+        let mut visited_cnames: Vec<u64> = vec![hash_zone_label(&qname)];
+        let mut current = qname;
+
+        loop {
+            let (mut response, zone) = self.walk_delegations(&current, qtype, budget).await?;
+            if qtype == RecordType::CNAME {
+                // The client asked for the alias itself: nothing to follow.
+                return Ok(response);
+            }
+
+            let walk = walk_cname_chain(&response.answers, &current, &zone);
+            for target in walk.targets() {
+                let target_hash = hash_zone_label(target);
+                if visited_cnames.contains(&target_hash) {
+                    crate::STATS_COUNTERS.increment_recursive_cycle_detected();
+                    return Err(io::Error::other("CNAME cycle"));
                 }
-                if depth >= self.config.max_delegation_depth {
-                    crate::STATS_COUNTERS.increment_recursive_depth_cap_hit();
-                    return Err(io::Error::other("max_delegation_depth exceeded"));
+                // `visited_cnames` also holds the original name.
+                if visited_cnames.len() > usize::from(self.config.max_cname_depth) {
+                    return Err(io::Error::other("max_cname_depth exceeded"));
                 }
+                visited_cnames.push(target_hash);
+            }
 
-                let response = self
-                    .query_any_ns(&ns_addrs, &qname, qtype, queries_used)
-                    .await?;
+            let chase = !walk.targets().is_empty()
+                && response.metadata.response_code == ResponseCode::NoError
+                && !has_answer_for(&response.answers, walk.terminal(), qtype, &zone);
+            if chase {
+                chain.extend(records_owned_by(&response.answers, walk.aliases(), &zone));
+                current = walk.terminal().clone();
+                continue;
+            }
 
-                match classify_response(&response) {
-                    ResponseKind::Answer => {
-                        // CNAME chase: if the answer is a CNAME and we did
-                        // not ask for CNAME, follow the alias with a fresh
-                        // depth budget but the same query budget.
-                        if qtype != RecordType::CNAME
-                            && let Some(target) = extract_cname_target(&response.answers)
-                        {
-                            let target_hash = hash_zone_label(&target);
-                            if visited_cnames.contains(&target_hash) {
-                                crate::STATS_COUNTERS.increment_recursive_cycle_detected();
-                                return Err(io::Error::other("CNAME cycle"));
+            // Final hop: earlier CNAMEs first, then this hop's chain and
+            // data. Out-of-zone or unrelated records are dropped.
+            chain.extend(records_owned_by(&response.answers, &walk.owners, &zone));
+            response.answers = chain;
+            return Ok(response);
+        }
+    }
+
+    /// Walk the delegation chain from the root for `qname` / `qtype` and
+    /// return the first answer (or NXDOMAIN) with the zone that served it.
+    ///
+    /// Delegation cycles are tracked per call: a CNAME hop or a glueless NS
+    /// lookup restarts from the root and may cross the same zones again.
+    async fn walk_delegations(
+        &self,
+        qname: &Name,
+        qtype: RecordType,
+        budget: &mut ResolutionBudget,
+    ) -> io::Result<(Message, Name)> {
+        let mut ns_addrs: Vec<SocketAddr> = pick_initial_ns_addrs(&self.roots);
+        let mut current_zone = Name::root();
+        let mut depth: u8 = 0;
+        let mut visited_zones: Vec<u64> =
+            Vec::with_capacity(usize::from(self.config.max_delegation_depth));
+        loop {
+            if budget.queries_used >= self.config.max_queries_per_resolution {
+                crate::STATS_COUNTERS.increment_recursive_query_cap_hit();
+                return Err(io::Error::other("max_queries_per_resolution exceeded"));
+            }
+            if depth >= self.config.max_delegation_depth {
+                crate::STATS_COUNTERS.increment_recursive_depth_cap_hit();
+                return Err(io::Error::other("max_delegation_depth exceeded"));
+            }
+
+            let response = self
+                .query_any_ns(&ns_addrs, qname, qtype, &mut budget.queries_used)
+                .await?;
+
+            match classify_response(&response) {
+                // CNAMEs are followed by the caller, which sees the zone.
+                ResponseKind::Answer => return Ok((response, current_zone)),
+                ResponseKind::Referral { new_zone, ns_names } => {
+                    crate::STATS_COUNTERS.increment_recursive_referrals();
+                    if !is_in_bailiwick(&current_zone, &new_zone) {
+                        crate::STATS_COUNTERS.increment_recursive_bailiwick_reject();
+                        match self.config.bailiwick_policy {
+                            BailiwickPolicy::Strict => {
+                                return Err(io::Error::other("out-of-bailiwick referral"));
                             }
-                            if (visited_cnames.len() as u8) >= self.config.max_cname_depth {
-                                return Err(io::Error::other("max_cname_depth exceeded"));
-                            }
-                            visited_cnames.push(target_hash);
-                            return self
-                                .resolve_iterative(
-                                    target,
-                                    qtype,
-                                    visited_zones,
-                                    visited_cnames,
-                                    queries_used,
-                                )
-                                .await;
-                        }
-                        return Ok(response);
-                    }
-                    ResponseKind::Referral { new_zone, ns_names } => {
-                        crate::STATS_COUNTERS.increment_recursive_referrals();
-                        if !is_in_bailiwick(&current_zone, &new_zone) {
-                            crate::STATS_COUNTERS.increment_recursive_bailiwick_reject();
-                            match self.config.bailiwick_policy {
-                                BailiwickPolicy::Strict => {
-                                    return Err(io::Error::other("out-of-bailiwick referral"));
-                                }
-                                BailiwickPolicy::Lenient => {
-                                    // Lenient mode: discard this referral.
-                                    // The next NS we'd try lives in
-                                    // ns_addrs which we already exhausted
-                                    // for this query; give up.
-                                    return Err(io::Error::other("all NS gave bad referrals"));
-                                }
-                            }
-                        }
-
-                        let zone_hash = hash_zone_label(&new_zone);
-                        if visited_zones.contains(&zone_hash) {
-                            crate::STATS_COUNTERS.increment_recursive_cycle_detected();
-                            return Err(io::Error::other("delegation cycle"));
-                        }
-                        visited_zones.push(zone_hash);
-
-                        let glue = collect_in_bailiwick_glue(&response, &ns_names, &new_zone);
-                        if !glue.is_empty() {
-                            crate::STATS_COUNTERS.increment_recursive_glue_hit();
-                            ns_addrs = glue.into_iter().map(|ip| SocketAddr::new(ip, 53)).collect();
-                        } else {
-                            crate::STATS_COUNTERS.increment_recursive_glue_miss();
-                            ns_addrs = self
-                                .resolve_ns_addresses(
-                                    &ns_names,
-                                    visited_zones,
-                                    visited_cnames,
-                                    queries_used,
-                                )
-                                .await?;
-                            if ns_addrs.is_empty() {
-                                return Err(io::Error::other("no usable NS addresses"));
+                            BailiwickPolicy::Lenient => {
+                                // Lenient mode: discard this referral.
+                                // The next NS we'd try lives in
+                                // ns_addrs which we already exhausted
+                                // for this query; give up.
+                                return Err(io::Error::other("all NS gave bad referrals"));
                             }
                         }
+                    }
 
-                        // Phase 6 session 2: harvest the DS rrset that
-                        // the *parent* zone served in the referral, then
-                        // pull the *child*'s DNSKEY from one of the
-                        // newly-chosen NSes. This walks the chain of
-                        // trust forward one delegation hop. Failures
-                        // are noted via metrics but do not abort the
-                        // resolution — DNSSEC's "best evidence wins"
-                        // is enforced at answer time in handle_query.
-                        if let Some(validator) = self.validator.clone() {
-                            self.build_chain_step(
-                                &validator,
-                                &response,
-                                &current_zone,
-                                &new_zone,
-                                &ns_addrs,
-                                queries_used,
-                            )
-                            .await;
+                    let zone_hash = hash_zone_label(&new_zone);
+                    if visited_zones.contains(&zone_hash) {
+                        crate::STATS_COUNTERS.increment_recursive_cycle_detected();
+                        return Err(io::Error::other("delegation cycle"));
+                    }
+                    visited_zones.push(zone_hash);
+
+                    let glue = collect_in_bailiwick_glue(&response, &ns_names, &new_zone);
+                    if !glue.is_empty() {
+                        crate::STATS_COUNTERS.increment_recursive_glue_hit();
+                        ns_addrs = glue
+                            .into_iter()
+                            .map(|ip| SocketAddr::new(ip, self.ns_port))
+                            .collect();
+                    } else {
+                        crate::STATS_COUNTERS.increment_recursive_glue_miss();
+                        ns_addrs = self.resolve_ns_addresses(&ns_names, budget).await?;
+                        if ns_addrs.is_empty() {
+                            return Err(io::Error::other("no usable NS addresses"));
                         }
+                    }
 
-                        current_zone = new_zone;
-                        depth = depth.saturating_add(1);
+                    // Phase 6 session 2: harvest the DS rrset that
+                    // the *parent* zone served in the referral, then
+                    // pull the *child*'s DNSKEY from one of the
+                    // newly-chosen NSes. This walks the chain of
+                    // trust forward one delegation hop. Failures
+                    // are noted via metrics but do not abort the
+                    // resolution — DNSSEC's "best evidence wins"
+                    // is enforced at answer time in handle_query.
+                    if let Some(validator) = self.validator.clone() {
+                        self.build_chain_step(
+                            &validator,
+                            &response,
+                            &current_zone,
+                            &new_zone,
+                            &ns_addrs,
+                            &mut budget.queries_used,
+                        )
+                        .await;
                     }
-                    ResponseKind::NxDomain => return Ok(response),
-                    ResponseKind::NeedTcpFallback => {
-                        crate::STATS_COUNTERS.increment_recursive_tcp_fallback();
-                        return Err(io::Error::other(
-                            "UDP truncated and TCP fallback not implemented yet",
-                        ));
-                    }
-                    ResponseKind::Empty => {
-                        return Err(io::Error::other("empty/SERVFAIL response"));
-                    }
+
+                    current_zone = new_zone;
+                    depth = depth.saturating_add(1);
+                }
+                ResponseKind::NxDomain => return Ok((response, current_zone)),
+                ResponseKind::NeedTcpFallback => {
+                    crate::STATS_COUNTERS.increment_recursive_tcp_fallback();
+                    return Err(io::Error::other(
+                        "UDP truncated and TCP fallback not implemented yet",
+                    ));
+                }
+                ResponseKind::Empty => {
+                    return Err(io::Error::other("empty/SERVFAIL response"));
                 }
             }
-        })
+        }
     }
 
     /// Sequentially walk `ns_addrs`, send `qname / qtype` to each, return
@@ -623,35 +764,27 @@ impl RecursiveResolver {
     }
 
     /// Resolve the IP addresses of out-of-zone NS names by recursing for
-    /// each name. Budgets (`visited_*`, `queries_used`) are threaded
-    /// through so a fan-out can never escape the per-query caps.
+    /// each name. The shared `budget` keeps a fan-out within the per-query
+    /// caps and turns a glueless loop (`ns.a` ↔ `ns.b`) into a cycle error.
     fn resolve_ns_addresses<'a>(
         &'a self,
         ns_names: &'a [Name],
-        visited_zones: &'a mut Vec<u64>,
-        visited_cnames: &'a mut Vec<u64>,
-        queries_used: &'a mut u32,
+        budget: &'a mut ResolutionBudget,
     ) -> Pin<Box<dyn Future<Output = io::Result<Vec<SocketAddr>>> + Send + 'a>> {
         Box::pin(async move {
             let mut out = Vec::new();
             for ns in ns_names {
-                if *queries_used >= self.config.max_queries_per_resolution {
+                if budget.queries_used >= self.config.max_queries_per_resolution {
                     break;
                 }
                 match self
-                    .resolve_iterative(
-                        ns.clone(),
-                        RecordType::A,
-                        visited_zones,
-                        visited_cnames,
-                        queries_used,
-                    )
+                    .resolve_iterative(ns.clone(), RecordType::A, budget)
                     .await
                 {
                     Ok(msg) => {
                         for rec in msg.answers {
                             if let RData::A(a) = &rec.data {
-                                out.push(SocketAddr::new(IpAddr::V4(a.0), 53));
+                                out.push(SocketAddr::new(IpAddr::V4(a.0), self.ns_port));
                             }
                         }
                     }
@@ -677,11 +810,11 @@ fn build_client_response(client_query: &DnsPacket, mut upstream: Message) -> io:
     upstream.metadata.recursion_available = true;
     upstream.metadata.recursion_desired = client_query.message.metadata.recursion_desired;
     upstream.metadata.authoritative = false;
-    // Make sure the question section echoes the client's question — some
-    // stubs reject responses that don't.
-    if upstream.queries.is_empty()
-        && let Some(q) = client_query.message.queries.first()
-    {
+    // The question section must echo the client's question: after a CNAME
+    // chase the last upstream response carries the *target*'s question, and
+    // strict stubs (glibc, systemd-resolved) reject a mismatch.
+    upstream.queries.clear();
+    if let Some(q) = client_query.message.queries.first() {
         upstream.add_query(q.clone());
     }
     upstream
@@ -706,19 +839,8 @@ impl UpstreamResolver for RecursiveResolver {
         let qname = q.name().clone();
         let qtype = q.query_type();
 
-        let mut visited_zones = Vec::with_capacity(self.config.max_delegation_depth as usize);
-        let mut visited_cnames = Vec::with_capacity(self.config.max_cname_depth as usize);
-        let mut queries_used: u32 = 0;
-
-        let upstream = self
-            .resolve_iterative(
-                qname,
-                qtype,
-                &mut visited_zones,
-                &mut visited_cnames,
-                &mut queries_used,
-            )
-            .await?;
+        let mut budget = ResolutionBudget::default();
+        let upstream = self.resolve_iterative(qname, qtype, &mut budget).await?;
         build_client_response(query, upstream)
     }
 }
@@ -1316,29 +1438,135 @@ mod tests {
         assert!(matches!(classify_response(&msg), ResponseKind::Empty));
     }
 
-    // ---- extract_cname_target ----
+    // ---- walk_cname_chain ----
 
-    #[test]
-    fn extract_cname_returns_first_cname() {
-        let answers = vec![Record::from_rdata(
-            name("alias.example."),
-            300,
-            RData::CNAME(CNAME(name("real.example."))),
-        )];
-        assert_eq!(
-            extract_cname_target(&answers).unwrap(),
-            name("real.example.")
-        );
+    fn cname(owner: &str, target: &str) -> Record {
+        Record::from_rdata(name(owner), 300, RData::CNAME(CNAME(name(target))))
+    }
+
+    fn a_record(owner: &str, ip: [u8; 4]) -> Record {
+        Record::from_rdata(name(owner), 300, RData::A(A(Ipv4Addr::from(ip))))
     }
 
     #[test]
-    fn extract_cname_returns_none_when_only_a_records() {
-        let answers = vec![Record::from_rdata(
-            name("example.com."),
-            300,
-            RData::A(A(Ipv4Addr::new(1, 2, 3, 4))),
-        )];
-        assert!(extract_cname_target(&answers).is_none());
+    fn walk_cname_chain_without_cname_is_the_name_itself() {
+        let answers = vec![a_record("example.com.", [1, 2, 3, 4])];
+        let walk = walk_cname_chain(&answers, &name("example.com."), &Name::root());
+        assert_eq!(walk.owners, [name("example.com.")]);
+        assert_eq!(walk.terminal(), &name("example.com."));
+        assert!(walk.targets().is_empty());
+        assert!(walk.aliases().is_empty());
+    }
+
+    #[test]
+    fn walk_cname_chain_follows_records_in_any_order() {
+        let answers = vec![
+            a_record("c.example.", [1, 2, 3, 4]),
+            cname("b.example.", "c.example."),
+            cname("a.example.", "b.example."),
+        ];
+        let walk = walk_cname_chain(&answers, &name("a.example."), &name("example."));
+        assert_eq!(
+            walk.owners,
+            [name("a.example."), name("b.example."), name("c.example.")]
+        );
+        assert_eq!(walk.aliases(), [name("a.example."), name("b.example.")]);
+        assert_eq!(walk.targets(), [name("b.example."), name("c.example.")]);
+    }
+
+    #[test]
+    fn walk_cname_chain_is_case_insensitive() {
+        let answers = vec![cname("WWW.Example.", "cdn.example.")];
+        let walk = walk_cname_chain(&answers, &name("www.example."), &name("example."));
+        assert_eq!(walk.terminal(), &name("cdn.example."));
+    }
+
+    #[test]
+    fn walk_cname_chain_ignores_out_of_zone_cname() {
+        // `b.com` is not served by `a.com`: its CNAME must not be trusted.
+        let answers = vec![
+            cname("www.a.com.", "b.com."),
+            cname("b.com.", "attacker.net."),
+        ];
+        let walk = walk_cname_chain(&answers, &name("www.a.com."), &name("a.com."));
+        assert_eq!(walk.terminal(), &name("b.com."));
+    }
+
+    #[test]
+    fn walk_cname_chain_bounded_on_in_message_loop() {
+        let answers = vec![
+            cname("a.example.", "b.example."),
+            cname("b.example.", "a.example."),
+        ];
+        let walk = walk_cname_chain(&answers, &name("a.example."), &name("example."));
+        assert_eq!(walk.owners.len(), answers.len() + 1);
+    }
+
+    #[test]
+    fn has_answer_for_matches_type_owner_and_zone() {
+        let answers = vec![
+            cname("www.a.com.", "b.com."),
+            a_record("b.com.", [1, 1, 1, 1]),
+        ];
+        let a_com = name("a.com.");
+        // The A for `b.com` is out of `a.com`: not an answer.
+        assert!(!has_answer_for(
+            &answers,
+            &name("b.com."),
+            RecordType::A,
+            &a_com
+        ));
+        assert!(has_answer_for(
+            &answers,
+            &name("b.com."),
+            RecordType::A,
+            &Name::root()
+        ));
+        assert!(!has_answer_for(
+            &answers,
+            &name("b.com."),
+            RecordType::AAAA,
+            &Name::root()
+        ));
+        assert!(has_answer_for(
+            &answers,
+            &name("b.com."),
+            RecordType::ANY,
+            &Name::root()
+        ));
+        // ANY does not count the alias itself as data.
+        assert!(!has_answer_for(
+            &answers,
+            &name("www.a.com."),
+            RecordType::ANY,
+            &a_com
+        ));
+    }
+
+    #[test]
+    fn records_owned_by_drops_unrelated_and_out_of_zone() {
+        let answers = vec![
+            cname("www.a.com.", "cdn.a.com."),
+            a_record("cdn.a.com.", [1, 1, 1, 1]),
+            a_record("other.a.com.", [2, 2, 2, 2]),
+            a_record("evil.net.", [6, 6, 6, 6]),
+        ];
+        let owners = [name("www.a.com."), name("cdn.a.com."), name("evil.net.")];
+        let kept = records_owned_by(&answers, &owners, &name("a.com."));
+        assert_eq!(kept, answers[..2]);
+    }
+
+    #[test]
+    fn hash_resolution_distinguishes_type_and_ignores_case() {
+        let www = name("www.example.");
+        assert_eq!(
+            hash_resolution(&www, RecordType::A),
+            hash_resolution(&name("WWW.Example."), RecordType::A)
+        );
+        assert_ne!(
+            hash_resolution(&www, RecordType::A),
+            hash_resolution(&www, RecordType::AAAA)
+        );
     }
 
     // ---- build_outgoing_query ----
@@ -1417,6 +1645,15 @@ mod tests {
     {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let addr = socket.local_addr().unwrap();
+        serve_mock(socket, handler);
+        addr
+    }
+
+    /// Answer every query on `socket` with `handler`.
+    fn serve_mock<F>(socket: UdpSocket, handler: F)
+    where
+        F: Fn(&Message) -> Message + Send + Sync + 'static,
+    {
         tokio::spawn(async move {
             let mut buf = [0u8; 4096];
             loop {
@@ -1438,7 +1675,421 @@ mod tests {
                 }
             }
         });
-        addr
+    }
+
+    // ---- mock delegation hierarchy (CNAME chase, glueless NS) ----
+    //
+    // Glue and NS lookups only carry an IP, so every mock of a hierarchy
+    // listens on the *same* port, each on its own loopback address
+    // (127.0.0.0/8 is all routed to `lo` on Linux), and the resolver's
+    // `ns_port` points at that port.
+
+    type MockHandler = Arc<dyn Fn(&Message) -> Message + Send + Sync>;
+
+    /// Box a closure as a [`MockHandler`] (forces the higher-ranked
+    /// `for<'a> Fn(&'a Message)` signature a bare `as` cast cannot infer).
+    fn mock(handler: impl Fn(&Message) -> Message + Send + Sync + 'static) -> MockHandler {
+        Arc::new(handler)
+    }
+
+    const ROOT_IP: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
+    const COM_IP: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
+    const ZONE1_IP: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 3);
+    const ZONE2_IP: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 4);
+
+    /// Bind one mock per address, all on one port, and return that port.
+    async fn spawn_mock_hierarchy(servers: &[(Ipv4Addr, MockHandler)]) -> u16 {
+        'retry: for _ in 0..16 {
+            let first = UdpSocket::bind((servers[0].0, 0)).await.unwrap();
+            let port = first.local_addr().unwrap().port();
+            let mut sockets = vec![first];
+            for (ip, _) in &servers[1..] {
+                match UdpSocket::bind((*ip, port)).await {
+                    Ok(socket) => sockets.push(socket),
+                    Err(_) => continue 'retry,
+                }
+            }
+            for (socket, (_, handler)) in sockets.into_iter().zip(servers) {
+                let handler = Arc::clone(handler);
+                serve_mock(socket, move |q| handler(q));
+            }
+            return port;
+        }
+        panic!("could not bind the mock hierarchy on a shared port");
+    }
+
+    fn qname_of(query: &Message) -> Name {
+        query.queries.first().unwrap().name().clone()
+    }
+
+    fn answer_msg(records: Vec<Record>) -> Message {
+        let mut resp = Message::query();
+        resp.metadata.response_code = ResponseCode::NoError;
+        for record in records {
+            resp.add_answer(record);
+        }
+        resp
+    }
+
+    fn nxdomain_msg() -> Message {
+        let mut resp = Message::query();
+        resp.metadata.response_code = ResponseCode::NXDomain;
+        resp
+    }
+
+    fn referral_msg(zone: &str, ns: &str, glue: Option<Ipv4Addr>) -> Message {
+        let mut resp = Message::query();
+        resp.metadata.response_code = ResponseCode::NoError;
+        resp.add_authority(Record::from_rdata(name(zone), 300, RData::NS(NS(name(ns)))));
+        if let Some(ip) = glue {
+            resp.add_additional(Record::from_rdata(name(ns), 300, RData::A(A(ip))));
+        }
+        resp
+    }
+
+    /// Root server: delegates `com.` to `ns.com.` (glue: [`COM_IP`]).
+    fn mock_root() -> MockHandler {
+        mock(|_q| referral_msg("com.", "ns.com.", Some(COM_IP)))
+    }
+
+    /// `com.` server: one `(zone, ns, glue)` delegation per child zone.
+    fn mock_com(delegations: Vec<(&'static str, &'static str, Option<Ipv4Addr>)>) -> MockHandler {
+        Arc::new(move |q| {
+            let qname = qname_of(q);
+            delegations
+                .iter()
+                .find(|(zone, _, _)| name(zone).zone_of(&qname))
+                .map_or_else(nxdomain_msg, |(zone, ns, glue)| {
+                    referral_msg(zone, ns, *glue)
+                })
+        })
+    }
+
+    /// Mock handler that also counts the queries it receives.
+    fn counting(counter: &Arc<std::sync::atomic::AtomicUsize>, inner: MockHandler) -> MockHandler {
+        let counter = Arc::clone(counter);
+        Arc::new(move |q| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            inner(q)
+        })
+    }
+
+    /// Resolve `qname` against a mock hierarchy whose root is at [`ROOT_IP`].
+    async fn resolve_in_hierarchy(
+        servers: &[(Ipv4Addr, MockHandler)],
+        qname: &str,
+        qtype: RecordType,
+    ) -> io::Result<Message> {
+        let port = spawn_mock_hierarchy(servers).await;
+        let mut resolver = RecursiveResolver::with_roots(
+            cfg_for_tests(),
+            vec![SocketAddr::new(IpAddr::V4(ROOT_IP), port)],
+        );
+        resolver.ns_port = port;
+        let packet = make_dns_packet(qname, qtype);
+        let bytes = resolver.resolve(&packet).await?;
+        Ok(Message::from_vec(&bytes).unwrap())
+    }
+
+    fn assert_question(msg: &Message, qname: &str, qtype: RecordType) {
+        let question = msg.queries.first().expect("question section");
+        assert_eq!(question.name(), &name(qname));
+        assert_eq!(question.query_type(), qtype);
+        assert_eq!(msg.queries.len(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn cname_to_same_tld_returns_full_chain_under_client_question() {
+        // www.a.com → CNAME b.com; both under `com.`. The old shared
+        // `visited_zones` saw `com.` twice and failed with a false cycle.
+        let servers = [
+            (ROOT_IP, mock_root()),
+            (
+                COM_IP,
+                mock_com(vec![
+                    ("a.com.", "ns.a.com.", Some(ZONE1_IP)),
+                    ("b.com.", "ns.b.com.", Some(ZONE2_IP)),
+                ]),
+            ),
+            (
+                ZONE1_IP,
+                mock(|_q| answer_msg(vec![cname("www.a.com.", "b.com.")])),
+            ),
+            (
+                ZONE2_IP,
+                mock(|_q| answer_msg(vec![a_record("b.com.", [203, 0, 113, 9])])),
+            ),
+        ];
+        let msg = resolve_in_hierarchy(&servers, "www.a.com.", RecordType::A)
+            .await
+            .expect("CNAME to the same TLD must resolve");
+        assert_eq!(msg.metadata.response_code, ResponseCode::NoError);
+        assert_question(&msg, "www.a.com.", RecordType::A);
+        assert_eq!(
+            msg.answers,
+            [
+                cname("www.a.com.", "b.com."),
+                a_record("b.com.", [203, 0, 113, 9])
+            ]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn glueless_ns_in_same_tld_resolves() {
+        // `x.com` is served by `ns.y.com` (no glue): resolving the NS
+        // restarts from the root and crosses `com.` again.
+        let servers = [
+            (ROOT_IP, mock_root()),
+            (
+                COM_IP,
+                mock_com(vec![
+                    ("x.com.", "ns.y.com.", None),
+                    ("y.com.", "ns.y.com.", Some(ZONE2_IP)),
+                ]),
+            ),
+            (
+                ZONE1_IP,
+                mock(|q: &Message| {
+                    answer_msg(vec![a_record(&qname_of(q).to_string(), [198, 51, 100, 1])])
+                }),
+            ),
+            (
+                ZONE2_IP,
+                // ns.y.com lives on the x.com mock address.
+                mock(|_q| answer_msg(vec![a_record("ns.y.com.", ZONE1_IP.octets())])),
+            ),
+        ];
+        let msg = resolve_in_hierarchy(&servers, "www.x.com.", RecordType::A)
+            .await
+            .expect("glueless NS in the same TLD must resolve");
+        assert_question(&msg, "www.x.com.", RecordType::A);
+        assert_eq!(msg.answers, [a_record("www.x.com.", [198, 51, 100, 1])]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn glueless_ns_loop_is_a_cycle_not_a_hang() {
+        // x.com ↔ y.com, each served by an NS in the other, no glue.
+        let servers = [
+            (ROOT_IP, mock_root()),
+            (
+                COM_IP,
+                mock_com(vec![
+                    ("x.com.", "ns.y.com.", None),
+                    ("y.com.", "ns.x.com.", None),
+                ]),
+            ),
+        ];
+        let before = crate::STATS_COUNTERS.get_recursive_cycle_detected();
+        let result = resolve_in_hierarchy(&servers, "www.x.com.", RecordType::A).await;
+        assert!(result.is_err());
+        assert!(crate::STATS_COUNTERS.get_recursive_cycle_detected() > before);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn in_zone_cname_chain_is_not_chased_again() {
+        let root_queries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let servers = [
+            (ROOT_IP, counting(&root_queries, mock_root())),
+            (
+                COM_IP,
+                mock_com(vec![("a.com.", "ns.a.com.", Some(ZONE1_IP))]),
+            ),
+            (
+                ZONE1_IP,
+                mock(|_q| {
+                    answer_msg(vec![
+                        cname("www.a.com.", "cdn.a.com."),
+                        a_record("cdn.a.com.", [192, 0, 2, 10]),
+                    ])
+                }),
+            ),
+        ];
+        let msg = resolve_in_hierarchy(&servers, "www.a.com.", RecordType::A)
+            .await
+            .unwrap();
+        assert_question(&msg, "www.a.com.", RecordType::A);
+        assert_eq!(
+            msg.answers,
+            [
+                cname("www.a.com.", "cdn.a.com."),
+                a_record("cdn.a.com.", [192, 0, 2, 10])
+            ]
+        );
+        assert_eq!(
+            root_queries.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the target was answered in-zone: no second walk from the root"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn out_of_zone_target_data_is_not_trusted() {
+        // a.com slips a forged A for b.com next to its CNAME: the resolver
+        // must ask b.com's own servers instead.
+        let servers = [
+            (ROOT_IP, mock_root()),
+            (
+                COM_IP,
+                mock_com(vec![
+                    ("a.com.", "ns.a.com.", Some(ZONE1_IP)),
+                    ("b.com.", "ns.b.com.", Some(ZONE2_IP)),
+                ]),
+            ),
+            (
+                ZONE1_IP,
+                mock(|_q| {
+                    answer_msg(vec![
+                        cname("www.a.com.", "b.com."),
+                        a_record("b.com.", [6, 6, 6, 6]),
+                        a_record("bank.example.", [6, 6, 6, 6]),
+                    ])
+                }),
+            ),
+            (
+                ZONE2_IP,
+                mock(|_q| answer_msg(vec![a_record("b.com.", [203, 0, 113, 9])])),
+            ),
+        ];
+        let msg = resolve_in_hierarchy(&servers, "www.a.com.", RecordType::A)
+            .await
+            .unwrap();
+        assert_eq!(
+            msg.answers,
+            [
+                cname("www.a.com.", "b.com."),
+                a_record("b.com.", [203, 0, 113, 9])
+            ]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn cname_cycle_across_zones_is_detected() {
+        let servers = [
+            (ROOT_IP, mock_root()),
+            (
+                COM_IP,
+                mock_com(vec![
+                    ("a.com.", "ns.a.com.", Some(ZONE1_IP)),
+                    ("b.com.", "ns.b.com.", Some(ZONE2_IP)),
+                ]),
+            ),
+            (
+                ZONE1_IP,
+                mock(|_q| answer_msg(vec![cname("www.a.com.", "www.b.com.")])),
+            ),
+            (
+                ZONE2_IP,
+                mock(|_q| answer_msg(vec![cname("www.b.com.", "www.a.com.")])),
+            ),
+        ];
+        let before = crate::STATS_COUNTERS.get_recursive_cycle_detected();
+        let result = resolve_in_hierarchy(&servers, "www.a.com.", RecordType::A).await;
+        assert!(result.is_err());
+        assert!(crate::STATS_COUNTERS.get_recursive_cycle_detected() > before);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn cname_to_nxdomain_keeps_chain_and_rcode() {
+        let servers = [
+            (ROOT_IP, mock_root()),
+            (
+                COM_IP,
+                mock_com(vec![
+                    ("a.com.", "ns.a.com.", Some(ZONE1_IP)),
+                    ("b.com.", "ns.b.com.", Some(ZONE2_IP)),
+                ]),
+            ),
+            (
+                ZONE1_IP,
+                mock(|_q| answer_msg(vec![cname("www.a.com.", "gone.b.com.")])),
+            ),
+            (ZONE2_IP, mock(|_q| nxdomain_msg())),
+        ];
+        let msg = resolve_in_hierarchy(&servers, "www.a.com.", RecordType::A)
+            .await
+            .unwrap();
+        // RFC 6604: the rcode describes the last name of the chain.
+        assert_eq!(msg.metadata.response_code, ResponseCode::NXDomain);
+        assert_question(&msg, "www.a.com.", RecordType::A);
+        assert_eq!(msg.answers, [cname("www.a.com.", "gone.b.com.")]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn cname_query_is_not_chased() {
+        let b_queries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let servers = [
+            (ROOT_IP, mock_root()),
+            (
+                COM_IP,
+                mock_com(vec![
+                    ("a.com.", "ns.a.com.", Some(ZONE1_IP)),
+                    ("b.com.", "ns.b.com.", Some(ZONE2_IP)),
+                ]),
+            ),
+            (
+                ZONE1_IP,
+                mock(|_q| answer_msg(vec![cname("www.a.com.", "b.com.")])),
+            ),
+            (
+                ZONE2_IP,
+                counting(
+                    &b_queries,
+                    mock(|_q| answer_msg(vec![a_record("b.com.", [203, 0, 113, 9])])),
+                ),
+            ),
+        ];
+        let msg = resolve_in_hierarchy(&servers, "www.a.com.", RecordType::CNAME)
+            .await
+            .unwrap();
+        assert_eq!(msg.answers, [cname("www.a.com.", "b.com.")]);
+        assert_eq!(b_queries.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn cname_chain_longer_than_max_depth_fails() {
+        // Every name `nK.a.com` points to `nK+1.b.com` and back, each in its
+        // own zone, so each hop is a fresh chase.
+        let servers = [
+            (ROOT_IP, mock_root()),
+            (
+                COM_IP,
+                mock_com(vec![
+                    ("a.com.", "ns.a.com.", Some(ZONE1_IP)),
+                    ("b.com.", "ns.b.com.", Some(ZONE2_IP)),
+                ]),
+            ),
+            (ZONE1_IP, next_hop_cname("b.com.")),
+            (ZONE2_IP, next_hop_cname("a.com.")),
+        ];
+        let port = spawn_mock_hierarchy(&servers).await;
+        let mut cfg = cfg_for_tests();
+        cfg.max_cname_depth = 2;
+        cfg.max_queries_per_resolution = 64;
+        let mut resolver =
+            RecursiveResolver::with_roots(cfg, vec![SocketAddr::new(IpAddr::V4(ROOT_IP), port)]);
+        resolver.ns_port = port;
+        let packet = make_dns_packet("n0.a.com.", RecordType::A);
+        let err = resolver.resolve(&packet).await.unwrap_err();
+        assert!(err.to_string().contains("max_cname_depth"), "got {err}");
+    }
+
+    /// Answer `nK.<zone>` with `CNAME nK+1.<next_zone>`.
+    fn next_hop_cname(next_zone: &'static str) -> MockHandler {
+        Arc::new(move |q| {
+            let qname = qname_of(q).to_string();
+            let label = qname.split('.').next().unwrap();
+            let hop: u32 = label.trim_start_matches('n').parse().unwrap();
+            answer_msg(vec![cname(&qname, &format!("n{}.{next_zone}", hop + 1))])
+        })
     }
 
     fn make_dns_packet(qname: &str, qtype: RecordType) -> DnsPacket {
@@ -1822,5 +2473,18 @@ mod tests {
             &Name::from_str("example.com.").unwrap()
         );
         assert!(parsed.metadata.recursion_available);
+    }
+
+    #[test]
+    fn build_client_response_replaces_target_question() {
+        // After a CNAME chase the upstream message carries the target's
+        // question; the client must get its own back.
+        let client = make_dns_packet("www.a.com.", RecordType::A);
+        let mut upstream = Message::query();
+        upstream.add_query(Query::query(name("b.com."), RecordType::A));
+        upstream.add_answer(cname("www.a.com.", "b.com."));
+        let bytes = build_client_response(&client, upstream).unwrap();
+        let parsed = Message::from_vec(&bytes).unwrap();
+        assert_question(&parsed, "www.a.com.", RecordType::A);
     }
 }
