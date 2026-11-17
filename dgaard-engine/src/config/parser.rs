@@ -1170,12 +1170,14 @@ fn parse_overrides(
 ) -> Result<Vec<OverrideEntry>, ConfigError> {
     let mut entries = Vec::with_capacity(tables.len());
     for t in tables {
-        let domain = get_str(t, "domain")?
-            .ok_or_else(|| ConfigError::MissingKey {
+        // Compared with normalized query names: lowercase, no root dot.
+        let domain = crate::resolve::normalize_domain(get_str(t, "domain")?.ok_or_else(|| {
+            ConfigError::MissingKey {
                 key: "overrides[].domain".to_string(),
                 span: toml_span::Span::default(),
-            })?
-            .to_owned();
+            }
+        })?)
+        .into_owned();
 
         let to_str = get_str(t, "to")?.ok_or_else(|| ConfigError::MissingKey {
             key: "overrides[].to".to_string(),
@@ -3688,6 +3690,24 @@ to = "2.2.2.2"
 "#;
         let cfg = Config::parse(toml).unwrap();
         assert_eq!(cfg.overrides.len(), 2);
+    }
+
+    #[test]
+    fn override_domains_are_normalized_at_load() {
+        let cfg = Config::parse(
+            r#"
+[[overrides]]
+domain = "NAS.Lan."
+to = "10.0.0.7"
+
+[[overrides]]
+domain = "*.Internal.LAN"
+to = "10.0.0.8"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.overrides[0].domain, "nas.lan");
+        assert_eq!(cfg.overrides[1].domain, "*.internal.lan");
     }
 
     #[test]

@@ -18,14 +18,33 @@ pub use qtype::{check_qclass, check_qtype};
 pub use scoring::{compute_score, score_answer};
 pub use special_use::is_special_use_domain;
 
+use std::borrow::Cow;
 use std::net::IpAddr;
 
 use crate::config::{Config, OverrideEntry, PipelineStep};
 use crate::filter::engine::FilterEngine;
 use crate::model::{Action, BlockReason, SuspicionScore};
 
+/// The form every lookup works on: ASCII lowercase (DNS names compare
+/// case-insensitively, RFC 4343) without the trailing root dot, so
+/// `EXAMPLE.com.` matches a list entry `example.com`. Borrows `domain`
+/// when it is already in that form.
+///
+/// Every public function of the engine taking a domain applies it: hosts
+/// (daemon, REST, FFI) need not.
+pub fn normalize_domain(domain: &str) -> Cow<'_, str> {
+    let trimmed = domain.strip_suffix('.').unwrap_or(domain);
+    if trimmed.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        Cow::Owned(trimmed.to_ascii_lowercase())
+    } else {
+        Cow::Borrowed(trimmed)
+    }
+}
+
 /// Check if domain exceeds structural limits (depth, length).
 pub fn is_structure_invalid(domain: &str, config: &Config) -> bool {
+    let domain = normalize_domain(domain);
+    let domain = domain.as_ref();
     let structure = &config.security.structure;
 
     if domain.len() > structure.max_domain_length as usize {
@@ -98,6 +117,8 @@ pub struct ResolveResult {
 
 /// Resolution function that returns the computed suspicion score.
 pub fn resolve_with_score(domain: &str, filter: &FilterEngine, config: &Config) -> ResolveResult {
+    let domain = normalize_domain(domain);
+    let domain = domain.as_ref();
     // Inline overrides are checked first — they bypass the entire filter pipeline.
     if let Some(ip) = find_override(domain, &config.overrides) {
         return ResolveResult {
@@ -752,5 +773,92 @@ pub mod tests {
         let result = resolve_with_score("example.com", &engine, &config);
         assert!(matches!(result.action, Action::Override(_)));
         assert_eq!(result.score.total, 0, "override should skip scoring");
+    }
+
+    // ---- input normalization (review M14) ----
+
+    #[test]
+    fn normalize_domain_lowercases_and_drops_the_root_dot() {
+        assert_eq!(normalize_domain("EXAMPLE.Com."), "example.com");
+        assert_eq!(normalize_domain("example.com."), "example.com");
+        assert!(matches!(normalize_domain("example.com"), Cow::Borrowed(_)));
+        assert!(matches!(normalize_domain("example.com."), Cow::Borrowed(_)));
+        // Only one root dot, only ASCII (RFC 4343 case-insensitivity).
+        assert_eq!(normalize_domain("a.."), "a.");
+        assert_eq!(normalize_domain("ÉCOLE.fr"), "École.fr");
+        assert_eq!(normalize_domain("."), "");
+    }
+
+    #[test]
+    fn spelling_variants_get_the_same_verdict() {
+        let engine = create_test_engine(&["ads.tracker.com"], &["trusted.example.com"], &[]);
+        let config = Config::default();
+        for spelling in ["ads.tracker.com", "ADS.Tracker.COM", "ads.tracker.com."] {
+            assert!(
+                matches!(
+                    resolve_with_score(spelling, &engine, &config).action,
+                    Action::Block(BlockReason::StaticBlacklist(_))
+                ),
+                "{spelling}"
+            );
+        }
+        for spelling in ["Trusted.Example.com", "trusted.example.com."] {
+            assert!(
+                matches!(
+                    resolve_with_score(spelling, &engine, &config).action,
+                    Action::Allow
+                ),
+                "{spelling}"
+            );
+        }
+    }
+
+    #[test]
+    fn suffix_rules_and_overrides_match_any_spelling() {
+        let engine = create_engine_with_tld_block(&["xyz"]);
+        let config = Config {
+            overrides: vec![OverrideEntry {
+                domain: "nas.lan".into(),
+                to: "10.0.0.7".parse().unwrap(),
+            }],
+            ..Config::default()
+        };
+        assert!(is_suffix_blocked("MALWARE.XYZ.", &engine));
+        assert!(matches!(
+            resolve_with_score("NAS.Lan.", &engine, &config).action,
+            Action::Override(_)
+        ));
+    }
+
+    #[test]
+    fn scores_and_heuristics_ignore_case_and_root_dot() {
+        let engine = create_test_engine(&[], &[], &[]);
+        let config = Config::default();
+        let name = "a1b2c3d4e5f6g7h8i9j0.com";
+        let upper = "A1B2C3D4E5F6G7H8I9J0.COM.";
+        assert_eq!(
+            compute_score(name, &engine, &config).total,
+            compute_score(upper, &engine, &config).total
+        );
+        assert_eq!(
+            check_dga_heuristics(name, &config).is_some(),
+            check_dga_heuristics(upper, &config).is_some()
+        );
+        // The root dot is not one more label: depth and length unchanged.
+        let mut tight = Config::default();
+        tight.security.structure.max_subdomain_depth = 1;
+        assert!(!is_structure_invalid("example.com.", &tight));
+        assert!(is_structure_invalid("www.example.com.", &tight));
+    }
+
+    #[test]
+    fn uppercase_punycode_is_still_an_idn() {
+        let mut config = Config::default();
+        config.server.block_idn = true;
+        assert_eq!(
+            is_illegal_idn("xn--pple-43d.com", &config),
+            is_illegal_idn("XN--PPLE-43D.COM.", &config)
+        );
+        assert!(is_illegal_idn("XN--PPLE-43D.COM.", &config));
     }
 }

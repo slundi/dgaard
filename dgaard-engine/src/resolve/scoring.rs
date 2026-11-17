@@ -19,6 +19,8 @@ const DEEP_SUBDOMAIN_THRESHOLD: usize = 5;
 
 /// Compute the suspicion score for a domain.
 pub fn compute_score(domain: &str, filter: &FilterEngine, config: &Config) -> SuspicionScore {
+    let domain = super::normalize_domain(domain);
+    let domain = domain.as_ref();
     let mut score = SuspicionScore::new();
     let blocking_threshold = config.security.scoring.blocking_threshold;
 

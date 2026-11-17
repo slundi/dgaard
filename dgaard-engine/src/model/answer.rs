@@ -45,9 +45,12 @@ impl InspectedAnswer {
                 RData::A(a) => result.a_records.push(a.0),
                 RData::AAAA(aaaa) => result.aaaa_records.push(aaaa.0),
                 RData::CNAME(cname) => {
+                    // Normalized like a queried name: upstream may answer
+                    // `Tracker.Example.com`, CNAME cloaking checks lists.
+                    let target = cname.0.to_string();
                     result
                         .cname_targets
-                        .push(cname.0.to_string().trim_end_matches('.').to_string());
+                        .push(crate::resolve::normalize_domain(&target).into_owned());
                 }
                 RData::TXT(txt) => {
                     for segment in &txt.txt_data {
@@ -189,5 +192,28 @@ mod tests {
         assert_eq!(answer.aaaa_records, vec![ip]);
         assert!(answer.a_records.is_empty());
         assert_eq!(answer.min_ttl, Some(600));
+    }
+
+    #[test]
+    fn cname_targets_are_normalized() {
+        // Built by hand: hickory's encoder lowercases names, a real upstream
+        // may send `Tracker.Example.COM`.
+        fn labels(name: &str) -> Vec<u8> {
+            let mut wire = Vec::new();
+            for label in name.split('.') {
+                wire.push(label.len() as u8);
+                wire.extend_from_slice(label.as_bytes());
+            }
+            wire.push(0);
+            wire
+        }
+        let target = labels("Tracker.Example.COM");
+        let mut bytes = vec![0x12, 0x34, 0x81, 0x80, 0, 0, 0, 1, 0, 0, 0, 0];
+        bytes.extend(labels("www.example.com"));
+        bytes.extend_from_slice(&[0, 5, 0, 1, 0, 0, 1, 44]); // CNAME, IN, TTL 300
+        bytes.extend_from_slice(&(target.len() as u16).to_be_bytes());
+        bytes.extend(target);
+        let answer = InspectedAnswer::from_response(&bytes).unwrap();
+        assert_eq!(answer.cname_targets, ["tracker.example.com"]);
     }
 }

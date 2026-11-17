@@ -2,6 +2,8 @@ use crate::filter::engine::FilterEngine;
 
 /// Check if a domain matches any regex in the pool.
 pub fn is_regex_blocked(domain: &str, filter: &FilterEngine) -> bool {
+    let domain = super::normalize_domain(domain);
+    let domain = domain.as_ref();
     filter.regex_pool.iter().any(|re| re.is_match(domain))
 }
 
@@ -74,6 +76,8 @@ fn matches_glob_pattern(domain: &str, pattern: &str) -> bool {
 
 /// Check if domain matches any glob-style wildcard pattern.
 pub fn is_wildcard_pattern_blocked(domain: &str, filter: &FilterEngine) -> bool {
+    let domain = super::normalize_domain(domain);
+    let domain = domain.as_ref();
     filter
         .wildcard_patterns
         .iter()

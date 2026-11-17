@@ -80,6 +80,8 @@ fn has_whitelisted_parent(domain: &str, filter: &FilterEngine) -> bool {
 ///
 /// A whitelist always wins over block rules, however specific they are.
 pub fn is_whitelisted(domain: &str, filter: &FilterEngine) -> bool {
+    let domain = super::normalize_domain(domain);
+    let domain = domain.as_ref();
     // An exact blacklist hit must not hide a parent suffix exception.
     if fast_lookup(domain, filter).is_some_and(|flags| flags.contains(DomainEntryFlags::WHITELIST))
     {
@@ -91,12 +93,16 @@ pub fn is_whitelisted(domain: &str, filter: &FilterEngine) -> bool {
 /// Check if domain is blocked by static list (exact match without WHITELIST
 /// flag, and no whitelist suffix rule on a parent).
 pub fn is_blocked(domain: &str, filter: &FilterEngine) -> bool {
+    let domain = super::normalize_domain(domain);
+    let domain = domain.as_ref();
     fast_lookup(domain, filter).is_some_and(|flags| !flags.contains(DomainEntryFlags::WHITELIST))
         && !has_whitelisted_parent(domain, filter)
 }
 
 /// Check if domain is on the Newly Registered Domain list.
 pub fn is_nrd(domain: &str, filter: &FilterEngine) -> bool {
+    let domain = super::normalize_domain(domain);
+    let domain = domain.as_ref();
     fast_lookup(domain, filter)
         .map(|flags| flags.contains(DomainEntryFlags::NRD))
         .unwrap_or(false)
@@ -108,6 +114,8 @@ pub fn is_nrd(domain: &str, filter: &FilterEngine) -> bool {
 /// The whitelist check makes the result independent of the pipeline order and
 /// keeps callers outside the pipeline (CNAME cloaking) consistent with it.
 pub fn is_suffix_blocked(domain: &str, filter: &FilterEngine) -> bool {
+    let domain = super::normalize_domain(domain);
+    let domain = domain.as_ref();
     if fast_lookup(domain, filter).is_some_and(|flags| flags.contains(DomainEntryFlags::WHITELIST))
     {
         return false;

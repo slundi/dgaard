@@ -310,6 +310,36 @@ browser_rules_path = ""
 }
 
 #[test]
+fn any_spelling_of_a_listed_name_is_blocked() {
+    // Embedders hand the engine names as they get them: mixed case, with
+    // the root dot.
+    let directory = std::env::temp_dir().join("dgaard-ffi-normalize-test");
+    std::fs::create_dir_all(&directory).unwrap();
+    let list = directory.join("list.txt");
+    std::fs::write(&list, "ads.example.com\n").unwrap();
+    let engine = Engine::from_toml(&format!(
+        r#"
+[sources]
+blacklists = ["{}"]
+whitelists = []
+nrd_list_path = ""
+host_index_path = ""
+browser_rules_path = ""
+"#,
+        list.display()
+    ));
+    for spelling in ["ads.example.com", "ADS.Example.com", "ads.example.com."] {
+        let verdict = engine.classify(spelling);
+        assert_eq!(
+            verdict.action(),
+            dgaard_action::DGAARD_ACTION_BLOCK,
+            "{spelling}"
+        );
+    }
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+#[test]
 fn an_override_reports_its_address() {
     let engine = Engine::from_toml(&format!(
         "{HERMETIC_TOML}\n[[overrides]]\ndomain = \"nas.lan\"\nto = \"10.0.0.7\"\n"

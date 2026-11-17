@@ -27,4 +27,4 @@ pub mod utils;
 pub use config::Config;
 pub use filter::engine::FilterEngine;
 pub use model::{Action, BlockReason, InspectedAnswer, SuspicionScore};
-pub use resolve::{ResolveResult, resolve_with_score};
+pub use resolve::{ResolveResult, normalize_domain, resolve_with_score};

@@ -301,7 +301,9 @@ dgaard_engine *dgaard_engine_new_from_toml(const char *config_toml);
 void dgaard_engine_free(dgaard_engine *handle);
 
 /**
- * Run `domain` through the full filter pipeline.
+ * Run `domain` through the full filter pipeline. The name may be in any
+ * case and carry the root dot (`ADS.Example.com.`): the engine normalizes
+ * it.
  *
  * Returns a verdict handle the caller must release with
  * `dgaard_verdict_free`, or NULL on failure — a NULL handle is the *only*

@@ -22,6 +22,8 @@ const BUILTIN_SPECIAL_USE_TLDS: &[&str] = &["local", "localhost", "invalid", "te
 /// Runs in O(k) time where k is the number of extra TLDs configured (the
 /// built-in set is a fixed-size slice comparison). No heap allocation.
 pub fn is_special_use_domain(domain: &str, config: &Config) -> bool {
+    let domain = super::normalize_domain(domain);
+    let domain = domain.as_ref();
     if !config.security.special_use.enabled {
         return false;
     }

@@ -19,6 +19,8 @@ use crate::model::BlockReason;
 /// - Strict (default): Keyword must be a complete label or hyphen-separated segment
 /// - Loose: Simple substring match (higher false-positive rate)
 pub fn check_lexical(domain: &str, filter: &FilterEngine) -> Option<BlockReason> {
+    let domain = super::normalize_domain(domain);
+    let domain = domain.as_ref();
     let automaton = filter.keyword_automaton.as_ref()?;
 
     let tld = domain.rsplit('.').next()?;
@@ -54,6 +56,8 @@ pub fn check_lexical(domain: &str, filter: &FilterEngine) -> Option<BlockReason>
 /// Check DGA heuristics: low entropy, entropy, consonant clustering, n-gram
 /// models.
 pub fn check_dga_heuristics(domain: &str, config: &Config) -> Option<BlockReason> {
+    let domain = super::normalize_domain(domain);
+    let domain = domain.as_ref();
     let intel = &config.security.intelligence;
 
     if !intel.enabled {
@@ -119,6 +123,8 @@ pub fn is_dga_suspicious(domain: &str, config: &Config) -> bool {
 /// every IDN with `server.block_idn`, otherwise per `security.idn.mode`
 /// (see [`super::idn`]).
 pub fn is_illegal_idn(domain: &str, config: &Config) -> bool {
+    let domain = super::normalize_domain(domain);
+    let domain = domain.as_ref();
     if !config.server.block_idn {
         return super::idn::idn_policy_blocks(domain, &config.security.idn);
     }
