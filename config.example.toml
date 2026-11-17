@@ -636,30 +636,29 @@ ttl_override = 0
 # Default: `false`.
 # log_suspicious = false
 
-# DNSSEC validation using a side-channel hickory resolver.
+# DNSSEC validation of the answers dgaard relays.
 #
-# When enabled, every forwarded query is also sent to the upstream resolvers
-# with DNSSEC validation active. The two lookups run in parallel so the added
-# latency is at most the difference between the two response times.
+# dgaard validates the answer bytes themselves, from the IANA root trust
+# anchors down, in both modes. In forwarder mode it asks its upstreams with
+# DO=1 (send the signatures) and CD=1 (do not filter, dgaard judges), and
+# fetches the DS / DNSKEY records of the chain through the same upstreams.
+# They are cached for their TTL: only zones not seen recently cost extra
+# queries (at most 16 per answer). The upstreams must pass DNSSEC records
+# through (any public resolver does; some ISP or router forwarders do not,
+# and then every signed zone fails validation).
 #
-# If the side-channel resolver returns BOGUS (signature mismatch, broken chain
-# of trust), the configured `action` is applied to the client query:
+# Validation fails closed: data under a signed zone with a missing, expired
+# or invalid signature is BOGUS, as is a denial (NXDOMAIN, NODATA) without a
+# signed proof; an unsigned zone needs a signed proof of insecurity from its
+# parent. On BOGUS the configured `action` applies:
 #   "block" — return SERVFAIL (RFC-standard DNSSEC failure response)
-#   "log"   — log the event and forward the upstream response unchanged
+#   "log"   — log the event and serve the answer unchanged
 #             (useful during a trial period to measure false-positive rates)
+# Consider `action = "log"` for a trial period before enforcing.
 #
-# Zones that do not publish DNSSEC records (Insecure) and queries where the
-# validator cannot reach the upstream (Indeterminate) are fail-open: the
-# upstream response is forwarded normally.
-#
-# Recursive mode (`server.mode = "recursive"`) validates the chain of trust
-# itself, from the IANA root anchors, and fails closed: data under a signed
-# zone with a missing, expired or invalid signature is BOGUS, while unsigned
-# zones need a signed proof of insecurity from their parent. Consider
-# `action = "log"` for a trial period before enforcing.
-#
-# Note: enabling DNSSEC doubles the number of outgoing queries for each
-# forwarded DNS request. Keep this in mind on bandwidth-constrained links.
+# Clients that set CD (checking disabled) validate for themselves and get
+# the answer unchecked. Clients that did not set DO get the answer without
+# the DNSSEC records (RRSIG, NSEC, NSEC3), as RFC 4035 requires.
 #
 # Default: disabled.
 [security.dnssec]

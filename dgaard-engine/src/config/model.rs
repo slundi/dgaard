@@ -781,12 +781,13 @@ pub enum DnssecAction {
     Log,
 }
 
-/// DNSSEC validation policy using a side-channel hickory resolver.
+/// DNSSEC validation policy.
 ///
-/// When enabled, each forwarded query is validated in parallel against the
-/// same upstream servers with DNSSEC validation active. If the response is
-/// BOGUS (signature mismatch or missing chain of trust), the configured action
-/// is applied.
+/// When enabled, the answer relayed to the client is validated from the
+/// root trust anchors down (in forwarder mode, the chain of trust is fetched
+/// through the upstream servers). If it is BOGUS (missing, forged or expired
+/// signature, unproven denial, broken chain), the configured action is
+/// applied.
 ///
 /// Maps to `[security.dnssec]` in the configuration file.
 #[derive(Debug, PartialEq, Clone)]

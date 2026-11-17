@@ -69,7 +69,15 @@ impl UpstreamResolver for ForwardingResolver {
         // it sends upstream verbatim (preserving the client's question
         // section bit-for-bit). Re-encode from the parsed message so the
         // public API stays packet-oriented.
-        let bytes = encode_query(query)?;
+        let bytes = if crate::CONFIG.load().security.dnssec.enabled
+            && !crate::dnssec::client_disabled_checking(&query.message)
+        {
+            // dgaard validates the answer itself: it needs the signatures
+            // (DO) and the data even when bogus (CD).
+            encode_message(&crate::dnssec::validating_query(&query.message))?
+        } else {
+            encode_query(query)?
+        };
         forward_to_upstream(&bytes, query.transport == Transport::Tcp).await
     }
 }
@@ -79,8 +87,11 @@ impl UpstreamResolver for ForwardingResolver {
 /// preserve those bits — we just need a syntactically valid query that
 /// echoes the original question section.
 fn encode_query(packet: &DnsPacket) -> std::io::Result<Vec<u8>> {
-    packet
-        .message
+    encode_message(&packet.message)
+}
+
+fn encode_message(message: &hickory_resolver::proto::op::Message) -> std::io::Result<Vec<u8>> {
+    message
         .to_vec()
         .map_err(|e| std::io::Error::other(format!("failed to encode DNS query: {e}")))
 }
@@ -171,5 +182,70 @@ mod tests {
     #[test]
     fn forwarding_resolver_can_be_boxed_into_trait_object() {
         let _r: Arc<dyn UpstreamResolver> = Arc::new(ForwardingResolver::new());
+    }
+
+    // ---- DNSSEC: the forwarded query asks for what dgaard validates (M6) ----
+
+    use hickory_resolver::proto::op::{Message, MessageType};
+
+    /// Forward `packet` through [`ForwardingResolver`] to a one-shot mock
+    /// upstream with DNSSEC `enabled`; return the query the upstream saw.
+    async fn forwarded_query(packet: &DnsPacket, enabled: bool) -> Message {
+        let upstream = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut config = crate::config::Config::default();
+        config.forwarder.servers = vec![upstream.local_addr().unwrap().to_string()];
+        config.forwarder.use_0x20_randomization = false;
+        config.security.dnssec.enabled = enabled;
+        crate::CONFIG.store(Arc::new(config));
+
+        let server = tokio::spawn(async move {
+            let mut buf = [0u8; 4096];
+            let (len, peer) = upstream.recv_from(&mut buf).await.unwrap();
+            let seen = Message::from_vec(&buf[..len]).unwrap();
+            let mut reply = seen.clone();
+            reply.metadata.message_type = MessageType::Response;
+            upstream
+                .send_to(&reply.to_vec().unwrap(), peer)
+                .await
+                .unwrap();
+            seen
+        });
+        ForwardingResolver::new().resolve(packet).await.unwrap();
+        server.await.unwrap()
+    }
+
+    fn dnssec_bits(msg: &Message) -> (bool, bool) {
+        let dnssec_ok = msg.edns.as_ref().is_some_and(|edns| edns.flags().dnssec_ok);
+        (dnssec_ok, msg.metadata.checking_disabled)
+    }
+
+    #[test]
+    fn validating_forwarder_asks_with_do_and_cd() {
+        crate::resolve::tests::run_with_globals(async {
+            let packet = DnsPacket::from_bytes(sample_query_bytes()).unwrap();
+            let seen = forwarded_query(&packet, true).await;
+            assert_eq!(dnssec_bits(&seen), (true, true));
+            assert_eq!(seen.queries, packet.message.queries);
+        });
+    }
+
+    #[test]
+    fn forwarder_without_dnssec_relays_the_client_bits() {
+        crate::resolve::tests::run_with_globals(async {
+            let packet = DnsPacket::from_bytes(sample_query_bytes()).unwrap();
+            let seen = forwarded_query(&packet, false).await;
+            assert_eq!(dnssec_bits(&seen), (false, false));
+        });
+    }
+
+    #[test]
+    fn checking_disabled_client_query_is_relayed_as_is() {
+        crate::resolve::tests::run_with_globals(async {
+            let mut msg = Message::from_vec(sample_query_bytes()).unwrap();
+            msg.metadata.checking_disabled = true;
+            let packet = DnsPacket::from_bytes(&msg.to_vec().unwrap()).unwrap();
+            let seen = forwarded_query(&packet, true).await;
+            assert_eq!(dnssec_bits(&seen), (false, true), "no DO added");
+        });
     }
 }

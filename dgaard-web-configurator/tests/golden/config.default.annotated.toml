@@ -331,10 +331,10 @@ extra_local_tlds = []
 # -----------------------------------------------------------------------------
 # [security.dnssec] — DNSSEC
 # -----------------------------------------------------------------------------
-# Validation through a side-channel hickory resolver running in parallel
-# with the forwarded query, so the added latency is only the difference
-# between the two response times. Unsigned zones and unreachable
-# validators fail open. Note: this doubles outgoing queries.
+# Validation of the relayed answers from the root trust anchors down.
+# In forwarder mode the chain (DS/DNSKEY) is fetched through the upstreams,
+# which must pass DNSSEC records, and cached for its TTL. Fails closed:
+# missing or invalid signatures under a signed zone are BOGUS.
 [security.dnssec]
 # Master switch for DNSSEC validation.
 enabled = false

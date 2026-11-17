@@ -48,23 +48,13 @@ async fn resolve_via_upstream(packet: &DnsPacket) -> std::io::Result<Vec<u8>> {
     }
 }
 
-/// Translate the recursive validator's verdict on an upstream answer
-/// into the `DnssecStatus` the surrounding code already understands.
-///
-/// Returns `Ok` when the validator is not applicable (not recursive
-/// mode, DNSSEC disabled, or the response bytes don't parse), so the
-/// caller can always treat this as a refinement of the forwarder-mode
-/// side-channel result rather than a replacement.
+/// Recursive mode: judge the answer bytes with the validator the walk
+/// already fed. An unparsable answer is not judged here.
 fn recursive_dnssec_status(
-    mode: ResolutionMode,
-    enabled: bool,
     response_bytes: &[u8],
     qname: &hickory_resolver::proto::rr::Name,
     qtype: hickory_resolver::proto::rr::RecordType,
 ) -> DnssecStatus {
-    if !enabled || !matches!(mode, ResolutionMode::Recursive) {
-        return DnssecStatus::Ok;
-    }
     let Ok(msg) = hickory_resolver::proto::op::Message::from_vec(response_bytes) else {
         return DnssecStatus::Ok;
     };
@@ -149,13 +139,14 @@ pub(crate) fn evict_cached(packet: &DnsPacket) {
 }
 
 /// Post-processing every forwarded answer gets, whoever triggered the
-/// resolution (`handle_query` or the prefetch worker): DNSSEC (side channel
-/// in forwarder mode, chain validation in recursive mode), answer inspection
+/// resolution (`handle_query` or the prefetch worker): DNSSEC validation of
+/// the answer bytes (chain fetched through the upstreams in forwarder mode,
+/// built by the walk in recursive mode), answer inspection
 /// (rebinding shield, CNAME cloaking, ASN, low TTL…) and the score
 /// threshold.
 ///
-/// `upstream` is the pending resolution, run alongside the DNSSEC side
-/// channel. An accepted answer is cached; a rejected one evicts the cached
+/// `upstream` is the pending resolution. An accepted answer is cached; a
+/// rejected one evicts the cached
 /// entry for the same question and DNSSEC bits, so a previous answer stops
 /// being served once its refresh is refused.
 pub(crate) async fn forward_and_inspect(
@@ -166,25 +157,7 @@ pub(crate) async fn forward_and_inspect(
     cfg: &Config,
 ) -> ForwardOutcome {
     let dnssec_cfg = &cfg.security.dnssec;
-    let (upstream_result, dnssec_status) = if dnssec_cfg.enabled {
-        tokio::join!(
-            upstream,
-            crate::dnssec::validate(&packet.domain, packet.qtype)
-        )
-    } else {
-        (upstream.await, DnssecStatus::Ok)
-    };
-    // In recursive mode the side channel is not started, so this is Ok and
-    // the chain validator below judges the answer bytes instead.
-    if dnssec_status == DnssecStatus::Bogus {
-        if dnssec_cfg.action == DnssecAction::Block {
-            evict_cached(packet);
-            return ForwardOutcome::Bogus;
-        }
-        log::warn!("DNSSEC BOGUS (log-only): {}", packet.domain);
-    }
-
-    let Ok(mut upstream_bytes) = upstream_result else {
+    let Ok(mut upstream_bytes) = upstream.await else {
         return ForwardOutcome::UpstreamError;
     };
 
@@ -197,19 +170,33 @@ pub(crate) async fn forward_and_inspect(
             hickory_resolver::proto::rr::Name::root(),
             hickory_resolver::proto::rr::RecordType::A,
         ));
-    if recursive_dnssec_status(
-        cfg.server.mode,
-        dnssec_cfg.enabled,
-        &upstream_bytes,
-        &q_name,
-        q_type,
-    ) == DnssecStatus::Bogus
+    // The answer bytes themselves are validated, whichever mode fetched
+    // them. A client that set CD validates for itself (RFC 4035 §3.2.2).
+    let dnssec_status = if !dnssec_cfg.enabled
+        || crate::dnssec::client_disabled_checking(&packet.message)
     {
+        DnssecStatus::Ok
+    } else {
+        match cfg.server.mode {
+            ResolutionMode::Recursive => recursive_dnssec_status(&upstream_bytes, &q_name, q_type),
+            ResolutionMode::Forwarder => {
+                crate::dnssec::validate(&upstream_bytes, &q_name, q_type).await
+            }
+        }
+    };
+    if dnssec_status == DnssecStatus::Bogus {
         if dnssec_cfg.action == DnssecAction::Block {
             evict_cached(packet);
             return ForwardOutcome::Bogus;
         }
-        log::warn!("DNSSEC BOGUS (recursive, log-only): {}", packet.domain);
+        log::warn!("DNSSEC BOGUS (log-only): {}", packet.domain);
+    }
+    // DNSSEC records the client did not ask for (no DO) are dropped
+    // before the answer is inspected, cached and served.
+    if dnssec_cfg.enabled
+        && let Some(view) = crate::dnssec::client_view(&upstream_bytes, &packet.message)
+    {
+        upstream_bytes = view;
     }
 
     // DPI: score the upstream answer; block if it crosses the threshold.
@@ -581,6 +568,20 @@ mod tests {
                     900,
                     RData::SOA(soa),
                 ));
+                return response
+                    .to_vec()
+                    .map_err(|e| std::io::Error::other(e.to_string()));
+            }
+            // `signed-site.com` answers with a signature (whatever the
+            // query asked): what a validating upstream sends with DO=1.
+            if query.domain == "signed-site.com" {
+                let zone =
+                    crate::dns::dnssec_chain::test_support::TestZone::new("signed-site.com.");
+                response.answers = zone.signed(vec![Record::from_rdata(
+                    Name::from_ascii("signed-site.com.").unwrap(),
+                    300,
+                    RData::A(A(std::net::Ipv4Addr::new(93, 184, 216, 34))),
+                )]);
                 return response
                     .to_vec()
                     .map_err(|e| std::io::Error::other(e.to_string()));
@@ -1003,6 +1004,86 @@ mod tests {
             let (second, calls) = run_raw(query_bytes("floor-site.com")).await;
             assert_eq!(calls, 0);
             assert!((599..=600).contains(&reply_of(second).answers[0].ttl));
+        });
+    }
+
+    // ---- forwarder DNSSEC: clients get what they asked for ----
+
+    /// Answer types of the reply to a CD query for `signed-site.com`, with
+    /// or without DO, DNSSEC enabled (CD: no chain lookups in tests).
+    async fn signed_site_reply(dnssec_ok: bool) -> Vec<RecordType> {
+        install_policy(&[], "signed-site.com");
+        install_cache().clear();
+        let mut config = (*CONFIG.load_full()).clone();
+        config.security.dnssec.enabled = true;
+        CONFIG.store(Arc::new(config));
+        let (reply, calls) = run_raw(query_with_flags("signed-site.com", dnssec_ok, true)).await;
+        assert_eq!(calls, 1);
+        reply_of(reply)
+            .answers
+            .iter()
+            .map(|record| record.record_type())
+            .collect()
+    }
+
+    #[test]
+    fn signatures_are_stripped_for_clients_without_do() {
+        run_with_globals(async {
+            assert_eq!(signed_site_reply(false).await, [RecordType::A]);
+        });
+    }
+
+    #[test]
+    fn signatures_are_kept_for_dnssec_aware_clients() {
+        run_with_globals(async {
+            assert_eq!(
+                signed_site_reply(true).await,
+                [RecordType::A, RecordType::RRSIG]
+            );
+        });
+    }
+
+    #[test]
+    fn checking_disabled_client_skips_validation() {
+        // Without CD this unsigned answer would need a chain lookup (and,
+        // with real anchors, be judged); with CD it is served as is.
+        run_with_globals(async {
+            install_policy(&[], "cd-site.com");
+            install_cache().clear();
+            let mut config = (*CONFIG.load_full()).clone();
+            config.security.dnssec.enabled = true;
+            config.forwarder.servers = Vec::new();
+            CONFIG.store(Arc::new(config));
+            let (reply, calls) = run_raw(query_with_flags("cd-site.com", false, true)).await;
+            assert_eq!(calls, 1);
+            assert_eq!(
+                reply_of(reply).metadata.response_code,
+                ResponseCode::NoError
+            );
+        });
+    }
+
+    #[test]
+    fn forwarded_answer_bytes_are_validated() {
+        // No CD: the relayed answer itself is judged. Unsigned data under
+        // the real root anchors with no reachable chain is Bogus → SERVFAIL
+        // and nothing cached.
+        run_with_globals(async {
+            install_policy(&[], "unverifiable-site.com");
+            install_cache().clear();
+            crate::RECURSIVE_DNSSEC.clear();
+            let mut config = (*CONFIG.load_full()).clone();
+            config.security.dnssec.enabled = true;
+            config.forwarder.servers = Vec::new();
+            CONFIG.store(Arc::new(config));
+            let (reply, calls) =
+                run_raw(query_with_flags("unverifiable-site.com", false, false)).await;
+            assert_eq!(calls, 1);
+            assert_eq!(
+                reply_of(reply).metadata.response_code,
+                ResponseCode::ServFail
+            );
+            assert_eq!(install_cache().len(), 0);
         });
     }
 

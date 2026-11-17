@@ -469,7 +469,7 @@ export const ENGINE_SCHEMA = {
     {
       path: 'security.dnssec',
       title: 'DNSSEC',
-      doc: 'Validation through a side-channel hickory resolver running in parallel\nwith the forwarded query, so the added latency is only the difference\nbetween the two response times. Unsigned zones and unreachable\nvalidators fail open. Note: this doubles outgoing queries.',
+      doc: 'Validation of the relayed answers from the root trust anchors down.\nIn forwarder mode the chain (DS/DNSKEY) is fetched through the upstreams,\nwhich must pass DNSSEC records, and cached for its TTL. Fails closed:\nmissing or invalid signatures under a signed zone are BOGUS.',
       fields: [
         {
           key: 'enabled',

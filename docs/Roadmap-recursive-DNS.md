@@ -388,25 +388,11 @@ On blocklist reload (SIGHUP and runtime list refresh), the response cache and th
 
 ## DNSSEC Interaction
 
-In **forwarder mode**: the existing side-channel `hickory-resolver`-based DNSSEC validator (`dnssec.rs`) continues to work unchanged.
+Both modes validate the **answer bytes relayed to the client** with the same chain validator (`dns/dnssec_chain.rs`, root trust anchors compiled in):
 
-In **recursive mode** (until Phase 6 ships): DNSSEC validation must be integrated into the iterative delegation chain. The current side-channel approach is incompatible because root servers do not respond to recursive queries.
-
-**Until Phase 6 is delivered, dgaard refuses to start when `mode = "recursive"` and `security.dnssec.enabled = true`**. The startup guard emits a clear error message naming both options:
-
-```
-ERROR: DNSSEC validation in recursive mode is not yet implemented (Phase 6).
-       Either set [security.dnssec] enabled = false, or set [server] mode = "forwarder".
-```
-
-No silent downgrade of a security feature.
-
-Once Phase 6 ships:
-
-- `enabled = true` in recursive mode → iterative loop validates RRSIG at each delegation hop using `hickory-proto`'s DNSSEC primitives.
-- `action = "block" | "log"` semantics preserved.
-- `dnssec::init()` (side-channel) in `main.rs` is skipped when `mode = "recursive"`.
-- The Phase 1 "refuse to start" guard is lifted.
+- **Recursive mode**: the iterative loop harvests DS records from referrals and fetches each zone's DNSKEY as it walks (see Phase 6).
+- **Forwarder mode** (`dnssec.rs`): the query goes upstream with DO=1 and CD=1; the DS / DNSKEY rrsets the answer needs are then fetched through the same upstreams (at most 16 queries per answer), verified from the root down and cached for their TTL. This replaced a parallel hickory resolver that validated a second lookup instead of the relayed answer, and doubled upstream traffic (review M6).
+- `action = "block" | "log"` applies to BOGUS in both modes. A client with CD=1 is not validated; a client without DO gets the answer without RRSIG/NSEC/NSEC3 records.
 
 ---
 
@@ -510,7 +496,7 @@ security-sensitive.
 - [x] Integrate `hickory-proto` DNSSEC primitives (`Verifier::verify_rrsig`) into a new `dgaard/src/dns/dnssec_chain.rs` module
 - [x] Embed the IANA root trust anchors as `const`s: KSK-2017 and KSK-2024 (digests re-derived in tests from the public keys in IANA `root-anchors.xml`)
 - [x] Per-zone DNSKEY/DS cache (`DashMap<Name, ZoneTrustState>`) with parent → child trust hand-off
-- [x] Skip `dnssec::init()` (side-channel) when `mode = "recursive"`
+- [x] Forwarder mode validates the relayed answer with the chain validator (side channel removed)
 - [x] Lift the Phase 1 "refuse to start" guard
 - [x] Preserve `action = "block" | "log"` semantics in `handle_query` for the recursive verdict
 - [x] Tests round-tripping synthetic ECDSA keys + tamper-detection

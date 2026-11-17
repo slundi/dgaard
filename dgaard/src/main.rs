@@ -47,11 +47,9 @@ pub static RESPONSE_CACHE: std::sync::OnceLock<ResponseCache> = std::sync::OnceL
 /// `handle_query` never has to branch on its absence.
 pub static POPULARITY_TRACKER: std::sync::LazyLock<Arc<PopularityTracker>> =
     std::sync::LazyLock::new(|| Arc::new(PopularityTracker::new()));
-/// Recursive-mode DNSSEC validator. Always constructed — even in
-/// forwarder mode — so tests and future code can reach the same
-/// instance through `crate::RECURSIVE_DNSSEC`. In forwarder mode it is
-/// simply never invoked (the side-channel path in `crate::dnssec`
-/// covers that).
+/// DNSSEC chain-of-trust validator, shared by both modes: the recursive
+/// walk feeds it as it goes, the forwarder fetches the chain through its
+/// upstreams (`crate::dnssec`).
 pub static RECURSIVE_DNSSEC: std::sync::LazyLock<dns::dnssec_chain::RecursiveDnssecValidator> =
     std::sync::LazyLock::new(dns::dnssec_chain::RecursiveDnssecValidator::default);
 

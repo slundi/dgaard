@@ -232,7 +232,7 @@ const MAX_COHOSTED_CUTS: u8 = 4;
 /// rrsets without a covering RRSIG, plus `qname` for a negative answer
 /// whose authority section is unsigned. The resolver checks whether an
 /// insecure zone cut explains them.
-fn unsigned_names(response: &Message, qname: &Name) -> Vec<Name> {
+pub(crate) fn unsigned_names(response: &Message, qname: &Name) -> Vec<Name> {
     let mut names: Vec<Name> = Vec::new();
     for record in &response.answers {
         let rtype = record.record_type();

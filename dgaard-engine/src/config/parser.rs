@@ -1282,12 +1282,9 @@ impl Config {
     /// - Every `forwarder.servers` entry is a valid `ip:port` or `[ipv6]:port` socket address.
     /// - Every `security.asn_filter.blocked_ranges` entry is a valid CIDR range (only when the
     ///   filter is enabled, since disabled ranges are never evaluated).
-    /// - `server.mode = "recursive"` + `security.dnssec.enabled = true` is now permitted; the
-    ///   recursive validator (see `dgaard/src/dns/dnssec_chain.rs`) takes over from the
-    ///   forwarder-mode side-channel in this configuration. Until session 2 of Phase 6 wires
-    ///   active DNSKEY/DS fetching from the iterative loop, signed answers fall to `Insecure`
-    ///   (fail-open) instead of `Secure`, but the chain primitives are in place and tests cover
-    ///   them.
+    /// - `server.mode = "recursive"` + `security.dnssec.enabled = true` is permitted: both modes
+    ///   validate the answer bytes with the chain validator (see
+    ///   `dgaard/src/dns/dnssec_chain.rs`).
     ///
     /// Called by the SIGHUP hot-reload path before building and atomically swapping in the new
     /// engine, so a misconfigured reload leaves the running engine untouched rather than silently

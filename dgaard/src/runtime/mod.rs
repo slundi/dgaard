@@ -187,18 +187,9 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
         }
 
         if CONFIG.load().security.dnssec.enabled {
-            // Phase 6 (session 1): the forwarder-mode side-channel
-            // validator queries a stub-resolver in parallel. That path
-            // is irrelevant in recursive mode — we own the iteration
-            // ourselves and the recursive validator (see
-            // `crate::dns::dnssec_chain`) takes over — so skip the
-            // side-channel init to avoid spinning up a second resolver
-            // that nothing reads from.
-            if !matches!(CONFIG.load().server.mode, crate::config::ResolutionMode::Recursive) {
-                crate::dnssec::init(&CONFIG.load().forwarder.servers.clone());
-            } else {
-                println!("DNSSEC: recursive-mode validator enabled (Phase 6 session 1 — chain queries land in session 2)");
-            }
+            // Both modes validate the answer bytes with the chain validator
+            // (`crate::RECURSIVE_DNSSEC`); nothing to start here.
+            println!("DNSSEC validation enabled");
         }
 
         let cache_cfg = CONFIG.load().cache.clone();
@@ -265,18 +256,9 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
         }
 
         if CONFIG.load().security.dnssec.enabled {
-            // Phase 6 (session 1): the forwarder-mode side-channel
-            // validator queries a stub-resolver in parallel. That path
-            // is irrelevant in recursive mode — we own the iteration
-            // ourselves and the recursive validator (see
-            // `crate::dns::dnssec_chain`) takes over — so skip the
-            // side-channel init to avoid spinning up a second resolver
-            // that nothing reads from.
-            if !matches!(CONFIG.load().server.mode, crate::config::ResolutionMode::Recursive) {
-                crate::dnssec::init(&CONFIG.load().forwarder.servers.clone());
-            } else {
-                println!("DNSSEC: recursive-mode validator enabled (Phase 6 session 1 — chain queries land in session 2)");
-            }
+            // Both modes validate the answer bytes with the chain validator
+            // (`crate::RECURSIVE_DNSSEC`); nothing to start here.
+            println!("DNSSEC validation enabled");
         }
 
         let cache_cfg = CONFIG.load().cache.clone();
