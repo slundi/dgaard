@@ -130,7 +130,7 @@ pub trait UpstreamResolver: Send + Sync {
     async fn resolve(&self, query: &DnsPacket) -> std::io::Result<Vec<u8>>;
 }
 
-pub struct ForwardingResolver { /* existing socket pool + upstream selection */ }
+pub struct ForwardingResolver { /* per-query sockets + upstream selection */ }
 pub struct RecursiveResolver  { /* iterative delegation loop, see below */    }
 ```
 
