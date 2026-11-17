@@ -277,3 +277,100 @@ fn whitelist_glob_does_not_block() {
     let result = action("", "@@||ads*.example.com^", "ads1.example.com");
     assert!(!is_blocked(&result), "got {result:?}");
 }
+
+// security.idn.mode ────────────────────────────────────────────────────
+
+/// Engine and config with the IDN coarse gates off and `mode` set, so the
+/// fine-grained policy is the one deciding (as `Config::validate` requires).
+fn idn_engine(
+    black: &str,
+    mode: dgaard_engine::config::IdnMode,
+    scripts: &[&str],
+) -> (FilterEngine, Config) {
+    let mut file = NamedTempFile::new().expect("create temp list");
+    file.write_all(black.as_bytes()).expect("write temp list");
+    let mut config = Config::default();
+    config.server.block_idn = false;
+    config.security.structure.force_lowercase_ascii = false;
+    config.security.intelligence.enabled = false;
+    config.security.idn.mode = mode;
+    config.security.idn.allowed_scripts = scripts.iter().map(|s| s.to_string()).collect();
+    config.sources.blacklists = vec![file.path().to_string_lossy().into_owned()];
+    config.sources.whitelists = Vec::new();
+    config.validate().expect("valid IDN config");
+    let engine = FilterEngine::build_from_files(&config, SEED);
+    (engine, config)
+}
+
+fn idn_action(
+    black: &str,
+    mode: dgaard_engine::config::IdnMode,
+    scripts: &[&str],
+    query: &str,
+) -> Action {
+    let (engine, config) = idn_engine(black, mode, scripts);
+    resolve_with_score(query, &engine, &config).action
+}
+
+#[test]
+fn smart_mode_keeps_listed_idn_phishing_domains_blocked() {
+    // Review E8: Smart used to drop IDN blacklist entries at load time
+    // while nothing blocked them at query time.
+    use dgaard_engine::config::IdnMode;
+    // "café" in Latin: an allowed script, so only the list can block it.
+    let result = idn_action(
+        "0.0.0.0 xn--caf-dma.com\n",
+        IdnMode::Smart,
+        &["Latin"],
+        "xn--caf-dma.com",
+    );
+    assert!(
+        matches!(result, Action::Block(BlockReason::StaticBlacklist(_))),
+        "got {result:?}"
+    );
+}
+
+#[test]
+fn strict_mode_blocks_every_idn_at_query_time() {
+    use dgaard_engine::config::IdnMode;
+    let result = idn_action("", IdnMode::Strict, &["Latin"], "xn--caf-dma.fr");
+    assert!(
+        matches!(result, Action::Block(BlockReason::SuspiciousIdn)),
+        "got {result:?}"
+    );
+    assert!(!is_blocked(&idn_action(
+        "",
+        IdnMode::Strict,
+        &["Latin"],
+        "cafe.fr"
+    )));
+}
+
+#[test]
+fn smart_mode_allows_listed_scripts_and_blocks_homographs() {
+    use dgaard_engine::config::IdnMode;
+    // café.fr (Latin): allowed.
+    assert!(!is_blocked(&idn_action(
+        "",
+        IdnMode::Smart,
+        &["Latin"],
+        "xn--caf-dma.fr"
+    )));
+    // "pаypal" with a Cyrillic "а", even with Cyrillic allowed.
+    let result = idn_action(
+        "",
+        IdnMode::Smart,
+        &["Latin", "Cyrillic"],
+        "xn--pypal-4ve.com",
+    );
+    assert!(
+        matches!(result, Action::Block(BlockReason::SuspiciousIdn)),
+        "got {result:?}"
+    );
+    // A Cyrillic-only name when only Latin is allowed (пример = xn--e1afmkfd).
+    let result = idn_action("", IdnMode::Smart, &["Latin"], "xn--e1afmkfd.com");
+    assert!(
+        matches!(result, Action::Block(BlockReason::SuspiciousIdn)),
+        "got {result:?}"
+    );
+}

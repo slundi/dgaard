@@ -1,6 +1,7 @@
 //! DNS query resolution with configurable filter pipeline.
 
 mod heuristics;
+mod idn;
 mod matcher;
 mod patterns;
 mod ptr_leak;
@@ -9,6 +10,7 @@ mod scoring;
 mod special_use;
 
 pub use heuristics::{check_dga_heuristics, check_lexical, is_illegal_idn};
+pub use idn::{Script, idn_mode_blocks_every_idn, idn_policy_blocks};
 pub use matcher::{is_blocked, is_nrd, is_suffix_blocked, is_whitelisted};
 pub use patterns::{is_regex_blocked, is_wildcard_pattern_blocked};
 pub use ptr_leak::is_ptr_leak_domain;

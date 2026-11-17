@@ -2,7 +2,7 @@ use hickory_resolver::proto::ProtoError;
 use std::collections::HashSet;
 use thiserror::Error;
 
-use crate::config::{Config, IdnMode};
+use crate::config::Config;
 
 #[derive(Error, Debug)]
 pub enum ListError<'a> {
@@ -76,7 +76,8 @@ pub struct LoadFilter {
     /// or non-ASCII characters at load time, because the query-time IDN filter
     /// will block them anyway.
     ///
-    /// Set when `server.block_idn` is `true` or `security.idn.mode` is not `Off`.
+    /// Set when `server.block_idn` is `true` or `security.idn.mode` is `Strict`:
+    /// the cases where every IDN is blocked at query time anyway.
     pub skip_idn: bool,
 }
 
@@ -111,7 +112,10 @@ impl LoadFilter {
             },
         );
 
-        let skip_idn = config.server.block_idn || config.security.idn.mode != IdnMode::Off;
+        // Drop IDN entries only when query time is sure to block every IDN:
+        // in `Smart` mode an allowed-script IDN can still be explicitly listed.
+        let skip_idn = config.server.block_idn
+            || crate::resolve::idn_mode_blocks_every_idn(&config.security.idn);
 
         Self {
             max_subdomain_depth: structure.max_subdomain_depth,
@@ -120,5 +124,27 @@ impl LoadFilter {
             entropy_check,
             skip_idn,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::IdnMode;
+
+    fn skip_idn(block_idn: bool, mode: IdnMode) -> bool {
+        let mut config = Config::default();
+        config.server.block_idn = block_idn;
+        config.security.idn.mode = mode;
+        LoadFilter::from_config(&config, 0).skip_idn
+    }
+
+    #[test]
+    fn idn_entries_dropped_only_when_every_idn_is_blocked() {
+        // Review E8: Smart used to drop explicitly listed IDN entries.
+        assert!(skip_idn(true, IdnMode::Off));
+        assert!(skip_idn(false, IdnMode::Strict));
+        assert!(!skip_idn(false, IdnMode::Smart));
+        assert!(!skip_idn(false, IdnMode::Off));
     }
 }

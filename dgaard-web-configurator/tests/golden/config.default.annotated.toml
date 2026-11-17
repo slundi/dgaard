@@ -197,11 +197,14 @@ drop_entries_hard_blocked_at_load = false
 # to start on the contradiction.
 [security.idn]
 # Off — no IDN filtering (the coarse gates above handle it).
-# Strict — block every non-ASCII label.
-# Smart — allow the scripts listed below, block the rest.
+# Strict — block every IDN label (xn-- or non-ASCII).
+# Smart — allow labels written in the scripts listed below; block other
+# scripts, mixed-script homographs (Latin + Cyrillic…) and malformed xn-- labels.
 mode = "Off"
 
-# Unicode scripts permitted in Smart mode.
+# Scripts permitted in Smart mode: Latin (alias WesternEuropean), Greek,
+# Cyrillic, Armenian, Hebrew, Arabic, Devanagari, Bengali, Thai, Georgian,
+# Hangul, Hiragana, Katakana, Han. Unknown names are refused at startup.
 allowed_scripts = ["Latin", "WesternEuropean"]
 
 # -----------------------------------------------------------------------------

@@ -37,6 +37,9 @@ log.workspace = true
 
 bitflags.workspace = true
 
+# Punycode decoding for the IDN policy (already linked through hickory).
+idna.workspace = true
+
 # GeoIP country lookup — optional, enabled by the `geoip` feature.
 maxminddb = { workspace = true, optional = true }
 

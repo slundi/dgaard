@@ -950,6 +950,7 @@ dependencies = [
  "aho-corasick",
  "bitflags 2.13.2",
  "hickory-resolver",
+ "idna",
  "log",
  "maxminddb",
  "regex",

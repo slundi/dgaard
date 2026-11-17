@@ -1324,6 +1324,27 @@ impl Config {
         // before the IDN filter runs, silently neutralising the configured mode.
         // Refuse to start on this contradiction rather than pretend the policy
         // is in effect.
+        // Unknown script names would silently shrink the Smart allow-list.
+        if let Some(unknown) = self
+            .security
+            .idn
+            .allowed_scripts
+            .iter()
+            .find(|name| crate::resolve::Script::from_name(name).is_none())
+        {
+            return Err(ConfigError::InvalidValue {
+                key: "security.idn.allowed_scripts".to_string(),
+                message: format!(
+                    "unknown script {:?}; expected one of: {}",
+                    unknown,
+                    crate::resolve::Script::names()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                span: toml_span::Span::default(),
+            });
+        }
+
         if self.security.idn.mode != IdnMode::Off {
             let mut neutralisers = Vec::new();
             if self.server.block_idn {
@@ -3215,6 +3236,32 @@ list_path = []
         let cfg = Config::default();
         assert_eq!(cfg.security.idn.mode, IdnMode::Off);
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_unknown_idn_script() {
+        let mut cfg = Config::default();
+        cfg.security.idn.allowed_scripts = vec!["Latin".into(), "Klingon".into()];
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::InvalidValue { key, .. } if key == "security.idn.allowed_scripts"),
+            "unexpected error: {err}"
+        );
+        assert!(err.to_string().contains("Klingon"));
+        assert!(
+            err.to_string().contains("Cyrillic"),
+            "lists the valid names"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_default_idn_scripts() {
+        // The shipped ["Latin", "WesternEuropean"] (alias of Latin) is valid.
+        let mut cfg = Config::default();
+        cfg.server.block_idn = false;
+        cfg.security.structure.force_lowercase_ascii = false;
+        cfg.security.idn.mode = IdnMode::Smart;
+        cfg.validate().unwrap();
     }
 
     #[test]

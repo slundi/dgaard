@@ -115,10 +115,12 @@ pub fn is_dga_suspicious(domain: &str, config: &Config) -> bool {
     check_dga_heuristics(domain, config).is_some()
 }
 
-/// Check if domain contains illegal IDN/Punycode characters.
+/// Check if domain carries an IDN label the configuration refuses:
+/// every IDN with `server.block_idn`, otherwise per `security.idn.mode`
+/// (see [`super::idn`]).
 pub fn is_illegal_idn(domain: &str, config: &Config) -> bool {
     if !config.server.block_idn {
-        return false;
+        return super::idn::idn_policy_blocks(domain, &config.security.idn);
     }
 
     if domain.split('.').any(|part| part.starts_with("xn--")) {

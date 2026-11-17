@@ -180,13 +180,22 @@ ngram_probability_threshold = -4.0
 drop_entries_hard_blocked_at_load = false
 
 [security.idn]
-# IDN filtering mode: "Off", "Strict" (block everything), "Smart" (european accent only)
+# IDN filtering mode:
+#   "Off"    — no fine-grained filter (server.block_idn handles IDNs).
+#   "Strict" — block every IDN label (xn-- or non-ASCII).
+#   "Smart"  — allow labels written in `allowed_scripts`; block other scripts,
+#              mixed-script homographs (e.g. Latin + Cyrillic "pаypal", even
+#              when both are allowed) and malformed xn-- labels. Japanese and
+#              Korean mixes with Han (and Latin) are accepted (UTS #39).
 # NOTE: any mode other than "Off" requires BOTH server.block_idn = false AND
 # security.structure.force_lowercase_ascii = false, otherwise every non-ASCII
 # label is dropped before this filter runs and startup is refused as a
 # contradictory configuration. The shipped defaults keep the coarse blocks on,
 # so this filter is off by default; opt in by relaxing those two settings.
 mode = "Off"
+# Scripts allowed in "Smart" mode: Latin (alias WesternEuropean), Greek,
+# Cyrillic, Armenian, Hebrew, Arabic, Devanagari, Bengali, Thai, Georgian,
+# Hangul, Hiragana, Katakana, Han. Unknown names are refused at startup.
 allowed_scripts = ["Latin", "WesternEuropean"]
 
 # NXDOMAIN Hunting and Tunneling/Exfiltration detection are configured in the

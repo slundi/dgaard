@@ -417,11 +417,13 @@ pub enum IdnMode {
     /// coarse gates, otherwise startup is refused (see `Config::validate`).
     #[default]
     Off,
-    /// Block every non-ASCII label unconditionally (recommended for embedded
-    /// deployments with no multilingual users).
+    /// Block every IDN label (`xn--` or non-ASCII) unconditionally
+    /// (recommended for embedded deployments with no multilingual users).
     Strict,
-    /// Allow scripts listed in [`IdnConfig::allowed_scripts`] and block the
-    /// rest.  Balances security with usability for European users.
+    /// Allow IDN labels written in [`IdnConfig::allowed_scripts`]; block
+    /// other scripts, mixed-script homographs (UTS #39 "highly
+    /// restrictive": one script, or Latin/Han with Hiragana-Katakana or
+    /// Hangul) and malformed `xn--` labels. See `resolve::idn`.
     Smart,
 }
 
@@ -433,8 +435,9 @@ pub struct IdnConfig {
     /// Filtering mode — see [`IdnMode`] for semantics.
     pub mode: IdnMode,
 
-    /// Unicode script identifiers that are permitted in `Smart` mode.
-    /// Labels using any other script are blocked.
+    /// Script names permitted in `Smart` mode (see `resolve::Script`;
+    /// `WesternEuropean` is an alias of `Latin`). Labels using any other
+    /// script are blocked; unknown names are refused by `Config::validate`.
     /// Example: `["Latin", "WesternEuropean"]`.
     pub allowed_scripts: Vec<String>,
 }
