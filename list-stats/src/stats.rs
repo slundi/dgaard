@@ -39,11 +39,14 @@ pub fn parse_list_data(name: &str, url: &str, category: &str, content: &str) -> 
     // Count wildcard entries from hierarchical_list (not just wildcard_patterns, which only
     // holds entries with partial glob segments like `ads*`; pure `*` segment wildcards like
     // `||*.example.com^` also carry WILDCARD flag but have data_idx == 0).
+    // Plain `||example.com^` suffix rules are already counted as domains via
+    // host_index, so they are excluded here.
     let wildcard_count = hierarchical_list
         .iter()
         .filter(|e| {
             e.flags.contains(DomainEntryFlags::WILDCARD)
                 && !e.flags.contains(DomainEntryFlags::REGEX)
+                && !domain_hashes.contains(&e.hash)
         })
         .count();
 
@@ -240,6 +243,13 @@ mod tests {
         let d = make_data("test", "ads", "||*.ads.example.com^\n");
         assert_eq!(d.wildcard_count, 1);
         assert_eq!(d.domains.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_list_data_abp_domain_rule_counts_as_domain() {
+        let d = make_data("test", "ads", "||ads.example.com^\n||tracker.net^\n");
+        assert_eq!(d.domains.len(), 2);
+        assert_eq!(d.wildcard_count, 0);
     }
 
     #[test]

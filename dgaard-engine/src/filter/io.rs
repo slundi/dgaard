@@ -212,8 +212,12 @@ mod tests {
             None,
         );
         assert!(result.is_ok());
-        // Whitelist entries are in the hierarchical list
-        assert!(!hl.is_empty());
+        // Exact whitelist entries live in fast_map with the WHITELIST flag.
+        assert_eq!(fm.len(), 2);
+        assert!(fm.values().all(|(flags, _)| {
+            DomainEntryFlags::from_bits_truncate(*flags).contains(DomainEntryFlags::WHITELIST)
+        }));
+        assert!(hl.is_empty());
         let _ = std::fs::remove_file(&path);
     }
 

@@ -7,7 +7,7 @@
 use crate::{
     filter::ListError,
     model::{DomainEntryFlags, RawDomainEntry},
-    utils::count_dots,
+    utils::{count_dots, normalize_domain},
 };
 
 /// Extract clean domain from ABP domain pattern like `||example.com^`
@@ -38,22 +38,23 @@ pub fn parse_abp_line(line: &str, seed: u64) -> Result<RawDomainEntry, ListError
     }
 
     // 3. Identify pattern type and extract value
-    let (value, hash_source) = if input.starts_with('/') && input.ends_with('/') && input.len() > 2
-    {
+    // Regexes keep their case (`\D` vs `\d`); every other pattern is a domain
+    // and is normalized so it matches lowercased, dotless queries.
+    let value = if input.starts_with('/') && input.ends_with('/') && input.len() > 2 {
         // Regex pattern: /pattern/
         flags |= DomainEntryFlags::REGEX;
-        let pattern = &input[1..input.len() - 1];
-        (pattern, pattern)
+        input[1..input.len() - 1].to_string()
     } else if input.contains('*') {
         // Wildcard pattern: contains *
         flags |= DomainEntryFlags::WILDCARD;
-        (input, input)
+        normalize_domain(input)
     } else if let Some(domain) = extract_domain_from_abp(input) {
-        // Simple domain rule: ||domain.com^ -> extract clean domain
-        (domain, domain)
+        // Domain rule: ||domain.com^ -> the domain and all its subdomains
+        flags |= DomainEntryFlags::WILDCARD;
+        normalize_domain(domain)
     } else {
         // Fallback: use the input as-is
-        (input, input)
+        normalize_domain(input)
     };
 
     if value.is_empty() {
@@ -64,12 +65,12 @@ pub fn parse_abp_line(line: &str, seed: u64) -> Result<RawDomainEntry, ListError
         ));
     }
 
-    let hash = twox_hash::XxHash64::oneshot(seed, hash_source.as_bytes());
+    let hash = twox_hash::XxHash64::oneshot(seed, value.as_bytes());
 
     Ok(RawDomainEntry {
         hash,
-        value: value.to_string(),
-        depth: count_dots(value),
+        depth: count_dots(&value),
+        value,
         flags,
     })
 }
@@ -84,8 +85,13 @@ mod tests {
     fn test_parse_abp_block_rule() {
         let result = parse_abp_line("||example.com^", SEED).unwrap();
         assert_eq!(result.value, "example.com");
-        assert_eq!(result.flags, DomainEntryFlags::NONE);
+        // `||domain^` covers the domain and all its subdomains.
+        assert_eq!(result.flags, DomainEntryFlags::WILDCARD);
         assert_eq!(result.depth, 1);
+        assert_eq!(
+            result.hash,
+            twox_hash::XxHash64::oneshot(SEED, b"example.com")
+        );
     }
 
     #[test]
@@ -93,7 +99,25 @@ mod tests {
         let result = parse_abp_line("@@||trusted.com^", SEED).unwrap();
         assert_eq!(result.value, "trusted.com");
         assert!(result.flags.contains(DomainEntryFlags::WHITELIST));
+        assert!(result.flags.contains(DomainEntryFlags::WILDCARD));
         assert_eq!(result.depth, 1);
+    }
+
+    #[test]
+    fn test_parse_abp_normalizes_case_and_trailing_dot() {
+        let result = parse_abp_line("||Ads.Example.COM.^", SEED).unwrap();
+        assert_eq!(result.value, "ads.example.com");
+        assert_eq!(result.depth, 2);
+        assert_eq!(
+            result.hash,
+            twox_hash::XxHash64::oneshot(SEED, b"ads.example.com")
+        );
+    }
+
+    #[test]
+    fn test_parse_abp_regex_keeps_case() {
+        let result = parse_abp_line("/ads\\D+\\.example\\.com/", SEED).unwrap();
+        assert_eq!(result.value, "ads\\D+\\.example\\.com");
     }
 
     #[test]

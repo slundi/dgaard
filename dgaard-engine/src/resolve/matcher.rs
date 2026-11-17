@@ -15,10 +15,13 @@ fn fast_lookup(domain: &str, filter: &FilterEngine) -> Option<DomainEntryFlags> 
         })
 }
 
-/// Check if domain is whitelisted (exact match in fast_map with WHITELIST flag).
+/// Check if domain is whitelisted: exact match in fast_map with WHITELIST flag,
+/// or a parent whitelisted as a suffix (`@@||parent^`).
 pub fn is_whitelisted(domain: &str, filter: &FilterEngine) -> bool {
-    if let Some(flags) = fast_lookup(domain, filter) {
-        return flags.contains(DomainEntryFlags::WHITELIST);
+    // An exact blacklist hit must not hide a parent suffix exception.
+    if fast_lookup(domain, filter).is_some_and(|flags| flags.contains(DomainEntryFlags::WHITELIST))
+    {
+        return true;
     }
 
     let mut parts: Vec<&str> = domain.split('.').collect();
