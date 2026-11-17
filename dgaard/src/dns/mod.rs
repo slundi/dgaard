@@ -101,14 +101,37 @@ fn classify_score(
     }
 }
 
+/// Decide, before any upstream traffic, whether a query the pipeline would
+/// forward must already be blocked by its score.
+///
+/// For a DNS tunnel the query itself is the exfiltration channel, and a DGA
+/// resolution is the C2 rendezvous: blocking the *answer* is too late. The
+/// score only grows once the answer is inspected, so a query at or above
+/// the blocking threshold here would be blocked after forwarding anyway.
+fn block_before_upstream(
+    action: &Action,
+    score: &SuspicionScore,
+    scoring: &ScoringConfig,
+) -> Option<StatAction> {
+    if !matches!(action, Action::Allow | Action::ProxyToUpstream) {
+        return None;
+    }
+    match classify_score(score, scoring, StatAction::Proxied) {
+        (true, stat_action) => Some(stat_action),
+        (false, _) => None,
+    }
+}
+
 /// Handle an incoming DNS query by running it through the filter pipeline.
 ///
 /// This function:
 /// 1. Parses the DNS packet
 /// 2. QType/QClass wardens (cheap static checks)
 /// 3. Hot-cache lookup — serves instantly if cached, skipping steps 4–6
-/// 4. Runs the domain through the resolve pipeline
-/// 5. Either blocks the query (NXDOMAIN) or forwards to upstream
+/// 4. Runs the domain through the resolve pipeline, and blocks it before any
+///    upstream traffic when its score already reaches the blocking threshold
+/// 5. Either blocks the query (NXDOMAIN) or forwards to upstream, then
+///    re-scores with what the answer reveals
 /// 6. Sends the response back to the client
 /// 7. Emits stats events for telemetry
 pub(crate) async fn handle_query(
@@ -221,6 +244,28 @@ pub(crate) async fn handle_query(
     let server_mode = cfg_snap.server.mode;
     let cache_ttl_override = cfg_snap.cache.ttl_override;
     let low_ttl_floor = cfg_snap.security.low_ttl.min_ttl_floor_secs;
+
+    // 3a. Score gate before any upstream traffic; the post-answer check
+    //     below only sees what answer inspection adds.
+    if let Some(stat_action) = block_before_upstream(&action, &score, scoring) {
+        STATS_COUNTERS.increment_blocked();
+        debug_print!(
+            "Pre-upstream score block: {} (score={})",
+            dns_packet.domain,
+            score.total
+        );
+        socket
+            .send_to(
+                &DnsPacket::build_nxdomain_response(&dns_packet.message),
+                peer,
+            )
+            .await?;
+        if let Some(sender) = STATS_SENDER.get() {
+            sender.send_event(&dns_packet.domain, peer, stat_action);
+        }
+        return Ok(());
+    }
+
     let (response, stat_action) = match &action {
         Action::Allow => {
             let (upstream_result, dnssec_status) = if dnssec_cfg.enabled {
@@ -470,4 +515,229 @@ pub(crate) async fn handle_query(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use dgaard_engine::model::BlockReason;
+    use hickory_resolver::proto::op::{Message, MessageType, Query, ResponseCode};
+    use hickory_resolver::proto::rr::rdata::A;
+    use hickory_resolver::proto::rr::{Name, RData, Record, RecordType};
+
+    use super::*;
+    use crate::config::Config;
+    use crate::dns::resolver::UpstreamResolver;
+    use crate::resolve::tests::{create_test_engine, init_test_env};
+    use crate::{CONFIG, CURRENT_ENGINE};
+
+    fn scoring_with_threshold(blocking_threshold: u8) -> ScoringConfig {
+        ScoringConfig {
+            blocking_threshold,
+            ..ScoringConfig::default()
+        }
+    }
+
+    fn score_of(points: u8) -> SuspicionScore {
+        let mut score = SuspicionScore::new();
+        score.add(points, BlockReason::NrdList);
+        score
+    }
+
+    #[test]
+    fn block_before_upstream_stops_forwarded_actions_over_threshold() {
+        let scoring = scoring_with_threshold(5);
+        for action in [Action::ProxyToUpstream, Action::Allow] {
+            let stat = block_before_upstream(&action, &score_of(5), &scoring);
+            assert!(
+                matches!(stat, Some(StatAction::Blocked(_))),
+                "{action:?}: got {stat:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn block_before_upstream_lets_low_scores_through() {
+        let scoring = scoring_with_threshold(5);
+        assert!(block_before_upstream(&Action::ProxyToUpstream, &score_of(4), &scoring).is_none());
+    }
+
+    #[test]
+    fn block_before_upstream_ignores_actions_that_never_forward() {
+        // These never reach upstream: the gate has nothing to stop.
+        let scoring = scoring_with_threshold(1);
+        let ip = std::net::IpAddr::from([10, 0, 0, 1]);
+        for action in [
+            Action::Block(BlockReason::NrdList),
+            Action::Drop,
+            Action::Override(ip),
+            Action::LocalResolve(ip),
+        ] {
+            assert!(block_before_upstream(&action, &score_of(10), &scoring).is_none());
+        }
+    }
+
+    // ---- handle_query end to end with a counting upstream ----
+
+    /// Upstream calls seen by [`CountingResolver`] in this process.
+    static UPSTREAM_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Upstream stand-in: counts calls and answers every A query.
+    struct CountingResolver;
+
+    #[async_trait]
+    impl UpstreamResolver for CountingResolver {
+        async fn resolve(&self, query: &DnsPacket) -> std::io::Result<Vec<u8>> {
+            UPSTREAM_CALLS.fetch_add(1, Ordering::SeqCst);
+            let mut response = query.message.clone();
+            response.metadata.message_type = MessageType::Response;
+            response.metadata.response_code = ResponseCode::NoError;
+            if let Some(question) = query.message.queries.first() {
+                // `intranet.com` answers with a private address, which the
+                // post-answer inspection (rebinding shield) must catch.
+                let ip = if question.name().to_ascii() == "intranet.com." {
+                    std::net::Ipv4Addr::new(10, 0, 0, 1)
+                } else {
+                    std::net::Ipv4Addr::new(93, 184, 216, 34)
+                };
+                response.add_answer(Record::from_rdata(
+                    question.name().clone(),
+                    300,
+                    RData::A(A(ip)),
+                ));
+            }
+            response
+                .to_vec()
+                .map_err(|e| std::io::Error::other(e.to_string()))
+        }
+    }
+
+    fn query_bytes(domain: &str) -> Vec<u8> {
+        let mut msg = Message::query();
+        msg.metadata.recursion_desired = true;
+        msg.add_query(Query::query(
+            Name::from_ascii(format!("{domain}.")).unwrap(),
+            RecordType::A,
+        ));
+        msg.to_vec().unwrap()
+    }
+
+    /// Run one query through `handle_query`; return the response rcode and
+    /// how many upstream calls it caused.
+    async fn run_query(domain: &str) -> (ResponseCode, usize) {
+        let server = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let before = UPSTREAM_CALLS.load(Ordering::SeqCst);
+        handle_query(server, query_bytes(domain), client.local_addr().unwrap())
+            .await
+            .unwrap();
+        let mut buf = [0u8; 4096];
+        let (len, _) = tokio::time::timeout(Duration::from_secs(2), client.recv_from(&mut buf))
+            .await
+            .expect("a response must be sent")
+            .unwrap();
+        let response = Message::from_vec(&buf[..len]).unwrap();
+        let calls = UPSTREAM_CALLS.load(Ordering::SeqCst) - before;
+        (response.metadata.response_code, calls)
+    }
+
+    /// Tunnel-like name the pipeline forwards but that already scores
+    /// before upstream: 61 characters crosses the long-domain mark while
+    /// staying within the structural length and depth limits.
+    fn tunnel_name() -> String {
+        format!("{}.tunnel.com", "a".repeat(50))
+    }
+
+    /// Install an engine whitelisting `whitelist` and a config whose DGA
+    /// heuristics are off (these tests are about the score gate, not about
+    /// which names the heuristics flag). Returns the pre-upstream score of
+    /// `name` with the pipeline action, measured with the maximum threshold
+    /// because scoring stops counting once the threshold is reached.
+    fn install_policy(whitelist: &[&str], name: &str) -> (u8, Action) {
+        CURRENT_ENGINE.store(Arc::new(create_test_engine(&[], whitelist, &[])));
+        let mut config = Config::default();
+        config.security.intelligence.enabled = false;
+        config.security.scoring.blocking_threshold = u8::MAX;
+        CONFIG.store(Arc::new(config));
+        let _ = UPSTREAM_RESOLVER.get_or_init(|| Arc::new(CountingResolver));
+        let measured = crate::resolve::resolve_with_score(name);
+        (measured.score.total, measured.action)
+    }
+
+    fn set_blocking_threshold(threshold: u8) {
+        let mut config = (*CONFIG.load_full()).clone();
+        config.security.scoring.blocking_threshold = threshold;
+        CONFIG.store(Arc::new(config));
+    }
+
+    fn run_with_globals(test: impl std::future::Future<Output = ()>) {
+        let _guard = init_test_env();
+        let previous_config = CONFIG.load_full();
+        let previous_engine = CURRENT_ENGINE.load_full();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(test);
+        CONFIG.store(previous_config);
+        CURRENT_ENGINE.store(previous_engine);
+    }
+
+    #[test]
+    fn over_threshold_query_never_reaches_upstream() {
+        run_with_globals(async {
+            let name = tunnel_name();
+            let (score, action) = install_policy(&[], &name);
+            assert!(matches!(action, Action::ProxyToUpstream), "got {action:?}");
+            assert!(score > 0);
+            set_blocking_threshold(score);
+            let (rcode, calls) = run_query(&name).await;
+            assert_eq!(rcode, ResponseCode::NXDomain);
+            assert_eq!(calls, 0, "the query itself must not leave the resolver");
+        });
+    }
+
+    #[test]
+    fn below_threshold_query_is_forwarded() {
+        run_with_globals(async {
+            let (score, _) = install_policy(&[], &tunnel_name());
+            set_blocking_threshold(score);
+            let (rcode, calls) = run_query("clean-domain.com").await;
+            assert_eq!(rcode, ResponseCode::NoError);
+            assert_eq!(calls, 1);
+        });
+    }
+
+    #[test]
+    fn whitelisted_query_over_threshold_is_blocked_before_upstream_too() {
+        // Same outcome as the post-answer check always gave a whitelisted
+        // name over the threshold, minus the upstream round trip.
+        run_with_globals(async {
+            let name = tunnel_name();
+            let (score, action) = install_policy(&[&name], &name);
+            assert!(matches!(action, Action::Allow), "got {action:?}");
+            set_blocking_threshold(score);
+            let (rcode, calls) = run_query(&name).await;
+            assert_eq!(rcode, ResponseCode::NXDomain);
+            assert_eq!(calls, 0);
+        });
+    }
+
+    #[test]
+    fn answer_inspection_still_blocks_after_upstream() {
+        // The second check keeps its job: signals only visible in the
+        // answer (here a private address) still block the response.
+        run_with_globals(async {
+            let (score, action) = install_policy(&[], "intranet.com");
+            assert!(matches!(action, Action::ProxyToUpstream), "got {action:?}");
+            // Only the answer can push it over.
+            set_blocking_threshold(score + 1);
+            let (rcode, calls) = run_query("intranet.com").await;
+            assert_eq!(rcode, ResponseCode::NXDomain);
+            assert_eq!(calls, 1);
+        });
+    }
 }
