@@ -315,13 +315,43 @@ fn build_engine(
 /// to `0` to disable the timeout. On timeout the previous engine is kept:
 /// the new one is only published once fully built.
 pub async fn reload_lists() -> ReloadReport {
-    let timeout_secs = CONFIG.load().sources.reload_timeout_secs;
+    let _reloading = RELOAD_LOCK.lock().await;
+    // Read inside the lock: a reload queued behind a SIGHUP builds from the
+    // configuration that SIGHUP published, never from an older one.
+    rebuild(CONFIG.load_full(), false).await
+}
+
+/// Apply a new configuration (SIGHUP): build the engine for it, then
+/// publish both together, so the new settings never run with the previous
+/// lists (a new `tld.exclude` with old rules) for the length of a build.
+///
+/// When the engine cannot be rebuilt (timeout, failed build), the settings
+/// still apply, with the previous engine.
+pub async fn reload_with_config(config: Arc<Config>) -> ReloadReport {
+    let _reloading = RELOAD_LOCK.lock().await;
+    let report = rebuild(Arc::clone(&config), true).await;
+    if report.timed_out {
+        eprintln!("warn: new configuration applied with the previous filter lists");
+        CONFIG.store(config);
+    }
+    report
+}
+
+/// Serialises list reloads (scheduled updates, SIGHUP): two concurrent
+/// builds would publish in whichever order they finish, possibly the one
+/// built from the older configuration last.
+static RELOAD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Build the engine for `cfg` within `reload_timeout_secs` and publish it,
+/// with `cfg` itself when `publish_config` is set.
+async fn rebuild(cfg: Arc<Config>, publish_config: bool) -> ReloadReport {
+    let timeout_secs = cfg.sources.reload_timeout_secs;
     if timeout_secs == 0 {
-        return reload_lists_inner().await;
+        return reload_lists_inner(cfg, publish_config).await;
     }
     match tokio::time::timeout(
         std::time::Duration::from_secs(u64::from(timeout_secs)),
-        reload_lists_inner(),
+        reload_lists_inner(cfg, publish_config),
     )
     .await
     {
@@ -339,10 +369,9 @@ pub async fn reload_lists() -> ReloadReport {
     }
 }
 
-async fn reload_lists_inner() -> ReloadReport {
+async fn reload_lists_inner(cfg: Arc<Config>, publish_config: bool) -> ReloadReport {
     println!("Loading filter lists...");
     let client = build_https_client();
-    let cfg = CONFIG.load_full();
     let seed = GLOBAL_SEED.load(Ordering::Relaxed);
     let sources = &cfg.sources;
     let policy = FetchPolicy::from_config(&cfg);
@@ -378,6 +407,11 @@ async fn reload_lists_inner() -> ReloadReport {
     };
     report.missing.extend(unreadable);
 
+    // Configuration and engine go out together (two stores back to back,
+    // not a multi-second window).
+    if publish_config {
+        CONFIG.store(Arc::clone(&cfg));
+    }
     CURRENT_ENGINE.store(Arc::new(built.engine));
 
     // Phase 4: a fresh filter engine may now block a domain that was
@@ -895,6 +929,112 @@ mod tests {
 
             let meta = CURRENT_ENGINE.load().geoip_file_meta.clone();
             assert_eq!(meta.map(|m| (m.ino, m.size)), Some((11, 2048)));
+        });
+    }
+
+    // ---- concurrent reloads ----
+
+    /// The current configuration with `tld.exclude = [tld]`.
+    fn config_excluding(tld: &str) -> Arc<Config> {
+        let mut config = (*CONFIG.load_full()).clone();
+        config.tld.exclude = vec![tld.to_owned()];
+        Arc::new(config)
+    }
+
+    fn tld_blocked(domain: &str) -> bool {
+        dgaard_engine::resolve::is_suffix_blocked(domain, &CURRENT_ENGINE.load())
+    }
+
+    /// Let spawned tasks run until they block.
+    async fn settle() {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    #[test]
+    fn reloads_wait_for_each_other() {
+        run_with_globals(async {
+            let dir = tempfile::tempdir().unwrap();
+            install_sources(Vec::new(), dir.path().to_str().unwrap());
+            let running = RELOAD_LOCK.lock().await;
+            let queued = tokio::spawn(reload_lists());
+            settle().await;
+            assert!(!queued.is_finished(), "a second reload must wait");
+            drop(running);
+            queued.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn new_configuration_is_published_with_its_engine() {
+        run_with_globals(async {
+            let dir = tempfile::tempdir().unwrap();
+            install_sources(Vec::new(), dir.path().to_str().unwrap());
+            reload_lists().await;
+
+            let running = RELOAD_LOCK.lock().await;
+            let applying = tokio::spawn(reload_with_config(config_excluding("zz")));
+            settle().await;
+            // While its engine is not built, the new configuration is not
+            // in effect either.
+            assert!(CONFIG.load().tld.exclude.is_empty());
+            assert!(!tld_blocked("foo.zz"));
+            drop(running);
+            applying.await.unwrap();
+
+            assert_eq!(CONFIG.load().tld.exclude, ["zz"]);
+            assert!(tld_blocked("foo.zz"));
+        });
+    }
+
+    #[test]
+    fn scheduled_reload_queued_behind_sighup_uses_the_new_configuration() {
+        run_with_globals(async {
+            let dir = tempfile::tempdir().unwrap();
+            install_sources(Vec::new(), dir.path().to_str().unwrap());
+            reload_lists().await;
+
+            let running = RELOAD_LOCK.lock().await;
+            let sighup = tokio::spawn(reload_with_config(config_excluding("zz")));
+            settle().await;
+            let scheduled = tokio::spawn(reload_lists());
+            settle().await;
+            drop(running);
+            sighup.await.unwrap();
+            scheduled.await.unwrap();
+
+            // The scheduled reload ran last, from the published config.
+            assert_eq!(CONFIG.load().tld.exclude, ["zz"]);
+            assert!(tld_blocked("foo.zz"));
+        });
+    }
+
+    /// HTTP endpoint that accepts connections and never answers.
+    async fn hanging_server() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        format!("http://{addr}/list")
+    }
+
+    #[test]
+    fn configuration_applies_even_when_the_engine_times_out() {
+        run_with_globals(async {
+            let dir = tempfile::tempdir().unwrap();
+            install_sources(Vec::new(), dir.path().to_str().unwrap());
+            reload_lists().await;
+
+            let mut config = (*config_excluding("zz")).clone();
+            config.sources.blacklists = vec![hanging_server().await];
+            config.sources.reload_timeout_secs = 1;
+            let report = reload_with_config(Arc::new(config)).await;
+            assert!(report.timed_out);
+            assert_eq!(CONFIG.load().tld.exclude, ["zz"], "settings still applied");
+            assert!(!tld_blocked("foo.zz"), "previous engine kept");
         });
     }
 }

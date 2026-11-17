@@ -625,8 +625,9 @@ async fn reload_config_from_path(
                 return Err(format!("Failed to reload config: {}", e));
             }
             let pending = restart_required_changes(&CONFIG.load(), &new_config);
-            CONFIG.store(Arc::new(new_config));
-            reload_lists().await;
+            crate::filter::reload_with_config(Arc::new(new_config)).await;
+            // The update schedule may have changed (0 → N hours included).
+            crate::updater::CONFIG_RELOADED.notify_waiters();
             println!(
                 "Configuration reloaded successfully from {}",
                 config_path.display()
@@ -739,7 +740,6 @@ pub(crate) fn init_global_seed() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{LazyLock, Mutex};
 
     // -----------------------------------------------------------------------
     // build_minimal_servfail
@@ -833,8 +833,13 @@ mod tests {
         assert_eq!(&resp[4..6], &[0x00, 0x00]);
     }
 
-    // Serialise tests that mutate the global CONFIG via reload_config_from_path.
-    static TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(Mutex::default);
+    /// Serialise tests that mutate the global CONFIG. The lock is the one
+    /// every other test touching CONFIG holds (`run_with_globals`): with
+    /// two locks, `cargo test` let a reload test and a filter test restore
+    /// each other's configuration.
+    fn config_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::resolve::tests::init_test_env()
+    }
 
     // -----------------------------------------------------------------------
     // Client ACL tests
@@ -891,7 +896,7 @@ mod tests {
 
     #[test]
     fn acl_is_parsed_once_per_configuration() {
-        let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = config_lock();
         let previous = CONFIG.load_full();
         let mut config = Config::default();
         config.server.allowed_networks = vec!["10.0.0.0/8".into()];
@@ -920,7 +925,7 @@ mod tests {
     /// Run both startup paths against `listen_addr`; they must fail at once
     /// (before, the multi-worker path kept a process alive serving nothing).
     fn startup_errors(listen_addr: &str) -> (String, String) {
-        let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = config_lock();
         let previous = CONFIG.load_full();
         let mut config = Config::default();
         config.server.listen_addr = listen_addr.to_string();
@@ -1018,7 +1023,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn reload_applies_live_settings_and_reports_the_rest() {
-        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = config_lock();
         let dir =
             std::env::temp_dir().join(format!("dgaard_reload_pending_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1045,7 +1050,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn reload_with_degenerate_values_is_refused() {
-        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = config_lock();
         let dir = std::env::temp_dir().join(format!("dgaard_reload_bounds_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
@@ -1083,7 +1088,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn reload_config_from_path_succeeds_with_valid_config() {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = config_lock();
         use std::env;
         use std::fs;
 
@@ -1137,7 +1142,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn reload_config_from_path_updates_global_config() {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = config_lock();
         use std::env;
         use std::fs;
 

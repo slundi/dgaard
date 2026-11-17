@@ -76,9 +76,11 @@ default = []
 geoip = ["dgaard-engine/geoip"]
 
 [dev-dependencies]
+# Paused-clock tests of the hour-scale update schedule (test builds only).
 serde_json.workspace = true
 tempfile.workspace = true
 # Re-pulled from the hickory transitive graph so DNSSEC tests can
 # build RRSIGs at synthetic inception/expiration timestamps. Stays in
 # `dev-dependencies` to avoid bloating the production binary.
 time = "0.3"
+tokio = { workspace = true, features = ["test-util"] }

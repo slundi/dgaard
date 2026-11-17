@@ -1,8 +1,11 @@
 use std::{
+    future::Future,
     path::{Path, PathBuf},
     time::Duration,
 };
+
 use thiserror::Error;
+use tokio::sync::Notify;
 use url::Url;
 
 use crate::{CONFIG, filter::reload_lists};
@@ -83,30 +86,52 @@ pub fn next_update_delay(interval_hours: u32, retry_mins: u32, degraded: bool) -
     }
 }
 
+/// Woken after every configuration reload (SIGHUP): the update schedule is
+/// recomputed from the new `[sources]` settings.
+pub static CONFIG_RELOADED: Notify = Notify::const_new();
+
 /// Run scheduled list updates. `degraded` is the state of the reload that
 /// just happened (startup), deciding the first delay.
-pub async fn spawn_update_task(mut degraded: bool) {
-    tokio::spawn(async move {
-        loop {
-            // Re-read on every iteration so a SIGHUP config reload takes effect
-            // without restarting the process.
-            let delay = {
-                let sources = &CONFIG.load().sources;
-                next_update_delay(
-                    sources.update_interval_hours,
-                    sources.retry_delay_mins,
-                    degraded,
-                )
-            };
-            let Some(delay) = delay else {
-                return;
-            };
-            tokio::time::sleep(delay).await;
+pub async fn spawn_update_task(degraded: bool) {
+    tokio::spawn(run_updates(degraded, || async {
+        reload_lists().await.is_degraded()
+    }));
+}
 
-            println!("Starting scheduled rule update...");
-            degraded = reload_lists().await.is_degraded();
+/// The update schedule. With updates disabled the task waits for a
+/// configuration reload that may enable them, instead of exiting; any
+/// reload restarts the timer (it refreshed the lists itself).
+async fn run_updates<R, F>(mut degraded: bool, mut reload: R)
+where
+    R: FnMut() -> F,
+    F: Future<Output = bool>,
+{
+    loop {
+        // Registered before the config is read: a reload in between still
+        // wakes this iteration.
+        let reloaded = CONFIG_RELOADED.notified();
+        tokio::pin!(reloaded);
+        reloaded.as_mut().enable();
+
+        let delay = {
+            let sources = &CONFIG.load().sources;
+            next_update_delay(
+                sources.update_interval_hours,
+                sources.retry_delay_mins,
+                degraded,
+            )
+        };
+        match delay {
+            None => reloaded.await,
+            Some(delay) => tokio::select! {
+                _ = tokio::time::sleep(delay) => {
+                    println!("Starting scheduled rule update...");
+                    degraded = reload().await;
+                }
+                _ = &mut reloaded => {}
+            },
         }
-    });
+    }
 }
 
 #[cfg(test)]
@@ -195,5 +220,108 @@ mod tests {
             validate_input(""),
             Err(ResourceError::UnknownResource)
         ));
+    }
+
+    // ---- update schedule follows configuration reloads ----
+
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::config::Config;
+
+    fn set_interval(hours: u32) {
+        let mut config = (*CONFIG.load_full()).clone();
+        config.sources.update_interval_hours = hours;
+        config.sources.retry_delay_mins = 0;
+        CONFIG.store(Arc::new(config));
+    }
+
+    /// Run `test` on a paused clock (hours pass instantly) with the global
+    /// test lock held and `CONFIG` restored afterwards.
+    fn with_paused_clock(test: impl std::future::Future<Output = ()>) {
+        let _guard = crate::resolve::tests::init_test_env();
+        let previous: Arc<Config> = CONFIG.load_full();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .unwrap()
+            .block_on(test);
+        CONFIG.store(previous);
+    }
+
+    fn counting_schedule() -> (Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&runs);
+        let task = tokio::spawn(run_updates(false, move || {
+            let counter = Arc::clone(&counter);
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                false
+            }
+        }));
+        (runs, task)
+    }
+
+    async fn hours(count: u64) {
+        tokio::time::sleep(Duration::from_secs(count * 3600)).await;
+    }
+
+    #[test]
+    fn enabling_updates_by_reload_starts_the_schedule() {
+        with_paused_clock(async {
+            set_interval(0);
+            let (runs, task) = counting_schedule();
+            hours(10).await;
+            assert_eq!(runs.load(Ordering::SeqCst), 0);
+            assert!(
+                !task.is_finished(),
+                "disabled updates wait, they do not exit"
+            );
+
+            set_interval(2);
+            CONFIG_RELOADED.notify_waiters();
+            hours(1).await;
+            assert_eq!(runs.load(Ordering::SeqCst), 0);
+            hours(2).await;
+            assert_eq!(runs.load(Ordering::SeqCst), 1);
+            hours(2).await;
+            assert_eq!(runs.load(Ordering::SeqCst), 2);
+            task.abort();
+        });
+    }
+
+    #[test]
+    fn a_reload_restarts_the_timer_with_the_new_interval() {
+        with_paused_clock(async {
+            set_interval(10);
+            let (runs, task) = counting_schedule();
+            hours(1).await;
+            set_interval(2);
+            CONFIG_RELOADED.notify_waiters();
+            // New deadline: 1 h + 2 h. Checked half an hour either side.
+            tokio::time::sleep(Duration::from_secs(90 * 60)).await;
+            assert_eq!(runs.load(Ordering::SeqCst), 0);
+            hours(1).await;
+            assert_eq!(
+                runs.load(Ordering::SeqCst),
+                1,
+                "well before the old 10 h deadline"
+            );
+            task.abort();
+        });
+    }
+
+    #[test]
+    fn disabling_updates_by_reload_stops_the_schedule() {
+        with_paused_clock(async {
+            set_interval(1);
+            let (runs, task) = counting_schedule();
+            set_interval(0);
+            CONFIG_RELOADED.notify_waiters();
+            hours(5).await;
+            assert_eq!(runs.load(Ordering::SeqCst), 0);
+            task.abort();
+        });
     }
 }
