@@ -38,9 +38,11 @@ struct SuffixRules {
 /// Collect the suffix rules on `parent` from both stores:
 /// - `fast_map`: `@@||parent^` (WHITELIST | WILDCARD);
 /// - `hierarchical_list`: `||parent^`, `||*.parent^`, `@@||*.parent^`, and
-///   `tld.exclude` entries. Several entries may share a `(depth, hash)` key
-///   (block and whitelist), so the whole key range is scanned. Glob and regex
-///   entries carry `data_idx > 0` and are skipped.
+///   `tld.exclude` entries. The builder keeps one suffix entry per
+///   `(depth, hash)` key with merged flags (`normalize_hierarchical`); the
+///   whole key range is still scanned and its flags OR-ed, so the result
+///   never depends on which entry a search lands on, even for a list built
+///   by hand. Glob and regex entries carry `data_idx > 0` and are skipped.
 fn suffix_rules(parent: &str, filter: &FilterEngine) -> SuffixRules {
     let hash = twox_hash::XxHash64::oneshot(filter.seed, parent.as_bytes());
     let key = (count_dots(parent), hash);

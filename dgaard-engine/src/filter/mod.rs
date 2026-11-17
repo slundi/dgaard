@@ -387,6 +387,27 @@ fn insert_entry(
     }
 }
 
+/// Put `list` in its canonical form, whatever order the rules came in:
+///
+/// * sorted by `(depth, hash, data_idx)`, so the suffix rule of a key
+///   (`data_idx == 0`) comes first in its range;
+/// * one suffix rule per `(depth, hash)`, carrying the flags of every rule
+///   on that key. Lossless: the matcher lets a whitelist win over a block on
+///   the same parent, so "block + whitelist" means "whitelist";
+/// * no duplicates (glob and regex entries are only merged when identical).
+pub(crate) fn normalize_hierarchical(list: &mut Vec<DomainEntry>) {
+    list.sort_by_key(|entry| (entry.depth, entry.hash, entry.data_idx, entry.flags.bits()));
+    list.dedup_by(|next, kept| {
+        let same_key =
+            (next.depth, next.hash, next.data_idx) == (kept.depth, kept.hash, kept.data_idx);
+        if same_key && next.data_idx == 0 {
+            kept.flags |= next.flags;
+            return true;
+        }
+        next == kept
+    });
+}
+
 pub fn parse_line<'a, T, F>(line: &'a str, parser: F) -> Result<T, ListError<'a>>
 where
     F: Fn(&'a str) -> Result<T, ListError<'a>>,
@@ -456,6 +477,76 @@ pub fn write_browser_rules(path: &str, rules: &[String]) -> std::io::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- canonical hierarchical list (review M12) ----
+
+    fn suffix(key: u64, flags: DomainEntryFlags) -> DomainEntry {
+        DomainEntry {
+            hash: key,
+            flags,
+            depth: 1,
+            data_idx: 0,
+        }
+    }
+
+    const BLOCK: DomainEntryFlags = DomainEntryFlags::WILDCARD;
+    const ALLOW: DomainEntryFlags = DomainEntryFlags::WILDCARD.union(DomainEntryFlags::WHITELIST);
+
+    #[test]
+    fn one_suffix_entry_per_key_with_merged_flags() {
+        // `dedup` alone kept all three: the blocks are not neighbours.
+        let mut list = vec![suffix(7, BLOCK), suffix(7, ALLOW), suffix(7, BLOCK)];
+        normalize_hierarchical(&mut list);
+        assert_eq!(list, [suffix(7, ALLOW)]);
+    }
+
+    #[test]
+    fn distinct_keys_and_pattern_entries_are_kept() {
+        let glob = |idx| DomainEntry {
+            data_idx: idx,
+            ..suffix(7, BLOCK)
+        };
+        let mut list = vec![
+            glob(2),
+            suffix(9, BLOCK),
+            glob(1),
+            suffix(7, BLOCK),
+            glob(2),
+        ];
+        normalize_hierarchical(&mut list);
+        assert_eq!(
+            list,
+            [suffix(7, BLOCK), glob(1), glob(2), suffix(9, BLOCK)],
+            "suffix entry first in its key range, identical globs merged"
+        );
+    }
+
+    #[test]
+    fn canonical_form_does_not_depend_on_input_order() {
+        let entries = [
+            suffix(7, BLOCK),
+            suffix(7, ALLOW),
+            suffix(3, BLOCK),
+            DomainEntry {
+                depth: 0,
+                ..suffix(7, BLOCK)
+            },
+            DomainEntry {
+                data_idx: 4,
+                ..suffix(3, BLOCK)
+            },
+        ];
+        let mut forward = entries.to_vec();
+        let mut backward: Vec<DomainEntry> = entries.iter().rev().copied().collect();
+        let mut rotated: Vec<DomainEntry> =
+            entries[2..].iter().chain(&entries[..2]).copied().collect();
+        for list in [&mut forward, &mut backward, &mut rotated] {
+            normalize_hierarchical(list);
+        }
+        assert_eq!(forward, backward);
+        assert_eq!(forward, rotated);
+        assert_eq!(forward.len(), 4);
+    }
     use crate::filter::types::ListError;
 
     const SEED: u64 = 42;

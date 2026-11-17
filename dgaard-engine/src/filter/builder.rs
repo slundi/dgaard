@@ -162,9 +162,7 @@ impl<'a> FilterEngineBuilder<'a> {
 
     /// Assemble the engine and apply every config-driven filter.
     pub fn build(self) -> BuiltFilter {
-        let mut hierarchical_list = self.hierarchical_list;
-        hierarchical_list.sort_by(|a, b| a.depth.cmp(&b.depth).then(a.hash.cmp(&b.hash)));
-        hierarchical_list.dedup();
+        let hierarchical_list = self.hierarchical_list;
         let mut wildcard_patterns = self.wildcard_patterns;
         wildcard_patterns.sort();
         wildcard_patterns.dedup();
@@ -189,11 +187,9 @@ impl<'a> FilterEngineBuilder<'a> {
         };
 
         engine.load_tld_filters(self.config);
-        // TLD entries were appended after the sort — restore the invariant
-        // binary searches in the suffix matcher rely on.
-        engine
-            .hierarchical_list
-            .sort_by(|a, b| a.depth.cmp(&b.depth).then(a.hash.cmp(&b.hash)));
+        // List rules and TLD exclusions together, in canonical form: the
+        // layout (and a key's merged flags) no longer depend on list order.
+        super::normalize_hierarchical(&mut engine.hierarchical_list);
         engine.load_suspicious_tlds(self.config);
         engine.load_lexical_filters(self.config);
         engine.load_asn_filters(self.config);
@@ -439,5 +435,49 @@ mod tests {
         let engine = FilterEngineBuilder::new(&config, SEED).build().engine;
         assert!(crate::resolve::check_lexical("casino.com", &engine).is_none());
         assert!(crate::resolve::check_lexical("casino.xyz", &engine).is_some());
+    }
+
+    // ---- list order does not change the engine (review M12) ----
+
+    #[test]
+    fn list_order_does_not_change_the_hierarchical_list() {
+        let mut config = empty_sources_config();
+        config.tld.exclude = vec!["zz".into(), "zz".into()];
+        let lists = [
+            ("||*.ads.com^\n||tracker.net^\n", ListKind::Blacklist),
+            ("@@||*.ads.com^\n", ListKind::Whitelist),
+            ("||*.ads.com^\n", ListKind::Blacklist),
+        ];
+        let build = |order: &[usize]| {
+            let mut builder = FilterEngineBuilder::new(&config, SEED);
+            for &idx in order {
+                builder.add_content(lists[idx].0, lists[idx].1);
+            }
+            builder.build().engine
+        };
+        let forward = build(&[0, 1, 2]);
+        let backward = build(&[2, 1, 0]);
+        let whitelist_first = build(&[1, 0, 2]);
+        assert_eq!(forward.hierarchical_list, backward.hierarchical_list);
+        assert_eq!(forward.hierarchical_list, whitelist_first.hierarchical_list);
+
+        // ads.com: block and whitelist merged into one entry; tracker.net;
+        // the zz TLD once.
+        assert_eq!(forward.hierarchical_list.len(), 3);
+        let ads = forward
+            .hierarchical_list
+            .iter()
+            .find(|entry| entry.hash == hash("ads.com"))
+            .unwrap();
+        assert!(
+            ads.flags
+                .contains(DomainEntryFlags::WHITELIST | DomainEntryFlags::WILDCARD)
+        );
+
+        for engine in [&forward, &backward, &whitelist_first] {
+            assert!(!crate::resolve::is_suffix_blocked("cdn.ads.com", engine));
+            assert!(crate::resolve::is_suffix_blocked("x.tracker.net", engine));
+            assert!(crate::resolve::is_suffix_blocked("foo.zz", engine));
+        }
     }
 }
