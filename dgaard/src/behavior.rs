@@ -185,6 +185,13 @@ impl Behavior {
         None
     }
 
+    /// Forget every client: tests share one process with `cargo test`.
+    #[cfg(test)]
+    pub fn clear(&self) {
+        self.nxdomains.clear();
+        self.names.clear();
+    }
+
     #[cfg(test)]
     fn tracked(&self) -> (usize, usize) {
         (self.nxdomains.len(), self.names.len())

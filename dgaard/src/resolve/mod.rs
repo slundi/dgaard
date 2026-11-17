@@ -53,16 +53,20 @@ pub mod tests {
     static TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(Mutex::default);
 
     pub fn init_test_env() -> MutexGuard<'static, ()> {
-        let guard = TEST_MUTEX.lock().unwrap();
+        // A test that panicked while holding the lock must not fail every
+        // test after it: the state it guards is reset below anyway.
+        let guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         GLOBAL_SEED.store(42, Ordering::Relaxed);
         guard
     }
 
     /// Run an async test holding the global test lock on a fresh
     /// current-thread runtime, restoring `CONFIG` and `CURRENT_ENGINE`
-    /// afterwards.
+    /// afterwards. Per-client behavioral state starts empty: every test
+    /// queries from 127.0.0.1, and `cargo test` runs them in one process.
     pub fn run_with_globals(test: impl std::future::Future<Output = ()>) {
         let _guard = init_test_env();
+        crate::behavior::BEHAVIOR.clear();
         let previous_config = CONFIG.load_full();
         let previous_engine = CURRENT_ENGINE.load_full();
         tokio::runtime::Builder::new_current_thread()
