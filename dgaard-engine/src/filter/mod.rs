@@ -1,5 +1,6 @@
 mod abp;
 mod bloom;
+pub mod builder;
 pub mod engine;
 mod fst;
 pub mod host_index;
@@ -7,6 +8,7 @@ mod io;
 mod parser;
 pub mod types;
 
+pub use builder::{BuiltFilter, FilterEngineBuilder, ListKind, list_sources};
 pub use io::load_list_file;
 pub use types::{EntropyThresholds, ListError, ListFormat, LoadFilter};
 

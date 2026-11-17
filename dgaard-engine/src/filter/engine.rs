@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     config::Config,
-    filter::{LoadFilter, io::load_list_file},
+    filter::{FilterEngineBuilder, list_sources},
     model::{DomainEntry, DomainEntryFlags},
 };
 
@@ -137,115 +137,17 @@ impl FilterEngine {
 
     /// Build an engine from file-based sources in the config.
     ///
-    /// Does not perform any HTTP downloads — use `load_list_file` directly for
-    /// URL-fetched content processed in `dgaard`.
+    /// Does not perform any HTTP downloads: hosts that fetch URL lists use
+    /// [`crate::filter::FilterEngineBuilder`] directly with the downloaded
+    /// text, which goes through the same construction as this function.
     pub fn build_from_files(config: &Config, seed: u64) -> Self {
-        let sources = &config.sources;
-
-        let mut fast_map: HashMap<u64, (u8, Box<str>)> = HashMap::new();
-        let mut hierarchical_list: Vec<DomainEntry> = Vec::new();
-        let mut regex_pool: Vec<Regex> = Vec::new();
-        let mut wildcard_patterns: Vec<String> = Vec::new();
-        let mut host_index: HashMap<u64, String> = HashMap::new();
-        let mut browser_rules: Vec<String> = Vec::new();
-
-        // Load-time filter: drop blacklist / NRD entries that a hard query-time
-        // block (structural sanity, TLD exclude, IDN) would already cover.
-        // NOTE: the optional entropy drop is NOT such a case — entropy is only a
-        // soft score at query time, so `ignore_entry_matching_entropy` can
-        // silently un-block listed domains (see `LoadFilter`/`EntropyThresholds`).
-        // Whitelists pass `None` — legitimate whitelist entries must survive.
-        let load_filter = LoadFilter::from_config(config, seed);
-
-        // Load blacklists
-        for path in &sources.blacklists {
-            if let Err(e) = load_list_file(
-                path,
-                DomainEntryFlags::NONE,
-                seed,
-                &mut fast_map,
-                &mut hierarchical_list,
-                &mut wildcard_patterns,
-                &mut regex_pool,
-                &mut host_index,
-                &mut browser_rules,
-                Some(&load_filter),
-            ) {
-                eprintln!("Warning: Failed to load blacklist {}: {}", path, e);
+        let mut builder = FilterEngineBuilder::new(config, seed);
+        for (path, kind) in list_sources(config) {
+            if let Err(e) = builder.add_file(path, kind) {
+                eprintln!("Warning: Failed to load {} {}: {}", kind.label(), path, e);
             }
         }
-
-        // Load whitelists (with WHITELIST flag)
-        for path in &sources.whitelists {
-            if let Err(e) = load_list_file(
-                path,
-                DomainEntryFlags::WHITELIST,
-                seed,
-                &mut fast_map,
-                &mut hierarchical_list,
-                &mut wildcard_patterns,
-                &mut regex_pool,
-                &mut host_index,
-                &mut browser_rules,
-                None,
-            ) {
-                eprintln!("Warning: Failed to load whitelist {}: {}", path, e);
-            }
-        }
-
-        // Load NRD list if path is set
-        if !sources.nrd_list_path.is_empty()
-            && let Err(e) = load_list_file(
-                &sources.nrd_list_path,
-                DomainEntryFlags::NRD,
-                seed,
-                &mut fast_map,
-                &mut hierarchical_list,
-                &mut wildcard_patterns,
-                &mut regex_pool,
-                &mut host_index,
-                &mut browser_rules,
-                Some(&load_filter),
-            )
-        {
-            eprintln!(
-                "Warning: Failed to load NRD list {}: {}",
-                sources.nrd_list_path, e
-            );
-        }
-
-        // Sort hierarchical list by depth then hash for binary search
-        hierarchical_list.sort_by(|a, b| a.depth.cmp(&b.depth).then(a.hash.cmp(&b.hash)));
-
-        let mut engine = Self {
-            fast_map,
-            hierarchical_list,
-            regex_pool,
-            wildcard_patterns,
-            keyword_automaton: None,
-            keyword_patterns: Vec::new(),
-            suspicious_tld_hashes: HashSet::new(),
-            lexical_strict: true,
-            blocked_asn_v4: Vec::new(),
-            blocked_asn_v6: Vec::new(),
-            geoip_reader: None,
-            geoip_file_meta: None,
-            suspicious_country_codes: HashSet::new(),
-            suspicious_country_score: 3,
-            custom_flag_maps: Vec::new(),
-            seed,
-        };
-
-        engine.load_tld_filters(config);
-        engine
-            .hierarchical_list
-            .sort_by(|a, b| a.depth.cmp(&b.depth).then(a.hash.cmp(&b.hash)));
-        engine.load_lexical_filters(config);
-        engine.load_asn_filters(config);
-        engine.load_geoip_filter(config);
-        engine.load_custom_flags(config);
-
-        engine
+        builder.build().engine
     }
 
     /// Load TLD exclusion filters from configuration.

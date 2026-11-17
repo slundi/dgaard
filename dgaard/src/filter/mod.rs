@@ -1,16 +1,14 @@
 pub use dgaard_engine::filter::engine;
 pub use dgaard_engine::filter::engine::FilterEngine;
 pub use dgaard_engine::filter::host_index;
-pub use dgaard_engine::filter::{load_list_file, write_browser_rules};
+pub use dgaard_engine::filter::write_browser_rules;
 
-use dgaard_engine::filter::{LoadFilter, load_list_content};
-use dgaard_engine::model::{DomainEntry, DomainEntryFlags};
+use dgaard_engine::filter::{BuiltFilter, FilterEngineBuilder, ListKind, list_sources};
 
 use http_body_util::{BodyExt, Empty, Limited};
 use hyper::body::Bytes;
 use hyper::header::{CONTENT_LENGTH, LOCATION};
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
-use regex::Regex;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -218,9 +216,7 @@ enum SourceContent {
 /// One source ready to be parsed into the engine.
 struct FetchedSource {
     source: String,
-    flags: DomainEntryFlags,
-    /// Apply the load-time filter (blacklists, NRD; never whitelists).
-    filtered: bool,
+    kind: ListKind,
     content: SourceContent,
 }
 
@@ -228,8 +224,7 @@ struct FetchedSource {
 /// without one the source is reported missing and left out.
 async fn fetch_source(
     source: &str,
-    flags: DomainEntryFlags,
-    filtered: bool,
+    kind: ListKind,
     client: &HttpsClient,
     policy: FetchPolicy,
     cache_dir: &str,
@@ -270,114 +265,44 @@ async fn fetch_source(
     };
     Some(FetchedSource {
         source: source.to_owned(),
-        flags,
-        filtered,
+        kind,
         content,
     })
 }
 
-/// Everything a build produces besides the engine.
-struct BuiltEngine {
-    engine: FilterEngine,
-    host_index: HashMap<u64, String>,
-    browser_rules: Vec<String>,
-    /// File sources that could not be read.
-    unreadable: Vec<String>,
-}
-
-/// Parse every fetched source and assemble the engine.
+/// Parse every fetched source and assemble the engine through the engine
+/// crate's single construction path. Returns the engine with its
+/// by-products, and the file sources that could not be read.
 ///
 /// CPU-bound (parsing, regex compilation, sorting): runs on the blocking
 /// pool so the DNS runtime keeps serving, even with `worker_threads = 1`.
 /// Each list's text is dropped as soon as it is parsed to bound the memory
-/// peak.
-fn build_engine(sources: Vec<FetchedSource>, cfg: &Config, seed: u64) -> BuiltEngine {
-    let mut fast_map: HashMap<u64, (u8, Box<str>)> = HashMap::new();
-    let mut hierarchical_list: Vec<DomainEntry> = Vec::new();
-    let mut regex_pool: Vec<Regex> = Vec::new();
-    let mut wildcard_patterns: Vec<String> = Vec::new();
-    let mut host_index: HashMap<u64, String> = HashMap::new();
-    let mut browser_rules: Vec<String> = Vec::new();
+/// peak. `previous` is the engine being replaced (GeoIP file snapshot).
+fn build_engine(
+    sources: Vec<FetchedSource>,
+    cfg: &Config,
+    seed: u64,
+    previous: &FilterEngine,
+) -> (BuiltFilter, Vec<String>) {
+    let mut builder = FilterEngineBuilder::new(cfg, seed).with_previous(previous);
     let mut unreadable = Vec::new();
-
-    let load_filter = LoadFilter::from_config(cfg, seed);
-
     for fetched in sources {
-        let filter = fetched.filtered.then_some(&load_filter);
         match fetched.content {
-            SourceContent::Text(content) => load_list_content(
-                &content,
-                fetched.flags,
-                seed,
-                &mut fast_map,
-                &mut hierarchical_list,
-                &mut wildcard_patterns,
-                &mut regex_pool,
-                &mut host_index,
-                &mut browser_rules,
-                filter,
-            ),
+            SourceContent::Text(content) => builder.add_content(&content, fetched.kind),
             SourceContent::File(path) => {
-                if let Err(e) = load_list_file(
-                    &path,
-                    fetched.flags,
-                    seed,
-                    &mut fast_map,
-                    &mut hierarchical_list,
-                    &mut wildcard_patterns,
-                    &mut regex_pool,
-                    &mut host_index,
-                    &mut browser_rules,
-                    filter,
-                ) {
-                    eprintln!("Error: failed to load {}: {}", fetched.source, e);
+                if let Err(e) = builder.add_file(&path, fetched.kind) {
+                    eprintln!(
+                        "Error: failed to load {} {}: {}",
+                        fetched.kind.label(),
+                        fetched.source,
+                        e
+                    );
                     unreadable.push(fetched.source);
                 }
             }
         }
     }
-
-    // Sort and deduplicate
-    hierarchical_list.sort_by(|a, b| a.depth.cmp(&b.depth).then(a.hash.cmp(&b.hash)));
-    hierarchical_list.dedup();
-    wildcard_patterns.sort();
-    wildcard_patterns.dedup();
-
-    let mut engine = FilterEngine {
-        fast_map,
-        hierarchical_list,
-        regex_pool,
-        wildcard_patterns,
-        keyword_automaton: None,
-        keyword_patterns: Vec::new(),
-        suspicious_tld_hashes: std::collections::HashSet::new(),
-        lexical_strict: true,
-        blocked_asn_v4: Vec::new(),
-        blocked_asn_v6: Vec::new(),
-        geoip_reader: None,
-        geoip_file_meta: None,
-        suspicious_country_codes: std::collections::HashSet::new(),
-        suspicious_country_score: 3,
-        custom_flag_maps: Vec::new(),
-        seed,
-    };
-
-    engine.load_tld_filters(cfg);
-    // TLD entries were appended after the initial sort — restore the
-    // sort invariant so binary_search_by_key in is_suffix_blocked works.
-    engine
-        .hierarchical_list
-        .sort_by(|a, b| a.depth.cmp(&b.depth).then(a.hash.cmp(&b.hash)));
-    engine.load_lexical_filters(cfg);
-    engine.load_asn_filters(cfg);
-    engine.load_geoip_filter(cfg);
-
-    BuiltEngine {
-        engine,
-        host_index,
-        browser_rules,
-        unreadable,
-    }
+    (builder.build(), unreadable)
 }
 
 /// Reload all filter lists from configured sources (files + URLs).
@@ -424,54 +349,34 @@ async fn reload_lists_inner() -> ReloadReport {
     let cache_dir = sources.list_cache_dir.as_str();
     let mut report = ReloadReport::default();
 
-    // Whitelists first, then NRD, then blacklists: the order entries are
-    // merged in, as before.
-    let mut plan: Vec<(&str, DomainEntryFlags, bool)> = Vec::new();
-    plan.extend(
-        sources
-            .whitelists
-            .iter()
-            .map(|s| (s.as_str(), DomainEntryFlags::WHITELIST, false)),
-    );
-    if !sources.nrd_list_path.is_empty() {
-        plan.push((sources.nrd_list_path.as_str(), DomainEntryFlags::NRD, true));
-    }
-    plan.extend(
-        sources
-            .blacklists
-            .iter()
-            .map(|s| (s.as_str(), DomainEntryFlags::NONE, true)),
-    );
+    // Same merge order as every other host of the engine.
+    let plan = list_sources(&cfg);
 
     let mut fetched = Vec::with_capacity(plan.len());
-    for (source, flags, filtered) in plan {
-        println!("Loading list from {}", source);
-        if let Some(source) = fetch_source(
-            source,
-            flags,
-            filtered,
-            &client,
-            policy,
-            cache_dir,
-            &mut report,
-        )
-        .await
+    for (source, kind) in plan {
+        println!("Loading {} from {}", kind.label(), source);
+        if let Some(source) =
+            fetch_source(source, kind, &client, policy, cache_dir, &mut report).await
         {
             fetched.push(source);
         }
     }
 
     let build_cfg = Arc::clone(&cfg);
-    let built =
-        match tokio::task::spawn_blocking(move || build_engine(fetched, &build_cfg, seed)).await {
-            Ok(built) => built,
-            Err(e) => {
-                eprintln!("Error: list build failed: {} — previous engine retained", e);
-                report.timed_out = true;
-                return report;
-            }
-        };
-    report.missing.extend(built.unreadable);
+    let previous = CURRENT_ENGINE.load_full();
+    let (built, unreadable) = match tokio::task::spawn_blocking(move || {
+        build_engine(fetched, &build_cfg, seed, &previous)
+    })
+    .await
+    {
+        Ok(built) => built,
+        Err(e) => {
+            eprintln!("Error: list build failed: {} — previous engine retained", e);
+            report.timed_out = true;
+            return report;
+        }
+    };
+    report.missing.extend(unreadable);
 
     CURRENT_ENGINE.store(Arc::new(built.engine));
 
@@ -696,8 +601,7 @@ mod tests {
     async fn fetch(url: &str, cache_dir: &str, report: &mut ReloadReport) -> Option<String> {
         let fetched = fetch_source(
             url,
-            DomainEntryFlags::NONE,
-            true,
+            ListKind::Blacklist,
             &build_https_client(),
             policy(true, 1024),
             cache_dir,
@@ -903,6 +807,94 @@ mod tests {
             install_sources(vec!["/nonexistent/dgaard-list.txt".to_owned()], "");
             let report = reload_lists().await;
             assert_eq!(report.missing, ["/nonexistent/dgaard-list.txt"]);
+        });
+    }
+
+    // ---- single construction path (review E7) ----
+
+    fn flagged_list(dir: &Path) -> String {
+        let path = dir.join("flagged.txt");
+        std::fs::write(&path, "flagged-site.com\n").unwrap();
+        path.to_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn custom_flags_apply_after_reload() {
+        run_with_globals(async {
+            let dir = tempfile::tempdir().unwrap();
+            install_sources(Vec::new(), "");
+            let mut config = (*CONFIG.load_full()).clone();
+            config.security.intelligence.enabled = false;
+            config.security.scoring.blocking_threshold = u8::MAX;
+            config.security.custom_flags = vec![crate::config::CustomFlagConfig {
+                bit: 16,
+                code: "TEST".into(),
+                name: "Test flag".into(),
+                description: String::new(),
+                suspicious_score: 4,
+                list_path: vec![flagged_list(dir.path())],
+            }];
+            CONFIG.store(Arc::new(config));
+
+            reload_lists().await;
+
+            let flagged = crate::resolve::resolve_with_score("flagged-site.com").score;
+            let plain = crate::resolve::resolve_with_score("plain-site.com").score;
+            assert_eq!(flagged.total - plain.total, 4, "the custom flag scores");
+        });
+    }
+
+    #[test]
+    fn daemon_builds_the_same_engine_as_build_from_files() {
+        run_with_globals(async {
+            let dir = tempfile::tempdir().unwrap();
+            let black = dir.path().join("black.txt");
+            let white = dir.path().join("white.txt");
+            std::fs::write(&black, "0.0.0.0 ads-parity.com\n||tracker-parity.net^\n").unwrap();
+            std::fs::write(&white, "safe-parity.com\n").unwrap();
+            install_sources(vec![black.to_str().unwrap().to_owned()], "");
+            let mut config = (*CONFIG.load_full()).clone();
+            config.sources.whitelists = vec![white.to_str().unwrap().to_owned()];
+            config.tld.exclude = vec!["zz".into()];
+            config.security.custom_flags = vec![crate::config::CustomFlagConfig {
+                bit: 17,
+                code: "PARITY".into(),
+                name: "Parity".into(),
+                description: String::new(),
+                suspicious_score: 2,
+                list_path: vec![flagged_list(dir.path())],
+            }];
+            CONFIG.store(Arc::new(config.clone()));
+
+            reload_lists().await;
+
+            let seed = GLOBAL_SEED.load(Ordering::Relaxed);
+            let expected = FilterEngine::build_from_files(&config, seed);
+            let daemon = CURRENT_ENGINE.load_full();
+            assert_eq!(daemon.fast_map, expected.fast_map);
+            assert_eq!(daemon.hierarchical_list, expected.hierarchical_list);
+            assert_eq!(daemon.custom_flag_maps, expected.custom_flag_maps);
+        });
+    }
+
+    #[test]
+    fn reload_keeps_the_geoip_file_snapshot() {
+        // The in-place-write detection compares against the previous
+        // engine's snapshot; the daemon used to reset it on every reload.
+        run_with_globals(async {
+            install_sources(Vec::new(), "");
+            let mut previous = FilterEngine::empty();
+            previous.geoip_file_meta = Some(engine::GeoipFileMeta {
+                ino: 11,
+                size: 2048,
+                mtime: 1_700_000_000,
+            });
+            CURRENT_ENGINE.store(Arc::new(previous));
+
+            reload_lists().await;
+
+            let meta = CURRENT_ENGINE.load().geoip_file_meta.clone();
+            assert_eq!(meta.map(|m| (m.ino, m.size)), Some((11, 2048)));
         });
     }
 }
