@@ -194,6 +194,7 @@ impl<'a> FilterEngineBuilder<'a> {
         engine
             .hierarchical_list
             .sort_by(|a, b| a.depth.cmp(&b.depth).then(a.hash.cmp(&b.hash)));
+        engine.load_suspicious_tlds(self.config);
         engine.load_lexical_filters(self.config);
         engine.load_asn_filters(self.config);
         engine.load_geoip_filter(self.config);
@@ -383,5 +384,60 @@ mod tests {
         sorted.dedup();
         assert_eq!(keys, sorted, "sorted by (depth, hash), no duplicates");
         assert_eq!(keys.len(), 3, "ads.com, a.b.tracker.net and the zz TLD");
+    }
+
+    // ---- [tld] suspicious_tlds without the keyword filter (review M10) ----
+
+    fn score_of(domain: &str, config: &Config) -> crate::model::SuspicionScore {
+        let engine = FilterEngineBuilder::new(config, SEED).build().engine;
+        let mut config = config.clone();
+        // compute_score stops counting at the threshold.
+        config.security.scoring.blocking_threshold = u8::MAX;
+        crate::resolve::compute_score(domain, &engine, &config)
+    }
+
+    fn suspicious_tld_config(lexical: bool) -> Config {
+        let mut config = empty_sources_config();
+        config.tld.suspicious_tlds = vec!["xyz".into()];
+        config.security.lexical.enabled = lexical;
+        config.security.lexical.banned_keywords = vec!["casino".into()];
+        config
+    }
+
+    #[test]
+    fn suspicious_tlds_score_with_the_keyword_filter_off() {
+        let config = suspicious_tld_config(false);
+        let score = score_of("shop.xyz", &config);
+        assert_eq!(score.total, crate::model::score_points::SUSPICIOUS_TLD);
+        assert!(
+            score
+                .reasons
+                .iter()
+                .any(|reason| matches!(reason, crate::model::BlockReason::TldExcluded))
+        );
+        assert_eq!(score_of("shop.com", &config).total, 0);
+    }
+
+    #[test]
+    fn suspicious_tlds_score_without_banned_keywords() {
+        let mut config = suspicious_tld_config(true);
+        config.security.lexical.banned_keywords.clear();
+        assert_eq!(
+            score_of("shop.xyz", &config).total,
+            crate::model::score_points::SUSPICIOUS_TLD
+        );
+    }
+
+    #[test]
+    fn keyword_on_a_suspicious_tld_scores_higher_and_is_scoped() {
+        let config = suspicious_tld_config(true);
+        assert_eq!(
+            score_of("casino.xyz", &config).total,
+            crate::model::score_points::KEYWORD_SUSPICIOUS_TLD
+        );
+        // Outside the suspicious TLDs the keyword filter does not apply.
+        let engine = FilterEngineBuilder::new(&config, SEED).build().engine;
+        assert!(crate::resolve::check_lexical("casino.com", &engine).is_none());
+        assert!(crate::resolve::check_lexical("casino.xyz", &engine).is_some());
     }
 }

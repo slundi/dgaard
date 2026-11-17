@@ -19,20 +19,23 @@ This ensures that `casino.com` is blocked, but `casinon-les-bains.fr` (a physica
 Add the following section to your `dgaard.toml` to activate the engine.
 
 ```toml
-[security.parental_control]
+[security.lexical]
 enabled = true
 
 # High-risk keywords to monitor
-keywords = ["porno", "casino", "bet", "drogue", "sex", "gambling"]
+banned_keywords = ["porno", "casino", "bet", "drogue", "sex", "gambling"]
 
 # If true, matches only if the keyword is a full label (more accurate)
 # If false, matches if the keyword is found anywhere (more aggressive)
-strict_matching = true
+strict_keyword_matching = true
 
 [tld]
-# Combined Filter: Block if domain contains a [keyword] AND uses one of these TLDs
-# This is a powerful "Grey-Zone" filter for .com or .net
-suspicious_tlds = [".com", ".net", ".org", ".biz"]
+# Combined filter: when this list is not empty, a keyword only blocks a
+# domain under one of these TLDs (a powerful "grey-zone" filter for com or
+# net); leave it empty for keywords to block under every TLD.
+# These TLDs also add suspicion points on their own, keyword or not.
+# Lowercase, no leading dot.
+suspicious_tlds = ["com", "net", "org", "biz"]
 ```
 
 ## 3. Comparison with Other Systems

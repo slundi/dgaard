@@ -1109,11 +1109,15 @@ pub struct TldConfig {
     /// operators.
     pub exclude: Vec<String>,
 
-    /// Conditional blocking: block only if domain contains a banned keyword
-    /// AND uses one of these TLDs.
+    /// Suspicious TLDs, with two roles:
     ///
-    /// This is useful for "grey-zone" filtering where common TLDs like `com`
-    /// might have legitimate uses of certain keywords.
+    /// * **scoring** — a domain under one of them gets `SUSPICIOUS_TLD`
+    ///   points (`KEYWORD_SUSPICIOUS_TLD` when it also contains a banned
+    ///   keyword), whether or not `[security.lexical]` is enabled;
+    /// * **keyword scope** — when non-empty, the `[security.lexical]` keyword
+    ///   filter only blocks under these TLDs ("keyword AND suspicious TLD"),
+    ///   useful for grey-zone filtering where common TLDs like `com` have
+    ///   legitimate uses of certain keywords. Empty: keywords block everywhere.
     ///
     /// Example: `["biz", "top", "xyz"]`
     pub suspicious_tlds: Vec<String>,

@@ -778,7 +778,7 @@ export const ENGINE_SCHEMA = {
           key: 'suspicious_tlds',
           type: 'tld-list',
           default: [],
-          doc: 'Conditional blocking: blocks only when the domain also contains a\nbanned keyword. Which ccTLDs you treat as suspicious is a regional\nchoice — adjust for the countries you do or do not expect traffic from.',
+          doc: 'Domains under these TLDs get suspicion points, and when the list is\nnot empty the lexical keyword filter only blocks under them (keyword AND\nsuspicious TLD). Which ccTLDs you treat as suspicious is a regional\nchoice — adjust for the countries you do or do not expect traffic from.',
         },
       ],
     },

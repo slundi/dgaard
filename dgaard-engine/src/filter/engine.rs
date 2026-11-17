@@ -178,7 +178,14 @@ impl FilterEngine {
             .collect();
 
         self.keyword_automaton = AhoCorasick::new(&self.keyword_patterns).ok();
+        self.lexical_strict = lexical.strict_keyword_matching;
+    }
 
+    /// Load `[tld] suspicious_tlds`, whether or not the keyword filter is
+    /// on. The list has two roles: those TLDs add suspicion points on their
+    /// own ([`Self::is_suspicious_tld`]), and they bound the keyword filter
+    /// ([`Self::lexical_scope_includes`]).
+    pub fn load_suspicious_tlds(&mut self, config: &Config) {
         self.suspicious_tld_hashes = config
             .tld
             .suspicious_tlds
@@ -189,8 +196,6 @@ impl FilterEngine {
                 twox_hash::XxHash64::oneshot(self.seed, tld_clean.as_bytes())
             })
             .collect();
-
-        self.lexical_strict = lexical.strict_keyword_matching;
     }
 
     /// Load ASN CIDR-range filters from configuration.
@@ -390,17 +395,22 @@ impl FilterEngine {
         })
     }
 
-    /// Return `true` if `tld` should be treated as in-scope for heuristic
-    /// checks.
-    ///
-    /// When `suspicious_tld_hashes` is empty no TLD filter is configured, so
-    /// every TLD is considered in-scope (fail-open: check all).  Once at least
-    /// one TLD is added to the set, only those TLDs are in-scope.
+    /// True when `tld` is listed in `[tld] suspicious_tlds` (scoring).
+    /// Nothing listed: no TLD is suspicious.
     #[inline]
-    pub fn tld_is_in_scope(&self, tld: &str) -> bool {
-        if self.suspicious_tld_hashes.is_empty() {
-            return true; // no filter configured → all TLDs in scope
-        }
+    pub fn is_suspicious_tld(&self, tld: &str) -> bool {
+        !self.suspicious_tld_hashes.is_empty() && self.listed_suspicious(tld)
+    }
+
+    /// True when the keyword filter applies to `tld`: only the suspicious
+    /// TLDs when some are listed ("keyword AND suspicious TLD"), every TLD
+    /// otherwise.
+    #[inline]
+    pub fn lexical_scope_includes(&self, tld: &str) -> bool {
+        self.suspicious_tld_hashes.is_empty() || self.listed_suspicious(tld)
+    }
+
+    fn listed_suspicious(&self, tld: &str) -> bool {
         let hash = twox_hash::XxHash64::oneshot(self.seed, tld.to_ascii_lowercase().as_bytes());
         self.suspicious_tld_hashes.contains(&hash)
     }
@@ -472,11 +482,25 @@ mod tests {
     }
 
     #[test]
-    fn test_tld_is_in_scope_with_empty_set() {
+    fn empty_suspicious_tlds_scope_every_tld_and_flag_none() {
         let engine = make_engine();
-        // Empty set → no filter configured → all TLDs in scope.
-        assert!(engine.tld_is_in_scope("com"));
-        assert!(engine.tld_is_in_scope("xyz"));
+        assert!(engine.lexical_scope_includes("com"));
+        assert!(engine.lexical_scope_includes("xyz"));
+        assert!(!engine.is_suspicious_tld("com"));
+        assert!(!engine.is_suspicious_tld("xyz"));
+    }
+
+    #[test]
+    fn listed_suspicious_tlds_scope_and_flag_only_themselves() {
+        let mut config = Config::default();
+        config.tld.suspicious_tlds = vec!["xyz".into(), "top".into()];
+        let mut engine = make_engine();
+        engine.load_suspicious_tlds(&config);
+        assert!(engine.is_suspicious_tld("xyz"));
+        assert!(engine.is_suspicious_tld("TOP"));
+        assert!(!engine.is_suspicious_tld("com"));
+        assert!(engine.lexical_scope_includes("xyz"));
+        assert!(!engine.lexical_scope_includes("com"));
     }
 
     #[test]

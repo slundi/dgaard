@@ -507,8 +507,9 @@ allow_only = []
 # top, xyz, bid, country, stream, gdn.
 exclude = []
 
-# Conditional blocking: blocks only when the domain also contains a
-# banned keyword. Which ccTLDs you treat as suspicious is a regional
+# Domains under these TLDs get suspicion points, and when the list is
+# not empty the lexical keyword filter only blocks under them (keyword AND
+# suspicious TLD). Which ccTLDs you treat as suspicious is a regional
 # choice — adjust for the countries you do or do not expect traffic from.
 suspicious_tlds = []
 

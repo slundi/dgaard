@@ -358,7 +358,12 @@ summary_interval_secs = 900
 # This is a short generic starting point — extend it to suit your threat model.
 exclude = ["top", "xyz", "bid", "country", "stream", "gdn"]
 
-# Conditional blocking: blocks if it contains a banned_keyword AND this TLD.
+# Suspicious TLDs, two roles:
+#  - scoring: a domain under one of them adds 3 suspicion points (10 when it
+#    also contains a banned keyword), whether or not [security.lexical] is on;
+#  - keyword scope: when this list is not empty, the [security.lexical]
+#    keyword filter only blocks under these TLDs (keyword AND suspicious TLD);
+#    leave it empty for keywords to block under every TLD.
 # The list below is a generic example. Which country-code TLDs (ccTLDs such as
 # "ru", "cn", "su", "es", "ro", ...) you treat as suspicious is a regional
 # choice — adjust it for the countries you do (or do not) expect traffic from.
