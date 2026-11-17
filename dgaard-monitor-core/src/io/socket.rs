@@ -39,8 +39,14 @@ pub async fn read_frame(stream: &mut UnixStream) -> Result<StatMessage, MonitorE
     frame.extend_from_slice(&len_buf);
     frame.extend_from_slice(&payload_buf);
 
-    StatMessage::deserialize(&frame)
-        .ok_or_else(|| MonitorError::InvalidMessage("failed to deserialize frame".to_string()))
+    // The whole frame was read, so the stream stays aligned even when the
+    // content is unknown: report it as skippable, not as a broken stream.
+    StatMessage::deserialize(&frame).ok_or_else(|| {
+        MonitorError::UnsupportedFrame(format!(
+            "type 0x{:02x}",
+            payload_buf.first().copied().unwrap_or(0)
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -132,6 +138,37 @@ mod tests {
             Err(MonitorError::InvalidMessage(_)) => {}
             other => panic!("expected InvalidMessage error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_unknown_frame_is_skippable_and_stream_stays_aligned() {
+        // A newer dgaard may send an event action this monitor does not
+        // know: the frame is reported as unsupported (skip, not reconnect)
+        // and the following frame still decodes.
+        let (client, mut server) = make_connected_pair().await;
+        let mut unknown = StatMessage::Event(StatEvent {
+            timestamp: 1,
+            domain_hash: 2,
+            client_ip: [0; 16],
+            action: StatAction::Allowed,
+        })
+        .serialize();
+        let action_at = unknown.len() - 1;
+        unknown[action_at] = 0xEE; // unknown action code
+        let next = StatMessage::DomainMapping {
+            hash: 9,
+            domain: "next.example".to_string(),
+        };
+        server.write_all(&unknown).await.unwrap();
+        server.write_all(&next.serialize()).await.unwrap();
+        drop(server);
+
+        let mut stream = client;
+        assert!(matches!(
+            read_frame(&mut stream).await,
+            Err(MonitorError::UnsupportedFrame(_))
+        ));
+        assert_eq!(read_frame(&mut stream).await.unwrap(), next);
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 // ── Indicator symbols ─────────────────────────────────────────────────────────
 
-use dgaard_monitor_core::protocol::StatAction;
+use dgaard_monitor_core::protocol::{StatAction, StatError};
 
 pub const INDICATOR_ALLOWED: &str = "✔";
 pub const INDICATOR_BLOCKED: &str = "✘";
@@ -28,10 +28,15 @@ pub enum DomainColor {
 impl DomainColor {
     pub fn from_action(action: &StatAction) -> Self {
         match action {
-            StatAction::Allowed | StatAction::AllowedWithOverride => Self::Green,
+            StatAction::Allowed | StatAction::AllowedWithOverride | StatAction::Cached => {
+                Self::Green
+            }
             StatAction::Proxied => Self::Dim,
-            StatAction::Blocked(_) | StatAction::HighlySuspicious(_) => Self::Red,
-            StatAction::Suspicious(_) => Self::Yellow,
+            StatAction::Blocked(_)
+            | StatAction::HighlySuspicious(_)
+            | StatAction::Error(StatError::DnssecBogus) => Self::Red,
+            // A failed lookup deserves attention without being a threat.
+            StatAction::Suspicious(_) | StatAction::Error(StatError::Upstream) => Self::Yellow,
         }
     }
 

@@ -34,6 +34,36 @@ pub enum StatAction {
     HighlySuspicious(StatBlockReason),
     /// Domain matched an inline config override — filters bypassed, fixed IP returned.
     AllowedWithOverride,
+    /// Answered from dgaard's response cache.
+    Cached,
+    /// The client got SERVFAIL; carries why.
+    Error(StatError),
+}
+
+/// Mirrors `dgaard_engine::StatError`: why a query was answered SERVFAIL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatError {
+    /// The upstream resolution failed (timeout, refusal, unreachable).
+    Upstream,
+    /// DNSSEC validation failed and the resolver blocks bogus answers.
+    DnssecBogus,
+}
+
+impl StatError {
+    fn code(self) -> u8 {
+        match self {
+            Self::Upstream => 0,
+            Self::DnssecBogus => 1,
+        }
+    }
+
+    fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Upstream),
+            1 => Some(Self::DnssecBogus),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +150,8 @@ impl StatMessage {
                         StatAction::HighlySuspicious(StatBlockReason::from_bits_retain(reason))
                     }
                     5 => StatAction::AllowedWithOverride,
+                    6 => StatAction::Cached,
+                    7 => StatAction::Error(StatError::from_code(*payload.get(33)?)?),
                     _ => return None,
                 };
 
@@ -161,8 +193,16 @@ impl StatMessage {
                         | StatAction::Suspicious(_)
                         | StatAction::HighlySuspicious(_)
                 );
-                // payload = timestamp(8) + domain_hash(8) + client_ip(16) + action(1) [+ reason(4)]
-                let payload_len = 8 + 8 + 16 + 1 + if has_reason { 4 } else { 0 };
+                // payload = timestamp(8) + domain_hash(8) + client_ip(16) + action(1)
+                //           [+ reason(4) | + error kind(1)]
+                let extra = if has_reason {
+                    4
+                } else if matches!(event.action, StatAction::Error(_)) {
+                    1
+                } else {
+                    0
+                };
+                let payload_len = 8 + 8 + 16 + 1 + extra;
                 let msg_len = (1 + payload_len) as u16;
 
                 let mut buf = Vec::with_capacity(2 + 1 + payload_len);
@@ -188,6 +228,11 @@ impl StatMessage {
                         buf.extend_from_slice(&r.bits().to_le_bytes());
                     }
                     StatAction::AllowedWithOverride => buf.push(5),
+                    StatAction::Cached => buf.push(6),
+                    StatAction::Error(kind) => {
+                        buf.push(7);
+                        buf.push(kind.code());
+                    }
                 }
 
                 buf
@@ -285,6 +330,56 @@ mod tests {
         let bytes = msg.serialize();
         let decoded = StatMessage::deserialize(&bytes).unwrap();
         assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn test_event_cached_and_error_roundtrip() {
+        for action in [
+            StatAction::Cached,
+            StatAction::Error(StatError::Upstream),
+            StatAction::Error(StatError::DnssecBogus),
+        ] {
+            let msg = StatMessage::Event(make_event(action));
+            let bytes = msg.serialize();
+            assert_eq!(StatMessage::deserialize(&bytes).unwrap(), msg);
+        }
+    }
+
+    #[test]
+    fn test_unknown_error_kind_returns_none() {
+        let mut bytes =
+            StatMessage::Event(make_event(StatAction::Error(StatError::Upstream))).serialize();
+        let last = bytes.len() - 1;
+        bytes[last] = 0xFF;
+        assert!(StatMessage::deserialize(&bytes).is_none());
+    }
+
+    /// Wire bytes of an `Error(DnssecBogus)` event (ts 1, hash 2, IP ::):
+    /// `[len 35 LE][type 1][ts][hash][ip][action 7][kind 1]`. The engine
+    /// encoder asserts the same bytes, so the two cannot drift.
+    fn golden_dnssec_bogus_event() -> Vec<u8> {
+        let mut bytes = vec![35, 0, 0x01];
+        bytes.extend_from_slice(&1u64.to_le_bytes());
+        bytes.extend_from_slice(&2u64.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 16]);
+        bytes.extend_from_slice(&[7, 1]);
+        bytes
+    }
+
+    #[test]
+    fn test_error_wire_format_matches_the_engine() {
+        let event = StatEvent {
+            timestamp: 1,
+            domain_hash: 2,
+            client_ip: [0; 16],
+            action: StatAction::Error(StatError::DnssecBogus),
+        };
+        let golden = golden_dnssec_bogus_event();
+        assert_eq!(StatMessage::Event(event.clone()).serialize(), golden);
+        assert_eq!(
+            StatMessage::deserialize(&golden),
+            Some(StatMessage::Event(event))
+        );
     }
 
     #[test]

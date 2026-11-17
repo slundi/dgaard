@@ -42,7 +42,7 @@
 use std::collections::VecDeque;
 
 use crate::tui::util::DomainColor;
-use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
+use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -94,6 +94,8 @@ pub enum ActionKind {
     Blocked,
     Suspicious,
     HighlySuspicious,
+    Cached,
+    Error,
 }
 
 impl ActionKind {
@@ -104,6 +106,8 @@ impl ActionKind {
             StatAction::Blocked(_) => Self::Blocked,
             StatAction::Suspicious(_) => Self::Suspicious,
             StatAction::HighlySuspicious(_) => Self::HighlySuspicious,
+            StatAction::Cached => Self::Cached,
+            StatAction::Error(_) => Self::Error,
         }
     }
 }
@@ -177,6 +181,9 @@ pub fn flags_label(action: &StatAction) -> String {
         StatAction::Allowed => "Allowed".to_string(),
         StatAction::AllowedWithOverride => "Override".to_string(),
         StatAction::Proxied => "Proxied".to_string(),
+        StatAction::Cached => "Cached".to_string(),
+        StatAction::Error(StatError::Upstream) => "ServFail:Upstream".to_string(),
+        StatAction::Error(StatError::DnssecBogus) => "ServFail:DNSSEC".to_string(),
         StatAction::Blocked(r) => {
             let s = reason_str(*r);
             if s.is_empty() {

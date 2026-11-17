@@ -31,7 +31,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dgaard_monitor_core::protocol::{StatAction, StatEvent};
+use dgaard_monitor_core::protocol::{StatAction, StatError, StatEvent};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -179,9 +179,13 @@ struct BucketEntry {
 impl BucketEntry {
     fn record(&mut self, event: &StatEvent) {
         match event.action.clone() {
-            StatAction::Allowed | StatAction::AllowedWithOverride => self.allowed += 1,
-            StatAction::Proxied => self.proxied += 1,
-            StatAction::Blocked(_) => self.blocked += 1,
+            // Same buckets as the talkers tab: cached → allowed, upstream
+            // failure → proxied, DNSSEC bogus → blocked.
+            StatAction::Allowed | StatAction::AllowedWithOverride | StatAction::Cached => {
+                self.allowed += 1
+            }
+            StatAction::Proxied | StatAction::Error(StatError::Upstream) => self.proxied += 1,
+            StatAction::Blocked(_) | StatAction::Error(StatError::DnssecBogus) => self.blocked += 1,
             StatAction::Suspicious(_) => self.suspicious += 1,
             StatAction::HighlySuspicious(_) => self.highly_suspicious += 1,
         }

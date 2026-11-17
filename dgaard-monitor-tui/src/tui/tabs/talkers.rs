@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
 use crate::tui::tabs::queries::{format_ip, format_timestamp};
-use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
+use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -188,8 +188,13 @@ impl TalkerEntry {
         // Clone the action so we can match by value; StatAction is a small enum
         // (no-data or a Copy u16 bitflag) so this is cheap.
         match event.action.clone() {
-            StatAction::Allowed | StatAction::AllowedWithOverride => self.allowed += 1,
-            StatAction::Proxied => self.proxied += 1,
+            // Cache hits are allowed answers; an upstream failure was still
+            // forwarded; a DNSSEC bogus answer was withheld (blocked).
+            StatAction::Allowed | StatAction::AllowedWithOverride | StatAction::Cached => {
+                self.allowed += 1
+            }
+            StatAction::Proxied | StatAction::Error(StatError::Upstream) => self.proxied += 1,
+            StatAction::Error(StatError::DnssecBogus) => self.blocked += 1,
             StatAction::Blocked(r) => {
                 self.blocked += 1;
                 self.record_flags(r);

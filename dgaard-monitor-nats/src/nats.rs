@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 use crate::config::NatsConfig;
-use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
+use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
 use dgaard_monitor_core::state::AppState;
 
 /// On-wire representation of a monitor event.
@@ -57,6 +57,12 @@ pub enum WireAction {
     Blocked,
     Suspicious,
     HighlySuspicious,
+    /// Answered from dgaard's response cache.
+    Cached,
+    /// SERVFAIL: the upstream resolution failed.
+    UpstreamError,
+    /// SERVFAIL: DNSSEC validation failed.
+    DnssecBogus,
 }
 
 impl WireEvent {
@@ -67,6 +73,9 @@ impl WireEvent {
             StatAction::Blocked(r) => (WireAction::Blocked, r.bits()),
             StatAction::Suspicious(r) => (WireAction::Suspicious, r.bits()),
             StatAction::HighlySuspicious(r) => (WireAction::HighlySuspicious, r.bits()),
+            StatAction::Cached => (WireAction::Cached, 0),
+            StatAction::Error(StatError::Upstream) => (WireAction::UpstreamError, 0),
+            StatAction::Error(StatError::DnssecBogus) => (WireAction::DnssecBogus, 0),
         };
         Self {
             ts: event.timestamp,
@@ -86,6 +95,9 @@ impl WireEvent {
             WireAction::Blocked => StatAction::Blocked(reasons),
             WireAction::Suspicious => StatAction::Suspicious(reasons),
             WireAction::HighlySuspicious => StatAction::HighlySuspicious(reasons),
+            WireAction::Cached => StatAction::Cached,
+            WireAction::UpstreamError => StatAction::Error(StatError::Upstream),
+            WireAction::DnssecBogus => StatAction::Error(StatError::DnssecBogus),
         };
         Ok(StatEvent {
             timestamp: self.ts,

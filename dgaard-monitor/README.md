@@ -15,6 +15,22 @@ The monitor parses the following wire format:
 
 - Frame: [u16: Length][u8: Type][Payload]
 - Types: 0x00 (Mapping Update) or 0x01 (Query Event).
+- Query Event payload: [u64: timestamp][u64: domain hash][16 bytes: client IP][u8: action][extra]
+
+| Action | Meaning                                        | Extra                                       |
+| ------ | ---------------------------------------------- | ------------------------------------------- |
+| 0      | Allowed                                        | —                                           |
+| 1      | Proxied                                        | —                                           |
+| 2      | Blocked                                        | u32 reason flags                            |
+| 3      | Suspicious                                     | u32 reason flags                            |
+| 4      | Highly suspicious                              | u32 reason flags                            |
+| 5      | Allowed by an override                         | —                                           |
+| 6      | Cached (answered from dgaard's response cache) | —                                           |
+| 7      | Error (SERVFAIL)                               | u8 kind: 0 upstream failure, 1 DNSSEC bogus |
+
+A monitor older than the dgaard it reads rejects actions 6 and 7 and keeps
+reconnecting: upgrade both together. From this version on, a monitor skips
+any message it does not understand instead of reconnecting.
 
 ## Quick start
 

@@ -12,7 +12,7 @@ use tokio::sync::watch;
 use tokio::time::timeout;
 
 use crate::config::{ForwardFormat, ForwardingConfig};
-use crate::protocol::{StatAction, StatBlockReason};
+use crate::protocol::{StatAction, StatBlockReason, StatError};
 use crate::state::AppState;
 
 // --- HTTP client ---
@@ -251,9 +251,15 @@ fn syslog_sd_escape(s: &str) -> String {
 
 fn syslog_severity(action: &StatAction) -> u8 {
     match action {
-        StatAction::Allowed | StatAction::Proxied | StatAction::AllowedWithOverride => 6,
+        StatAction::Allowed
+        | StatAction::Proxied
+        | StatAction::AllowedWithOverride
+        | StatAction::Cached => 6,
         StatAction::Suspicious(_) => 5,
-        StatAction::HighlySuspicious(_) | StatAction::Blocked(_) => 4,
+        StatAction::HighlySuspicious(_)
+        | StatAction::Blocked(_)
+        | StatAction::Error(StatError::DnssecBogus) => 4,
+        StatAction::Error(StatError::Upstream) => 3,
     }
 }
 
@@ -293,9 +299,13 @@ fn cef_ext_escape(s: &str) -> String {
 
 fn cef_severity(action: &StatAction) -> u8 {
     match action {
-        StatAction::Allowed | StatAction::Proxied | StatAction::AllowedWithOverride => 1,
+        StatAction::Allowed
+        | StatAction::Proxied
+        | StatAction::AllowedWithOverride
+        | StatAction::Cached => 1,
+        StatAction::Error(StatError::Upstream) => 3,
         StatAction::Suspicious(_) => 5,
-        StatAction::HighlySuspicious(_) => 7,
+        StatAction::HighlySuspicious(_) | StatAction::Error(StatError::DnssecBogus) => 7,
         StatAction::Blocked(_) => 8,
     }
 }
@@ -308,6 +318,11 @@ fn format_cef(timestamp: u64, ip: &str, action: &StatAction, domain: &str) -> St
         StatAction::Suspicious(_) => ("DNS-SUSPICIOUS", "DNS Query Suspicious"),
         StatAction::HighlySuspicious(_) => ("DNS-HIGHLY-SUSPICIOUS", "DNS Query Highly Suspicious"),
         StatAction::Blocked(_) => ("DNS-BLOCKED", "DNS Query Blocked"),
+        StatAction::Cached => ("DNS-CACHED", "DNS Query Cached"),
+        StatAction::Error(StatError::Upstream) => ("DNS-UPSTREAM-ERROR", "DNS Upstream Failure"),
+        StatAction::Error(StatError::DnssecBogus) => {
+            ("DNS-DNSSEC-BOGUS", "DNS DNSSEC Validation Failure")
+        }
     };
     let act = action_name(action);
     let reason = reason_labels(action);
@@ -330,10 +345,14 @@ fn format_elasticsearch(timestamp: u64, ip: &str, action: &StatAction, domain: &
     let act = action_name(action);
     let reason = reason_labels(action);
     let (kind, category, ev_type) = match action {
-        StatAction::Allowed | StatAction::Proxied | StatAction::AllowedWithOverride => {
-            ("event", "network", "allowed")
+        StatAction::Allowed
+        | StatAction::Proxied
+        | StatAction::AllowedWithOverride
+        | StatAction::Cached => ("event", "network", "allowed"),
+        StatAction::Blocked(_) | StatAction::Error(StatError::DnssecBogus) => {
+            ("alert", "network", "denied")
         }
-        StatAction::Blocked(_) => ("alert", "network", "denied"),
+        StatAction::Error(StatError::Upstream) => ("event", "network", "error"),
         StatAction::Suspicious(_) | StatAction::HighlySuspicious(_) => {
             ("alert", "intrusion_detection", "info")
         }

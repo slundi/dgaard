@@ -20,7 +20,7 @@ use crate::dns::dnssec_chain::DnssecVerdict;
 use crate::dns::packet::{DnsPacket, Incoming, Transport};
 use crate::dns::resolver::UPSTREAM_RESOLVER;
 use crate::dnssec::DnssecStatus;
-use crate::model::{Action, StatAction, StatBlockReason, SuspicionScore};
+use crate::model::{Action, StatAction, StatBlockReason, StatError, SuspicionScore};
 use crate::resolve::{check_qclass, check_qtype, resolve_with_score, score_answer};
 use crate::{CONFIG, STATS_COUNTERS, STATS_SENDER};
 
@@ -343,6 +343,11 @@ pub(crate) async fn answer_query(
                 crate::prefetch::try_enqueue(&dns_packet.domain, dns_packet.qtype);
             }
 
+            // Cache hits are often most of the traffic: they must show up
+            // in the summary, the monitors and per-client logs too.
+            if let Some(sender) = STATS_SENDER.get() {
+                sender.send_event(&dns_packet.domain, peer, StatAction::Cached);
+            }
             return Some(cached);
         }
     }
@@ -406,7 +411,7 @@ pub(crate) async fn answer_query(
                     STATS_COUNTERS.increment_blocked();
                     (
                         DnsPacket::build_servfail_response(&dns_packet.message),
-                        None,
+                        Some(StatAction::Error(StatError::DnssecBogus)),
                     )
                 }
                 ForwardOutcome::UpstreamError => {
@@ -415,7 +420,7 @@ pub(crate) async fn answer_query(
                     STATS_COUNTERS.increment_upstream_errors();
                     (
                         DnsPacket::build_servfail_response(&dns_packet.message),
-                        None,
+                        Some(StatAction::Error(StatError::Upstream)),
                     )
                 }
             }
@@ -558,6 +563,9 @@ mod tests {
     impl UpstreamResolver for CountingResolver {
         async fn resolve(&self, query: &DnsPacket) -> std::io::Result<Vec<u8>> {
             UPSTREAM_CALLS.fetch_add(1, Ordering::SeqCst);
+            if query.domain == "upstream-fails.com" {
+                return Err(std::io::Error::other("upstream down"));
+            }
             let mut response = query.message.clone();
             response.metadata.message_type = MessageType::Response;
             response.metadata.response_code = ResponseCode::NoError;
@@ -855,6 +863,98 @@ mod tests {
             let second = second.unwrap();
             assert!(second.len() <= 512);
             assert!(Message::from_vec(&second).unwrap().metadata.truncation);
+        });
+    }
+
+    // ---- every answer emits a stats event (review M3) ----
+
+    /// Receiving end of the global stats channel, installed once per process.
+    static STATS_RX: std::sync::LazyLock<std::sync::Mutex<Option<crate::stats::StatsReceiver>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+    fn capture_stats() {
+        let _ = STATS_SENDER.get_or_init(|| {
+            let (sender, receiver) = crate::stats::channel();
+            *STATS_RX.lock().unwrap() = Some(receiver);
+            sender
+        });
+    }
+
+    /// Actions of the events received for `domain` since the last call.
+    fn events_for(domain: &str) -> Vec<StatAction> {
+        let hash = twox_hash::XxHash64::oneshot(
+            crate::GLOBAL_SEED.load(std::sync::atomic::Ordering::Relaxed),
+            domain.as_bytes(),
+        );
+        let mut guard = STATS_RX.lock().unwrap();
+        let receiver = guard.as_mut().expect("stats capture installed");
+        let mut actions = Vec::new();
+        while let Ok(msg) = receiver.try_recv() {
+            if let crate::model::StatMessage::Event(event) = msg
+                && event.domain_hash == hash
+            {
+                actions.push(event.action);
+            }
+        }
+        actions
+    }
+
+    #[test]
+    fn cache_hits_emit_cached_events() {
+        run_with_globals(async {
+            capture_stats();
+            install_policy(&[], "cached-site.com");
+            let cache =
+                crate::RESPONSE_CACHE.get_or_init(|| crate::cache::ResponseCache::new(1024));
+            cache.remove("cached-site.com", 1);
+            events_for("cached-site.com");
+
+            run_query("cached-site.com").await;
+            let (_, calls) = run_query("cached-site.com").await;
+            assert_eq!(calls, 0, "second answer from the cache");
+            assert_eq!(
+                events_for("cached-site.com"),
+                [StatAction::Proxied, StatAction::Cached]
+            );
+        });
+    }
+
+    #[test]
+    fn upstream_failures_emit_error_events() {
+        run_with_globals(async {
+            capture_stats();
+            install_policy(&[], "upstream-fails.com");
+            events_for("upstream-fails.com");
+            let (rcode, _) = run_query("upstream-fails.com").await;
+            assert_eq!(rcode, ResponseCode::ServFail);
+            assert_eq!(
+                events_for("upstream-fails.com"),
+                [StatAction::Error(StatError::Upstream)]
+            );
+        });
+    }
+
+    #[test]
+    fn dnssec_bogus_answers_emit_error_events() {
+        // Recursive mode with DNSSEC blocking: the validator holds only the
+        // root anchors (no validated root keys here), so every answer is
+        // Bogus and answered SERVFAIL.
+        run_with_globals(async {
+            capture_stats();
+            install_policy(&[], "bogus-site.com");
+            let mut config = (*CONFIG.load_full()).clone();
+            config.server.mode = ResolutionMode::Recursive;
+            config.security.dnssec.enabled = true;
+            config.security.dnssec.action = DnssecAction::Block;
+            CONFIG.store(Arc::new(config));
+            events_for("bogus-site.com");
+
+            let (rcode, _) = run_query("bogus-site.com").await;
+            assert_eq!(rcode, ResponseCode::ServFail);
+            assert_eq!(
+                events_for("bogus-site.com"),
+                [StatAction::Error(StatError::DnssecBogus)]
+            );
         });
     }
 }

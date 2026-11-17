@@ -148,6 +148,11 @@ impl StatMessage {
                         buf.extend_from_slice(&reason.bits().to_le_bytes());
                     }
                     StatAction::AllowedWithOverride => buf.push(5),
+                    StatAction::Cached => buf.push(6),
+                    StatAction::Error(kind) => {
+                        buf.push(7);
+                        buf.push(kind.code());
+                    }
                 }
             }
         }
@@ -219,6 +224,8 @@ impl StatMessage {
                         StatAction::HighlySuspicious(StatBlockReason::from_bits_retain(bits))
                     }
                     5 => StatAction::AllowedWithOverride,
+                    6 => StatAction::Cached,
+                    7 => StatAction::Error(StatError::from_code(*payload.get(33)?)?),
                     _ => return None,
                 };
 
@@ -434,6 +441,57 @@ mod tests {
         let msg = StatMessage::Event(event);
         let bytes = msg.serialize();
         assert_eq!(StatMessage::deserialize(&bytes), Some(msg));
+    }
+
+    /// Wire bytes of an `Error(DnssecBogus)` event (ts 1, hash 2, IP ::):
+    /// `[len 35 LE][type 1][ts][hash][ip][action 7][kind 1]`. The monitor's
+    /// protocol mirror asserts the same bytes, so the two cannot drift.
+    fn golden_dnssec_bogus_event() -> Vec<u8> {
+        let mut bytes = vec![35, 0, 0x01];
+        bytes.extend_from_slice(&1u64.to_le_bytes());
+        bytes.extend_from_slice(&2u64.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 16]);
+        bytes.extend_from_slice(&[7, 1]);
+        bytes
+    }
+
+    fn bare_event(action: StatAction) -> StatMessage {
+        StatMessage::Event(StatEvent {
+            timestamp: 1,
+            domain_hash: 2,
+            client_ip: [0; 16],
+            action,
+        })
+    }
+
+    #[test]
+    fn stat_message_cached_and_error_round_trip() {
+        for action in [
+            StatAction::Cached,
+            StatAction::Error(StatError::Upstream),
+            StatAction::Error(StatError::DnssecBogus),
+        ] {
+            let msg = bare_event(action);
+            assert_eq!(StatMessage::deserialize(&msg.serialize()), Some(msg));
+        }
+    }
+
+    #[test]
+    fn stat_message_error_wire_format_is_pinned() {
+        let bytes = bare_event(StatAction::Error(StatError::DnssecBogus)).serialize();
+        assert_eq!(bytes, golden_dnssec_bogus_event());
+    }
+
+    #[test]
+    fn stat_message_unknown_error_kind_is_rejected() {
+        let mut bytes = golden_dnssec_bogus_event();
+        *bytes.last_mut().unwrap() = 0xFF;
+        assert!(StatMessage::deserialize(&bytes).is_none());
+        // Error without its kind byte.
+        let mut short = golden_dnssec_bogus_event();
+        short.pop();
+        short[0] = 34;
+        assert!(StatMessage::deserialize(&short).is_none());
     }
 
     #[test]

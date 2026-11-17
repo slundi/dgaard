@@ -150,6 +150,9 @@ async fn main() {
                                         Ok(protocol::StatMessage::Event(event)) => {
                                             s.record_event(event).await;
                                         }
+                                        // Newer dgaard, unknown message: skip
+                                        // it rather than reconnect in a loop.
+                                        Err(error::MonitorError::UnsupportedFrame(_)) => continue,
                                         Err(e) => {
                                             eprintln!("Stream error: {e}");
                                             break; // reconnect

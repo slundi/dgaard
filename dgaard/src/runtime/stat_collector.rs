@@ -1,6 +1,6 @@
 use crate::CONFIG;
 use crate::config::QueryLogLevel;
-use crate::model::{StatAction, StatBlockReason, StatEvent};
+use crate::model::{StatAction, StatBlockReason, StatError, StatEvent};
 use crate::stats::{DOMAIN_MAP_CAP, StatsReceiver};
 use lru::LruCache;
 use std::collections::{HashMap, HashSet};
@@ -320,6 +320,8 @@ pub(crate) struct TrafficSummary {
     queries: u64,
     blocked: u64,
     suspicious: u64,
+    /// Queries answered SERVFAIL (upstream failure, DNSSEC bogus).
+    errors: u64,
     clients: HashSet<[u8; 16]>,
     blocked_domains: HashMap<u64, u32>,
 }
@@ -343,7 +345,11 @@ impl TrafficSummary {
                 }
             }
             StatAction::Suspicious(_) | StatAction::HighlySuspicious(_) => self.suspicious += 1,
-            StatAction::Allowed | StatAction::Proxied | StatAction::AllowedWithOverride => {}
+            StatAction::Error(_) => self.errors += 1,
+            StatAction::Allowed
+            | StatAction::Proxied
+            | StatAction::AllowedWithOverride
+            | StatAction::Cached => {}
         }
         if self.clients.len() < SUMMARY_TRACK_CAP {
             self.clients.insert(event.client_ip);
@@ -373,10 +379,11 @@ impl TrafficSummary {
             ""
         };
         let mut line = format!(
-            "[SUMMARY] last {window_secs}s: queries={} blocked={} ({blocked_pct:.1}%) suspicious={} clients={}{clients_capped}",
+            "[SUMMARY] last {window_secs}s: queries={} blocked={} ({blocked_pct:.1}%) suspicious={} errors={} clients={}{clients_capped}",
             window.queries,
             window.blocked,
             window.suspicious,
+            window.errors,
             window.clients.len(),
         );
         if let Some((hash, count)) = window
@@ -399,14 +406,31 @@ pub(crate) fn query_log_line(
     level: QueryLogLevel,
 ) -> Option<String> {
     let (min_level, tag, reason) = match &event.action {
-        StatAction::Blocked(reason) => (QueryLogLevel::Blocked, "BLOCK", Some(reason)),
-        StatAction::HighlySuspicious(reason) => {
-            (QueryLogLevel::Suspicious, "SUSPICIOUS:HIGH", Some(reason))
-        }
-        StatAction::Suspicious(reason) => (QueryLogLevel::Suspicious, "SUSPICIOUS", Some(reason)),
+        StatAction::Blocked(reason) => (
+            QueryLogLevel::Blocked,
+            "BLOCK",
+            Some(stat_block_reason_str(reason)),
+        ),
+        StatAction::HighlySuspicious(reason) => (
+            QueryLogLevel::Suspicious,
+            "SUSPICIOUS:HIGH",
+            Some(stat_block_reason_str(reason)),
+        ),
+        StatAction::Suspicious(reason) => (
+            QueryLogLevel::Suspicious,
+            "SUSPICIOUS",
+            Some(stat_block_reason_str(reason)),
+        ),
+        // Failures are shown with blocks: the client got no answer either.
+        StatAction::Error(kind) => (
+            QueryLogLevel::Blocked,
+            "SERVFAIL",
+            Some(stat_error_str(*kind).to_owned()),
+        ),
         StatAction::Allowed => (QueryLogLevel::All, "ALLOW", None),
         StatAction::Proxied => (QueryLogLevel::All, "PROXY", None),
         StatAction::AllowedWithOverride => (QueryLogLevel::All, "OVERRIDE", None),
+        StatAction::Cached => (QueryLogLevel::All, "CACHE", None),
     };
     if level < min_level {
         return None;
@@ -417,10 +441,7 @@ pub(crate) fn query_log_line(
         .map_or("<unknown>", String::as_str);
     let client_ip = format_client_ip(&event.client_ip);
     Some(match reason {
-        Some(reason) => format!(
-            "[{tag}] {client_ip} -> {domain} ({})",
-            stat_block_reason_str(reason)
-        ),
+        Some(reason) => format!("[{tag}] {client_ip} -> {domain} ({reason})"),
         None => format!("[{tag}] {client_ip} -> {domain}"),
     })
 }
@@ -462,6 +483,14 @@ pub(crate) async fn process_stat_message(
                 clients.len()
             );
         }
+    }
+}
+
+/// Log label of a SERVFAIL cause.
+fn stat_error_str(kind: StatError) -> &'static str {
+    match kind {
+        StatError::Upstream => "upstream failure",
+        StatError::DnssecBogus => "dnssec bogus",
     }
 }
 
@@ -691,6 +720,51 @@ mod tests {
     }
 
     #[test]
+    fn query_log_line_cache_hits_are_logged_at_all_level() {
+        let mut domain_map = test_map();
+        domain_map.put(1, "cached.example".to_string());
+        let event = event_from([10, 0, 0, 1], 1, StatAction::Cached);
+        assert_eq!(
+            query_log_line(&event, &mut domain_map, QueryLogLevel::All).as_deref(),
+            Some("[CACHE] 10.0.0.1 -> cached.example")
+        );
+        assert!(query_log_line(&event, &mut domain_map, QueryLogLevel::Blocked).is_none());
+    }
+
+    #[test]
+    fn query_log_line_servfails_are_logged_with_blocks() {
+        let mut domain_map = test_map();
+        domain_map.put(1, "broken.example".to_string());
+        for (kind, cause) in [
+            (StatError::Upstream, "upstream failure"),
+            (StatError::DnssecBogus, "dnssec bogus"),
+        ] {
+            let event = event_from([10, 0, 0, 1], 1, StatAction::Error(kind));
+            assert_eq!(
+                query_log_line(&event, &mut domain_map, QueryLogLevel::Blocked),
+                Some(format!("[SERVFAIL] 10.0.0.1 -> broken.example ({cause})"))
+            );
+            assert!(query_log_line(&event, &mut domain_map, QueryLogLevel::Off).is_none());
+        }
+    }
+
+    #[test]
+    fn summary_counts_errors_and_cache_hits() {
+        let mut summary = TrafficSummary::default();
+        for action in [
+            StatAction::Cached,
+            StatAction::Cached,
+            StatAction::Error(StatError::Upstream),
+            StatAction::Error(StatError::DnssecBogus),
+        ] {
+            summary.record(&event_from([10, 0, 0, 1], 1, action));
+        }
+        let line = summary.take_line(60, &test_map());
+        assert!(line.contains("queries=4 blocked=0"), "{line}");
+        assert!(line.contains("errors=2"), "{line}");
+    }
+
+    #[test]
     fn query_log_line_unknown_domain_falls_back() {
         let mut domain_map = test_map();
         let event = event_from([10, 0, 0, 1], 404, blocked());
@@ -755,7 +829,7 @@ mod tests {
         let mut summary = TrafficSummary::default();
         assert_eq!(
             summary.take_line(900, &test_map()),
-            "[SUMMARY] last 900s: queries=0 blocked=0 (0.0%) suspicious=0 clients=0"
+            "[SUMMARY] last 900s: queries=0 blocked=0 (0.0%) suspicious=0 errors=0 clients=0"
         );
     }
 
@@ -786,7 +860,7 @@ mod tests {
 
         assert_eq!(
             summary.take_line(60, &domain_map),
-            "[SUMMARY] last 60s: queries=8 blocked=4 (50.0%) suspicious=2 clients=3 \
+            "[SUMMARY] last 60s: queries=8 blocked=4 (50.0%) suspicious=2 errors=0 clients=3 \
              top_blocked=ads.example (3)"
         );
     }

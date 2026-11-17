@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, broadcast};
 
-use crate::protocol::{StatAction, StatEvent};
+use crate::protocol::{StatAction, StatError, StatEvent};
 
 #[allow(dead_code)]
 pub const DEFAULT_WINDOW: Duration = Duration::from_secs(3600); // 1 hour
@@ -40,11 +40,17 @@ impl RollingStats {
         self.total += 1;
 
         match &event.action {
-            StatAction::Allowed | StatAction::AllowedWithOverride => self.allowed += 1,
+            // A cache hit is an allowed answer that skipped the upstream.
+            StatAction::Allowed | StatAction::AllowedWithOverride | StatAction::Cached => {
+                self.allowed += 1
+            }
             StatAction::Proxied => self.proxied += 1,
             StatAction::Blocked(_)
             | StatAction::Suspicious(_)
-            | StatAction::HighlySuspicious(_) => self.blocked += 1,
+            | StatAction::HighlySuspicious(_)
+            | StatAction::Error(StatError::DnssecBogus) => self.blocked += 1,
+            // Counted in `total` only: neither an answer nor a block.
+            StatAction::Error(StatError::Upstream) => {}
         }
 
         *self.domain_hits.entry(event.domain_hash).or_insert(0) += 1;

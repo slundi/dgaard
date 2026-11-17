@@ -62,6 +62,37 @@ pub enum StatAction {
     HighlySuspicious(StatBlockReason),
     /// Query matched an inline config override — filters bypassed, fixed IP returned.
     AllowedWithOverride,
+    /// Answered from the response cache (the name passed the filters when
+    /// the entry was stored).
+    Cached,
+    /// The client got SERVFAIL; carries why.
+    Error(StatError),
+}
+
+/// Why a query was answered SERVFAIL (see [`StatAction::Error`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum StatError {
+    /// The upstream resolution failed (timeout, refusal, unreachable).
+    Upstream = 0,
+    /// DNSSEC validation failed and `[security.dnssec] action = "block"`.
+    DnssecBogus = 1,
+}
+
+impl StatError {
+    /// Wire value of the kind.
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// Kind from its wire value; `None` for an unknown code.
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Upstream),
+            1 => Some(Self::DnssecBogus),
+            _ => None,
+        }
+    }
 }
 
 bitflags! {

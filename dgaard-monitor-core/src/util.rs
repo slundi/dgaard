@@ -3,7 +3,7 @@ use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{StatAction, StatBlockReason, StatEvent};
+use crate::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
 
 // ── IP helpers ─────────────────────────────────────────────────────────────────
 
@@ -39,6 +39,9 @@ pub fn action_name(action: &StatAction) -> &'static str {
         StatAction::Suspicious(_) => "Suspicious",
         StatAction::HighlySuspicious(_) => "HighlySuspicious",
         StatAction::AllowedWithOverride => "Override",
+        StatAction::Cached => "Cached",
+        StatAction::Error(StatError::Upstream) => "UpstreamError",
+        StatAction::Error(StatError::DnssecBogus) => "DnssecBogus",
     }
 }
 
