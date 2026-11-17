@@ -1,11 +1,15 @@
 //! Adblock rules
 //! * `||example.com^`: domain and all its sub domains
-//! * `@@||example.com^`: whitelist for this domain
+//! * `||*.example.com^`: sub domains only, not `example.com` itself
+//! * `@@||example.com^`: whitelist for this domain and its sub domains
 //! * `/regex/`: regular expression
 //! * `*`: universal wildcard, can be anywhere in the domain
 
 use crate::{
-    filter::ListError,
+    filter::{
+        ListError,
+        parser::{subdomains_entry, subdomains_zone},
+    },
     model::{DomainEntryFlags, RawDomainEntry},
     utils::{count_dots, normalize_domain},
 };
@@ -37,7 +41,15 @@ pub fn parse_abp_line(line: &str, seed: u64) -> Result<RawDomainEntry, ListError
         input = &input[..pos];
     }
 
-    // 3. Identify pattern type and extract value
+    // 3. `||*.domain^`: subdomains only. Strip `||`, `^` and `*.` before
+    // hashing so the key matches what the suffix matcher looks up.
+    if let Some(zone) = extract_domain_from_abp(input).and_then(subdomains_zone) {
+        let mut entry = subdomains_entry(zone, seed);
+        entry.flags |= flags;
+        return Ok(entry);
+    }
+
+    // 4. Identify pattern type and extract value
     // Regexes keep their case (`\D` vs `\d`); every other pattern is a domain
     // and is normalized so it matches lowercased, dotless queries.
     let value = if input.starts_with('/') && input.ends_with('/') && input.len() > 2 {
@@ -123,8 +135,46 @@ mod tests {
     #[test]
     fn test_parse_abp_wildcard_rule() {
         let result = parse_abp_line("||*.ads.example.com^", SEED).unwrap();
-        assert!(result.flags.contains(DomainEntryFlags::WILDCARD));
-        assert_eq!(result.value, "||*.ads.example.com^");
+        assert_eq!(result.flags, DomainEntryFlags::WILDCARD);
+        assert_eq!(result.value, "*.ads.example.com");
+        // Hash and depth are those of the zone, as looked up by the matcher.
+        assert_eq!(
+            result.hash,
+            twox_hash::XxHash64::oneshot(SEED, b"ads.example.com")
+        );
+        assert_eq!(result.depth, 2);
+    }
+
+    #[test]
+    fn test_parse_abp_wildcard_rule_with_options_and_case() {
+        let result = parse_abp_line("||*.Ads.COM^$important", SEED).unwrap();
+        assert_eq!(result.value, "*.ads.com");
+        assert_eq!(result.hash, twox_hash::XxHash64::oneshot(SEED, b"ads.com"));
+        assert_eq!(result.depth, 1);
+    }
+
+    #[test]
+    fn test_parse_abp_wildcard_whitelist_rule() {
+        let result = parse_abp_line("@@||*.ok.example.com^", SEED).unwrap();
+        assert_eq!(
+            result.flags,
+            DomainEntryFlags::WHITELIST | DomainEntryFlags::WILDCARD
+        );
+        assert_eq!(result.value, "*.ok.example.com");
+    }
+
+    #[test]
+    fn test_parse_abp_glob_rules_stay_patterns() {
+        // Only a single leading `*.` is a subdomain rule; other `*` stay globs.
+        for (line, value) in [
+            ("||ads*.example.com^", "||ads*.example.com^"),
+            ("||*.*.example.com^", "||*.*.example.com^"),
+            ("||*.^", "||*.^"),
+        ] {
+            let result = parse_abp_line(line, SEED).unwrap();
+            assert_eq!(result.value, value, "{line}");
+            assert!(result.flags.contains(DomainEntryFlags::WILDCARD));
+        }
     }
 
     #[test]

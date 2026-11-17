@@ -46,6 +46,33 @@ fn exact_entry(domain: &str, seed: u64) -> RawDomainEntry {
     }
 }
 
+/// Prefix marking a subdomains-only rule (`*.zone`): it matches every name
+/// strictly below `zone`, never `zone` itself.
+pub(crate) const SUBDOMAINS_PREFIX: &str = "*.";
+
+/// Return the zone of a `*.zone` pattern, or `None` for any other pattern
+/// (no prefix, empty zone, or more wildcards inside the zone).
+pub(crate) fn subdomains_zone(pattern: &str) -> Option<&str> {
+    pattern
+        .strip_prefix(SUBDOMAINS_PREFIX)
+        .filter(|zone| !zone.is_empty() && !zone.contains('*'))
+}
+
+/// Build a subdomains-only entry for `zone`.
+///
+/// The value keeps the `*.` prefix so the loader can tell it from `||zone^`,
+/// but the hash and depth are those of `zone`: the matcher walks the parents
+/// of a query and looks each one up by `(depth, hash)`.
+pub(crate) fn subdomains_entry(zone: &str, seed: u64) -> RawDomainEntry {
+    let zone = normalize_domain(zone);
+    RawDomainEntry {
+        hash: twox_hash::XxHash64::oneshot(seed, zone.as_bytes()),
+        depth: count_dots(&zone),
+        value: format!("{SUBDOMAINS_PREFIX}{zone}"),
+        flags: DomainEntryFlags::WILDCARD,
+    }
+}
+
 /// Parse hosts format line: "0.0.0.0 domain.com" or "127.0.0.1 domain.com" or ":: domain.com".
 ///
 /// Fields may be separated by any whitespace, a line may list several names
@@ -98,7 +125,8 @@ pub fn parse_dnsmasq_line(line: &str, seed: u64) -> Result<RawDomainEntry, ListE
     Ok(exact_entry(domain, seed))
 }
 
-/// Parse plain domain format: just the domain name with no IP prefix
+/// Parse plain domain format: just the domain name with no IP prefix.
+/// A leading `*.` (`*.example.com`) makes it a subdomains-only rule.
 pub fn parse_plain_domain(line: &str, seed: u64) -> Result<RawDomainEntry, ListError<'_>> {
     let domain = line.trim();
 
@@ -108,6 +136,11 @@ pub fn parse_plain_domain(line: &str, seed: u64) -> Result<RawDomainEntry, ListE
             line,
             "plain",
         ));
+    }
+
+    if let Some(zone) = subdomains_zone(domain) {
+        Name::from_str(zone).map_err(|e| ListError::InvalidDomain(e, zone))?;
+        return Ok(subdomains_entry(zone, seed));
     }
 
     // Validate domain
@@ -215,6 +248,36 @@ mod tests {
     fn test_parse_dnsmasq_line_normalizes() {
         let result = parse_dnsmasq_line("server=/Ads.Example.COM/", SEED).unwrap();
         assert_eq!(result.value, "ads.example.com");
+    }
+
+    #[test]
+    fn test_parse_plain_domain_subdomains_rule() {
+        let result = parse_plain_domain("*.Ads.Example.COM", SEED).unwrap();
+        assert_eq!(result.value, "*.ads.example.com");
+        assert_eq!(result.flags, DomainEntryFlags::WILDCARD);
+        assert_eq!(result.depth, 2);
+        assert_eq!(
+            result.hash,
+            twox_hash::XxHash64::oneshot(SEED, b"ads.example.com")
+        );
+    }
+
+    #[test]
+    fn test_parse_plain_domain_subdomains_rule_invalid_zone() {
+        let line = format!("*.{}.com", "a".repeat(64));
+        assert!(matches!(
+            parse_plain_domain(&line, SEED),
+            Err(ListError::InvalidDomain(..))
+        ));
+    }
+
+    #[test]
+    fn test_subdomains_zone() {
+        assert_eq!(subdomains_zone("*.example.com"), Some("example.com"));
+        assert_eq!(subdomains_zone("example.com"), None);
+        assert_eq!(subdomains_zone("*."), None);
+        assert_eq!(subdomains_zone("*.*.example.com"), None);
+        assert_eq!(subdomains_zone("ads*.example.com"), None);
     }
 
     #[test]

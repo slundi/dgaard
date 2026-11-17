@@ -248,7 +248,7 @@ pub mod tests {
                 data_idx: 0,
             });
         }
-        hierarchical_list.sort_by_key(|e| e.hash);
+        hierarchical_list.sort_by_key(|e| (e.depth, e.hash));
 
         FilterEngine {
             fast_map,
@@ -282,7 +282,7 @@ pub mod tests {
                 data_idx: 0,
             });
         }
-        hierarchical_list.sort_by_key(|e| e.hash);
+        hierarchical_list.sort_by_key(|e| (e.depth, e.hash));
 
         FilterEngine {
             fast_map: HashMap::new(),

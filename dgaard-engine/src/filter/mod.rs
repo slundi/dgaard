@@ -14,7 +14,9 @@ use regex::Regex;
 use std::collections::HashMap;
 
 use abp::parse_abp_line;
-use parser::{detect_format, parse_dnsmasq_line, parse_host_line, parse_plain_domain};
+use parser::{
+    detect_format, parse_dnsmasq_line, parse_host_line, parse_plain_domain, subdomains_zone,
+};
 
 use crate::dga::entropy::{calculate_entropy, calculate_entropy_fast, is_consonant_suspicious};
 use crate::model::{DomainEntry, DomainEntryFlags, RawDomainEntry};
@@ -273,7 +275,10 @@ fn insert_exact(
 /// - exact entries (hosts, plain, dnsmasq) live in `fast_map` only;
 /// - suffix rules (`||x^`) also land in `fast_map` (for `x` itself, flagged
 ///   `WILDCARD`) and, for blacklists, in `hierarchical_list` (for subdomains);
-/// - globs and regexes go to `hierarchical_list` with their pattern data.
+/// - subdomains-only rules (`||*.x^`, `*.x`) go to `hierarchical_list` only,
+///   keyed by `x`, for both blacklists and whitelists;
+/// - globs and regexes go to `hierarchical_list` with their pattern data
+///   (`data_idx > 0`), which keeps them out of suffix lookups.
 #[allow(clippy::too_many_arguments)]
 fn insert_entry(
     entry: RawDomainEntry,
@@ -318,13 +323,26 @@ fn insert_entry(
             depth: entry.depth,
             data_idx: regex_pool.len(),
         });
+    } else if combined_flags.contains(DomainEntryFlags::WILDCARD)
+        && subdomains_zone(&entry.value).is_some()
+    {
+        // `*.x`: subdomains only, so nothing goes to fast_map. Keyed by the
+        // zone; blocking and whitelist entries may share a key, the matcher
+        // scans the whole key range. NRD is an exact-name signal: skipped.
+        if !combined_flags.contains(DomainEntryFlags::NRD) {
+            hierarchical_list.push(DomainEntry {
+                hash: entry.hash,
+                flags: combined_flags & (DomainEntryFlags::WHITELIST | DomainEntryFlags::WILDCARD),
+                depth: entry.depth,
+                data_idx: 0,
+            });
+        }
     } else if combined_flags.contains(DomainEntryFlags::WILDCARD) && !entry.value.contains('*') {
         // `||x^`: `x` itself is an exact hit, subdomains are a suffix hit.
         insert_exact(&entry, combined_flags, fast_map, host_index);
         // Whitelist suffixes are resolved from `fast_map` by `is_whitelisted`,
-        // and NRD is an exact-name signal. Only blocking suffixes go to the
-        // hierarchical list, so every entry sharing a (depth, hash) key there
-        // carries the same flags and the binary search stays deterministic.
+        // and NRD is an exact-name signal: only blocking suffixes go to the
+        // hierarchical list.
         if !combined_flags.intersects(DomainEntryFlags::WHITELIST | DomainEntryFlags::NRD) {
             hierarchical_list.push(DomainEntry {
                 hash: entry.hash,
@@ -336,22 +354,31 @@ fn insert_entry(
     } else if combined_flags.contains(DomainEntryFlags::WILDCARD) {
         let clean_pattern = entry.value.trim_start_matches("||").trim_end_matches('^');
 
-        let needs_glob = clean_pattern
+        // Glob patterns only ever block; a whitelist glob would turn into a
+        // block rule, so it is dropped rather than inverted.
+        if is_whitelist {
+            load_debug!(
+                "dgaard-engine: whitelist glob '{}' is not supported; skipping",
+                entry.value
+            );
+            return;
+        }
+
+        // A pattern made only of `*` labels (`||*^`) would match every name
+        // of that depth: require at least one literal character.
+        let has_literal = clean_pattern
             .split('.')
-            .any(|seg| seg.contains('*') && seg != "*");
+            .any(|seg| seg.chars().any(|c| c != '*'));
+        if !has_literal {
+            return;
+        }
 
-        let data_idx = if needs_glob {
-            wildcard_patterns.push(clean_pattern.to_string());
-            wildcard_patterns.len()
-        } else {
-            0
-        };
-
+        wildcard_patterns.push(clean_pattern.to_string());
         hierarchical_list.push(DomainEntry {
             hash: entry.hash,
             flags: combined_flags,
             depth: entry.depth,
-            data_idx,
+            data_idx: wildcard_patterns.len(),
         });
     } else {
         insert_exact(&entry, combined_flags, fast_map, host_index);
@@ -744,6 +771,95 @@ mod tests {
         assert!(hl[0].flags.contains(DomainEntryFlags::WILDCARD));
         assert_eq!(hl[0].data_idx, 0);
         assert_eq!(wp.len(), 0);
+        // Keyed by the zone, as the suffix matcher looks it up.
+        assert_eq!(
+            hl[0].hash,
+            twox_hash::XxHash64::oneshot(SEED, b"tracking.com")
+        );
+        assert_eq!(hl[0].depth, 1);
+    }
+
+    /// Run `content` through `load_list_content` with the given base flags.
+    #[allow(clippy::type_complexity)]
+    fn load(
+        content: &str,
+        base_flags: DomainEntryFlags,
+    ) -> (HashMap<u64, (u8, Box<str>)>, Vec<DomainEntry>, Vec<String>) {
+        let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
+        load_list_content(
+            content, base_flags, SEED, &mut fm, &mut hl, &mut wp, &mut rp, &mut hi, &mut br, None,
+        );
+        (fm, hl, wp)
+    }
+
+    #[test]
+    fn test_process_line_abp_whitelist_subdomains_rule() {
+        let (fm, hl, wp) = load("@@||*.ok.example.com^", DomainEntryFlags::NONE);
+        assert!(fm.is_empty(), "the zone itself is not whitelisted");
+        assert!(wp.is_empty());
+        assert_eq!(hl.len(), 1);
+        assert_eq!(
+            hl[0].flags,
+            DomainEntryFlags::WHITELIST | DomainEntryFlags::WILDCARD
+        );
+        assert_eq!(
+            hl[0].hash,
+            twox_hash::XxHash64::oneshot(SEED, b"ok.example.com")
+        );
+    }
+
+    #[test]
+    fn test_process_line_whitelist_file_subdomains_rule() {
+        let (fm, hl, _) = load("*.ok.example.com", DomainEntryFlags::WHITELIST);
+        assert!(fm.is_empty());
+        assert_eq!(
+            hl[0].flags,
+            DomainEntryFlags::WHITELIST | DomainEntryFlags::WILDCARD
+        );
+    }
+
+    #[test]
+    fn test_process_line_subdomains_rule_redundant_under_suffix() {
+        let (fm, hl, _) = load(
+            "||ads.com^\n||*.ads.com^\n*.ads.com",
+            DomainEntryFlags::NONE,
+        );
+        assert_eq!(fm.len(), 1);
+        assert_eq!(hl.len(), 1, "`*.ads.com` is covered by `||ads.com^`");
+    }
+
+    #[test]
+    fn test_process_line_nrd_subdomains_rule_skipped() {
+        let (fm, hl, _) = load("||*.fresh.example^", DomainEntryFlags::NRD);
+        assert!(fm.is_empty());
+        assert!(hl.is_empty());
+    }
+
+    #[test]
+    fn test_process_line_multi_star_pattern_is_glob() {
+        let (_, hl, wp) = load("||*.*.example.com^", DomainEntryFlags::NONE);
+        assert_eq!(wp, ["*.*.example.com"]);
+        assert_eq!(hl[0].data_idx, 1);
+    }
+
+    #[test]
+    fn test_process_line_star_only_pattern_dropped() {
+        let (fm, hl, wp) = load("||*^\n||*.*^", DomainEntryFlags::NONE);
+        assert!(fm.is_empty());
+        assert!(hl.is_empty());
+        assert!(
+            wp.is_empty(),
+            "a pattern without literal would match everything"
+        );
+    }
+
+    #[test]
+    fn test_process_line_whitelist_glob_not_turned_into_block() {
+        let (_, hl, wp) = load("@@||ads*.example.com^", DomainEntryFlags::NONE);
+        assert!(wp.is_empty());
+        assert!(hl.is_empty());
+        let (_, _, wp) = load("||ads*.example.com^", DomainEntryFlags::WHITELIST);
+        assert!(wp.is_empty());
     }
 
     #[test]

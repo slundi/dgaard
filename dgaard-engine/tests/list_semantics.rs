@@ -171,3 +171,109 @@ fn abp_whitelist_suffix_overrides_subdomains() {
     ));
     assert!(is_blocked(&action(black, white, "other.ads.com")));
 }
+
+// ── C2: subdomains-only wildcards and whitelist suffixes ─────────────────────
+
+#[test]
+fn abp_subdomains_rule_blocks_subdomains_only() {
+    for query in ["a.wild.com", "deep.a.wild.com"] {
+        let result = action("||*.wild.com^", "", query);
+        assert!(
+            matches!(result, Action::Block(BlockReason::AbpRule(_))),
+            "{query}: got {result:?}"
+        );
+    }
+    // `||*.x^` does not cover `x` itself, nor lookalikes.
+    assert!(!is_blocked(&action("||*.wild.com^", "", "wild.com")));
+    assert!(!is_blocked(&action("||*.wild.com^", "", "notwild.com")));
+}
+
+#[test]
+fn plain_subdomains_rule_blocks_subdomains_only() {
+    assert!(is_blocked(&action("*.wild.com", "", "a.wild.com")));
+    assert!(!is_blocked(&action("*.wild.com", "", "wild.com")));
+}
+
+#[test]
+fn abp_subdomains_rule_mixed_with_domain_rules() {
+    // Review probe: `||ads.com^ ||ads.com^$important ||*.ads.com^`.
+    let black = "||ads.com^\n||ads.com^$important\n||*.ads.com^";
+    assert!(is_blocked(&action(black, "", "x.ads.com")));
+    assert!(is_blocked(&action(black, "", "ads.com")));
+}
+
+#[test]
+fn multi_star_pattern_blocks_through_glob() {
+    let black = "||*.*.example.com^";
+    assert!(is_blocked(&action(black, "", "a.b.example.com")));
+    assert!(!is_blocked(&action(black, "", "example.com")));
+}
+
+#[test]
+fn whitelist_suffix_protects_subdomains_of_blocked_wildcard() {
+    // Review reproduction for C2.
+    let black = "||evil.com^\n||*.evil.com^";
+    let white = "@@||ok.evil.com^";
+    assert!(matches!(action(black, white, "ok.evil.com"), Action::Allow));
+    assert!(matches!(
+        action(black, white, "a.ok.evil.com"),
+        Action::Allow
+    ));
+    assert!(is_blocked(&action(black, white, "a.evil.com")));
+    assert!(is_blocked(&action(black, white, "evil.com")));
+}
+
+#[test]
+fn whitelist_subdomains_rule_spares_the_zone_itself() {
+    let black = "||evil.com^";
+    let white = "@@||*.ok.evil.com^";
+    assert!(matches!(
+        action(black, white, "a.ok.evil.com"),
+        Action::Allow
+    ));
+    // Only subdomains are whitelisted: `ok.evil.com` stays under `||evil.com^`.
+    assert!(is_blocked(&action(black, white, "ok.evil.com")));
+}
+
+#[test]
+fn whitelist_wins_over_more_specific_block() {
+    // A broad user whitelist overrides precise third-party block entries.
+    let black = "0.0.0.0 s.youtube.com\n||ads.youtube.com^";
+    let white = "@@||youtube.com^";
+    for query in ["s.youtube.com", "ads.youtube.com", "x.ads.youtube.com"] {
+        assert!(
+            matches!(action(black, white, query), Action::Allow),
+            "{query}"
+        );
+    }
+}
+
+#[test]
+fn whitelist_wins_whatever_the_pipeline_order() {
+    use dgaard_engine::config::PipelineStep;
+
+    let (engine, mut config) = engine_from(
+        "||evil.com^\n||*.evil.com^\n0.0.0.0 a.ok.evil.com",
+        "@@||ok.evil.com^",
+    );
+    // Block steps before the whitelist step.
+    config.server.pipeline = vec![
+        PipelineStep::StaticBlock,
+        PipelineStep::SuffixMatch,
+        PipelineStep::Whitelist,
+        PipelineStep::Upstream,
+    ];
+    for query in ["ok.evil.com", "a.ok.evil.com", "b.a.ok.evil.com"] {
+        let result = resolve_with_score(query, &engine, &config).action;
+        assert!(!is_blocked(&result), "{query}: got {result:?}");
+    }
+    let result = resolve_with_score("a.evil.com", &engine, &config).action;
+    assert!(is_blocked(&result), "got {result:?}");
+}
+
+#[test]
+fn whitelist_glob_does_not_block() {
+    // A `@@` glob used to land in the block patterns and block its targets.
+    let result = action("", "@@||ads*.example.com^", "ads1.example.com");
+    assert!(!is_blocked(&result), "got {result:?}");
+}
