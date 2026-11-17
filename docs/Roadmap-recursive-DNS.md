@@ -499,7 +499,7 @@ security-sensitive.
 #### Session 1 — primitives + integration points (this commit)
 
 - [x] Integrate `hickory-proto` DNSSEC primitives (`Verifier::verify_rrsig`) into a new `dgaard/src/dns/dnssec_chain.rs` module
-- [x] Embed the IANA root KSK-2017 trust anchor as a `const` (KSK-2024 lands once we ship the `root-anchors.xml` verification step)
+- [x] Embed the IANA root trust anchors as `const`s: KSK-2017 and KSK-2024 (digests re-derived in tests from the public keys in IANA `root-anchors.xml`)
 - [x] Per-zone DNSKEY/DS cache (`DashMap<Name, ZoneTrustState>`) with parent → child trust hand-off
 - [x] Skip `dnssec::init()` (side-channel) when `mode = "recursive"`
 - [x] Lift the Phase 1 "refuse to start" guard
@@ -524,8 +524,20 @@ security-sensitive.
 - [x] `validate_message_for(message, qname, qtype)` — cross-checks denial proofs in the authority section
 - [x] Bogus-on-broken-chain: a signed zone (DNSKEYs cached) with a missing or wrong-key NSEC/NSEC3 proof reports `Bogus` instead of `Insecure`
 - [x] `DnssecAction::Block` enforcement for Bogus negatives — `handle_query` already serves SERVFAIL on Bogus, so the new path inherits this for free
-- [ ] Wildcard NXDOMAIN proof (RFC 4035 §5.4) — deferred; missing-proof falls back to `Insecure` so it can't be exploited
-- [ ] NSEC3 closest-encloser proof (RFC 5155 §8) — same deferral rationale
+- [ ] Wildcard NXDOMAIN proof (RFC 4035 §5.4) — deferred; a covering NSEC is accepted without the wildcard denial
+- [ ] NSEC3 closest-encloser proof (RFC 5155 §8) — deferred; a covering NSEC3 is accepted without it
+
+#### Session 4 — fail-closed hardening (review E1)
+
+- [x] Fetch the root DNSKEY rrset and validate it against the compiled-in anchors before the first referral
+- [x] Store a DS only once verified under the parent's validated keys; store DNSKEYs only once matched by a verified DS
+- [x] Check RRSIG inception/expiration (serial arithmetic), signer name (= the zone being validated, enclosing the owner), zone-key flag and non-revoked keys — hickory's verifier only does the crypto
+- [x] Fail closed: under a known signed zone, a missing, unknown-key, expired, foreign or invalid RRSIG is `Bogus`; a verified DS without validated DNSKEY (broken chain) is `Bogus`
+- [x] Insecure delegations require a signed proof from the parent: NSEC at the child (NS, no DS), NSEC3 matching the child (NS, no DS), or an opt-out NSEC3 covering it; a stripped DS is `Bogus`
+- [x] Zone cuts hosted on the parent's servers (no referral): chain RRSIG signers below the answering zone via DS/DNSKEY queries, and probe for an insecure cut before failing unsigned data
+- [x] Denials validated for the terminal name of a CNAME chain; DS rrsets validated against the parent side of the cut
+- [x] Trust cache bounded (`MAX_CACHED_ZONES`), TTL-driven (min of record TTL, original TTL, signature lifetime, 24 h), no shard lock held during crypto
+- [x] Opt-in live check against the real root: `cargo nextest run -p dgaard --run-ignored only live_dnssec`
 
 ### Operational (rolling) — root-hints drift check
 

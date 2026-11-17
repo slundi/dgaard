@@ -64,15 +64,12 @@ fn recursive_dnssec_status(
     let Ok(msg) = hickory_resolver::proto::op::Message::from_vec(response_bytes) else {
         return DnssecStatus::Ok;
     };
-    // Session 3: validate_message_for cross-checks NSEC/NSEC3 denials
-    // on NXDOMAIN/NODATA responses, so a signed zone that fails to
-    // prove its own negative answer now reports Bogus instead of the
-    // session-1 fail-open Insecure.
+    // Fail-closed under signed zones: missing, forged or expired
+    // signatures and unproven denials there are Bogus.
     match crate::RECURSIVE_DNSSEC.validate_message_for(&msg, qname, qtype) {
         DnssecVerdict::Bogus => DnssecStatus::Bogus,
-        // Insecure → Ok is fail-open: the canonical "absence of proof
-        // is not proof of absence" stance for unsigned zones, and the
-        // correct posture before the resolver has built a chain.
+        // Insecure: unsigned zone (insecure delegation proven by the
+        // parent) or no chain applies — nothing to verify against.
         DnssecVerdict::Secure | DnssecVerdict::Insecure => DnssecStatus::Ok,
     }
 }

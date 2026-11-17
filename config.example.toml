@@ -623,6 +623,12 @@ ttl_override = 0
 # validator cannot reach the upstream (Indeterminate) are fail-open: the
 # upstream response is forwarded normally.
 #
+# Recursive mode (`server.mode = "recursive"`) validates the chain of trust
+# itself, from the IANA root anchors, and fails closed: data under a signed
+# zone with a missing, expired or invalid signature is BOGUS, while unsigned
+# zones need a signed proof of insecurity from their parent. Consider
+# `action = "log"` for a trial period before enforcing.
+#
 # Note: enabling DNSSEC doubles the number of outgoing queries for each
 # forwarded DNS request. Keep this in mind on bandwidth-constrained links.
 #

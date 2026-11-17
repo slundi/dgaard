@@ -37,6 +37,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use hickory_resolver::proto::dnssec::rdata::DNSSECRData;
 use hickory_resolver::proto::op::{Edns, Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_resolver::proto::rr::{DNSClass, Name, RData, Record, RecordType};
 use tokio::net::UdpSocket;
@@ -45,8 +46,8 @@ use twox_hash::XxHash3_64;
 
 use crate::CONFIG;
 use crate::dns::dnssec_chain::{
-    DnssecVerdict, RecursiveDnssecValidator, extract_dnskey_rrset_from_answers,
-    extract_ds_rrset_from_authority,
+    DnssecVerdict, RecursiveDnssecValidator, ZoneStatus, extract_dnskey_rrset_from_answers,
+    extract_ds_rrset_from_authority, extract_signed_rrset, rrsig_signers,
 };
 use crate::dns::packet::DnsPacket;
 use crate::dns::resolver::UpstreamResolver;
@@ -194,6 +195,44 @@ pub fn extract_referral_zone(authority: &[Record]) -> Option<Name> {
         .iter()
         .find(|r| matches!(&r.data, RData::NS(_)))
         .map(|r| r.name.clone())
+}
+
+/// Upper bound on nested zone cuts chained without a referral (a zone,
+/// its child, grandchild… all hosted on the same servers).
+const MAX_COHOSTED_CUTS: u8 = 4;
+
+/// Names whose data in `response` carries no signature: owners of answer
+/// rrsets without a covering RRSIG, plus `qname` for a negative answer
+/// whose authority section is unsigned. The resolver checks whether an
+/// insecure zone cut explains them.
+fn unsigned_names(response: &Message, qname: &Name) -> Vec<Name> {
+    let mut names: Vec<Name> = Vec::new();
+    for record in &response.answers {
+        let rtype = record.record_type();
+        if rtype == RecordType::RRSIG || names.contains(&record.name) {
+            continue;
+        }
+        let signed = response.answers.iter().any(|r| match &r.data {
+            RData::DNSSEC(DNSSECRData::RRSIG(sig)) => {
+                r.name == record.name && sig.input().type_covered == rtype
+            }
+            _ => false,
+        });
+        if !signed {
+            names.push(record.name.clone());
+        }
+    }
+
+    let negative =
+        response.metadata.response_code == ResponseCode::NXDomain || response.answers.is_empty();
+    let authority_signed = response
+        .authorities
+        .iter()
+        .any(|r| r.record_type() == RecordType::RRSIG);
+    if negative && !authority_signed && !names.contains(qname) {
+        names.push(qname.clone());
+    }
+    names
 }
 
 /// Key of one `(qname, qtype)` resolution in [`ResolutionBudget::in_progress`].
@@ -522,6 +561,21 @@ impl RecursiveResolver {
         let mut depth: u8 = 0;
         let mut visited_zones: Vec<u64> =
             Vec::with_capacity(usize::from(self.config.max_delegation_depth));
+
+        // Anchor the chain: validate the root DNSKEY rrset against the
+        // compiled-in trust anchors before following the first referral.
+        if let Some(validator) = self.validator.clone()
+            && validator.needs_keys(&current_zone)
+        {
+            self.fetch_zone_keys(
+                &validator,
+                &current_zone,
+                &ns_addrs,
+                &mut budget.queries_used,
+            )
+            .await;
+        }
+
         loop {
             if budget.queries_used >= self.config.max_queries_per_resolution {
                 crate::STATS_COUNTERS.increment_recursive_query_cap_hit();
@@ -536,7 +590,22 @@ impl RecursiveResolver {
                 .query_any_ns(&ns_addrs, qname, qtype, &mut budget.queries_used)
                 .await?;
 
-            match classify_response(&response) {
+            let classified = classify_response(&response);
+            if matches!(classified, ResponseKind::Answer | ResponseKind::NxDomain)
+                && let Some(validator) = self.validator.clone()
+            {
+                self.complete_chain(
+                    &validator,
+                    &response,
+                    qname,
+                    &current_zone,
+                    &ns_addrs,
+                    &mut budget.queries_used,
+                )
+                .await;
+            }
+
+            match classified {
                 // CNAMEs are followed by the caller, which sees the zone.
                 ResponseKind::Answer => return Ok((response, current_zone)),
                 ResponseKind::Referral { new_zone, ns_names } => {
@@ -687,26 +756,20 @@ impl RecursiveResolver {
         Ok(response)
     }
 
-    /// Phase 6 session 2: extend the chain of trust through one
-    /// delegation hop.
+    /// Extend the chain of trust through one delegation hop.
     ///
-    /// 1. **DS hand-off** — extract the child's DS rrset from the
-    ///    parent's referral (the parent's authority section) and feed
-    ///    it to the validator. The DS rrset's RRSIG is signed by the
-    ///    *parent*, so this must run while the validator still has
-    ///    the parent's DNSKEYs cached.
-    /// 2. **DNSKEY fetch** — issue a fresh DNSKEY query against the
-    ///    child's NS addresses with the DO bit set, then record the
-    ///    returned DNSKEY rrset. The validator self-verifies the rrset
-    ///    against its own KSK *and* against the just-installed DS.
+    /// 1. **Parent → child hand-off** — the referral either carries the
+    ///    child's DS rrset, which the validator stores only once verified
+    ///    under the parent's keys, or (insecure delegation) a signed
+    ///    NSEC/NSEC3 proof that the child has no DS. A signed parent with
+    ///    neither is a broken chain: the DS may have been stripped.
+    /// 2. **DNSKEY fetch** — once the child has a verified DS, fetch its
+    ///    DNSKEY rrset from the child's servers and validate it against
+    ///    that DS.
     ///
-    /// Each step bumps `queries_used` so a misbehaving zone can't
-    /// inflate the per-query budget by serving a DS rrset every hop.
-    /// Failures are reported through
-    /// `recursive_dnssec_chain_broken` and do not abort the resolution.
-    /// Insecure delegations (no DS) are silent — that's a normal
-    /// downgrade and session 3 will encode the NSEC proof that
-    /// justifies it.
+    /// Each query bumps `queries_used`. Failures are counted in
+    /// `recursive_dnssec_chain_broken` and do not abort the resolution:
+    /// data under a broken chain fails validation in `handle_query`.
     async fn build_chain_step(
         &self,
         validator: &Arc<RecursiveDnssecValidator>,
@@ -716,49 +779,209 @@ impl RecursiveResolver {
         ns_addrs: &[SocketAddr],
         queries_used: &mut u32,
     ) {
-        // Step 1: DS hand-off, parent → child.
-        if let Some((ds_records, ds_sig)) = extract_ds_rrset_from_authority(referral, child_zone) {
-            match validator.record_ds_for_child(parent_zone, child_zone, &ds_records, &ds_sig) {
-                DnssecVerdict::Bogus => {
-                    crate::STATS_COUNTERS.increment_recursive_dnssec_chain_broken();
-                    // A Bogus DS means the parent told us *something*
-                    // about the child but we couldn't verify it. The
-                    // session-3 contract is to fail the whole resolve;
-                    // for now we keep walking and let `validate_message`
-                    // at answer time make the final call.
-                }
-                DnssecVerdict::Secure | DnssecVerdict::Insecure => {}
+        let verdict = match extract_ds_rrset_from_authority(referral, child_zone) {
+            Some((ds_records, ds_sigs)) => {
+                validator.record_ds_for_child(parent_zone, child_zone, &ds_records, &ds_sigs)
             }
+            None => {
+                validator.record_insecure_delegation(parent_zone, child_zone, &referral.authorities)
+            }
+        };
+        if verdict == DnssecVerdict::Bogus {
+            crate::STATS_COUNTERS.increment_recursive_dnssec_chain_broken();
         }
 
-        // Step 2: pull DNSKEY from the child zone. Budget-bounded — if
-        // the resolver is already saturating its per-query cap, skip
-        // the chain hop entirely rather than starve the answer fetch.
+        if validator.needs_keys(child_zone) {
+            self.fetch_zone_keys(validator, child_zone, ns_addrs, queries_used)
+                .await;
+        }
+    }
+
+    /// Fetch `zone`'s DNSKEY rrset from `ns_addrs` and validate it against
+    /// the zone's verified DS (the compiled-in anchors for the root).
+    /// Budget-bounded: skipped when the query cap is reached, which leaves
+    /// the zone's chain broken rather than starving the answer fetch.
+    async fn fetch_zone_keys(
+        &self,
+        validator: &Arc<RecursiveDnssecValidator>,
+        zone: &Name,
+        ns_addrs: &[SocketAddr],
+        queries_used: &mut u32,
+    ) {
         if *queries_used >= self.config.max_queries_per_resolution {
             return;
         }
         let Ok(dnskey_msg) = self
-            .query_any_ns(ns_addrs, child_zone, RecordType::DNSKEY, queries_used)
+            .query_any_ns(ns_addrs, zone, RecordType::DNSKEY, queries_used)
             .await
         else {
             return;
         };
-        let Some((dnskey_records, dnskey_sig)) = extract_dnskey_rrset_from_answers(&dnskey_msg)
-        else {
-            return;
+        let verdict = match extract_dnskey_rrset_from_answers(&dnskey_msg, zone) {
+            Some((records, rrsigs)) => validator.record_dnskey_rrset(zone, &records, &rrsigs),
+            // The zone has a verified DS, so it must serve a signed DNSKEY.
+            None => DnssecVerdict::Bogus,
         };
-        match validator.record_dnskey_rrset(child_zone, &dnskey_records, &dnskey_sig) {
-            DnssecVerdict::Secure => {
-                crate::STATS_COUNTERS.increment_recursive_dnssec_chain_built();
+        match verdict {
+            DnssecVerdict::Secure => crate::STATS_COUNTERS.increment_recursive_dnssec_chain_built(),
+            DnssecVerdict::Bogus => crate::STATS_COUNTERS.increment_recursive_dnssec_chain_broken(),
+            DnssecVerdict::Insecure => {}
+        }
+    }
+
+    /// Extend the chain of trust to the zones a final response depends on
+    /// but the walk never crossed. A server hosting both a zone and its
+    /// child answers for the child directly, with no referral, so:
+    ///
+    /// 1. data signed by a zone below `zone` gets that signer's DS (asked
+    ///    from the same servers) and DNSKEY chained in;
+    /// 2. unsigned data under a signed zone triggers a search for an
+    ///    insecure zone cut (a DS NODATA proven by NSEC/NSEC3). Without
+    ///    one the data stays `Bogus` — stripped signatures look the same.
+    async fn complete_chain(
+        &self,
+        validator: &Arc<RecursiveDnssecValidator>,
+        response: &Message,
+        qname: &Name,
+        zone: &Name,
+        ns_addrs: &[SocketAddr],
+        queries_used: &mut u32,
+    ) {
+        let mut signers = rrsig_signers(&response.answers);
+        for signer in rrsig_signers(&response.authorities) {
+            if !signers.contains(&signer) {
+                signers.push(signer);
             }
-            DnssecVerdict::Bogus => {
+        }
+        for signer in signers {
+            if zone.zone_of(&signer) && signer != *zone {
+                self.chain_cohosted_zone(validator, zone, &signer, ns_addrs, queries_used, 0)
+                    .await;
+            }
+        }
+
+        for name in unsigned_names(response, qname) {
+            if matches!(
+                validator.closest_zone(&name),
+                Some((_, ZoneStatus::Secure(_)))
+            ) {
+                self.probe_insecure_cut(validator, zone, &name, ns_addrs, queries_used)
+                    .await;
+            }
+        }
+    }
+
+    /// Chain `signer`, a zone below `zone` served by the same `ns_addrs`:
+    /// ask its DS, chain the zone that signed the DS first when it is
+    /// itself an unknown cut, then validate the DS and fetch the DNSKEY.
+    fn chain_cohosted_zone<'a>(
+        &'a self,
+        validator: &'a Arc<RecursiveDnssecValidator>,
+        zone: &'a Name,
+        signer: &'a Name,
+        ns_addrs: &'a [SocketAddr],
+        queries_used: &'a mut u32,
+        depth: u8,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            if depth >= MAX_COHOSTED_CUTS
+                || validator.zone_status(signer).is_some()
+                || *queries_used >= self.config.max_queries_per_resolution
+            {
+                return;
+            }
+            let Ok(ds_msg) = self
+                .query_any_ns(ns_addrs, signer, RecordType::DS, queries_used)
+                .await
+            else {
+                return;
+            };
+            // No signed DS for a zone that signs data: nothing to chain,
+            // the data it signed stays unverifiable.
+            let Some((ds_records, ds_sigs)) =
+                extract_signed_rrset(&ds_msg.answers, signer, RecordType::DS)
+            else {
+                return;
+            };
+            let parent = ds_sigs[0].input().signer_name.clone();
+            if !zone.zone_of(&parent) || !parent.zone_of(signer) || parent == *signer {
+                return;
+            }
+            if parent != *zone && validator.zone_status(&parent).is_none() {
+                self.chain_cohosted_zone(
+                    validator,
+                    zone,
+                    &parent,
+                    ns_addrs,
+                    queries_used,
+                    depth + 1,
+                )
+                .await;
+            }
+            if validator.record_ds_for_child(&parent, signer, &ds_records, &ds_sigs)
+                == DnssecVerdict::Bogus
+            {
                 crate::STATS_COUNTERS.increment_recursive_dnssec_chain_broken();
             }
-            DnssecVerdict::Insecure => {
-                // No DS available → can't authenticate this DNSKEY
-                // rrset. Not a chain failure on its own; the parent's
-                // *secure denial of DS* (session 3) is what classifies
-                // the child as legitimately Insecure.
+            if validator.needs_keys(signer) {
+                self.fetch_zone_keys(validator, signer, ns_addrs, queries_used)
+                    .await;
+            }
+        })
+    }
+
+    /// Look for an insecure zone cut between `zone` and `name`, shallowest
+    /// first, by asking each candidate's DS from `ns_addrs`. Stops at the
+    /// first cut found (secure or proven insecure) or at NXDOMAIN.
+    async fn probe_insecure_cut(
+        &self,
+        validator: &Arc<RecursiveDnssecValidator>,
+        zone: &Name,
+        name: &Name,
+        ns_addrs: &[SocketAddr],
+        queries_used: &mut u32,
+    ) {
+        let mut candidates = Vec::new();
+        let mut candidate = name.clone();
+        while candidate != *zone && zone.zone_of(&candidate) {
+            candidates.push(candidate.clone());
+            candidate = candidate.base_name();
+        }
+
+        for cut in candidates.into_iter().rev() {
+            if validator.zone_status(&cut).is_some() {
+                return;
+            }
+            let Some((parent, ZoneStatus::Secure(_))) = validator.closest_zone(&cut.base_name())
+            else {
+                return;
+            };
+            if *queries_used >= self.config.max_queries_per_resolution {
+                return;
+            }
+            let Ok(ds_msg) = self
+                .query_any_ns(ns_addrs, &cut, RecordType::DS, queries_used)
+                .await
+            else {
+                return;
+            };
+            if let Some((ds_records, ds_sigs)) =
+                extract_signed_rrset(&ds_msg.answers, &cut, RecordType::DS)
+            {
+                // A signed cut: chain it; unsigned data below stays Bogus.
+                validator.record_ds_for_child(&parent, &cut, &ds_records, &ds_sigs);
+                if validator.needs_keys(&cut) {
+                    self.fetch_zone_keys(validator, &cut, ns_addrs, queries_used)
+                        .await;
+                }
+                return;
+            }
+            // Not a cut (or no proof) leaves the zone unknown: go deeper.
+            validator.record_insecure_delegation(&parent, &cut, &ds_msg.authorities);
+            if validator.zone_status(&cut).is_some()
+                || ds_msg.metadata.response_code == ResponseCode::NXDomain
+            {
+                return;
             }
         }
     }
@@ -2092,6 +2315,232 @@ mod tests {
         })
     }
 
+    // ---- DNSSEC through the iterative loop (review E1) ----
+
+    use crate::dns::dnssec_chain::RootTrustAnchor;
+    use crate::dns::dnssec_chain::test_support::{TestZone, ds_records, nsec_record};
+
+    fn qtype_of(query: &Message) -> RecordType {
+        query.queries.first().unwrap().query_type()
+    }
+
+    fn with_authority(mut msg: Message, records: &[Record]) -> Message {
+        for record in records {
+            msg.add_authority(record.clone());
+        }
+        msg
+    }
+
+    /// Mock servers of a signed hierarchy, keys generated per call:
+    ///
+    /// * `.` (ROOT) → `com.` (COM) → `a.com.` (ZONE1), all signed;
+    /// * `sub.a.com.`: signed child hosted on the a.com server (no referral);
+    /// * `ins.a.com.`: unsigned child hosted on the a.com server, no-DS
+    ///   proven by an NSEC;
+    /// * `b.com.`: unsigned zone (ZONE2), insecure delegation proven by NSEC;
+    /// * `stripped.com.`: delegation to ZONE2 whose DS was removed.
+    ///
+    /// Returns the servers and the root zone whose key is the anchor.
+    fn signed_hierarchy() -> (Vec<(Ipv4Addr, MockHandler)>, TestZone) {
+        let root = TestZone::new(".");
+        let com = TestZone::new("com.");
+        let a_com = TestZone::new("a.com.");
+        let sub = TestZone::new("sub.a.com.");
+
+        let root_keys = root.signed(root.dnskey_rrset());
+        let com_ds = root.signed(ds_records(&com.zone, &[com.ds()]));
+        let root_handler = mock(move |q| {
+            if qtype_of(q) == RecordType::DNSKEY {
+                return answer_msg(root_keys.clone());
+            }
+            with_authority(referral_msg("com.", "ns.com.", Some(COM_IP)), &com_ds)
+        });
+
+        let com_keys = com.signed(com.dnskey_rrset());
+        let a_ds = com.signed(ds_records(&a_com.zone, &[a_com.ds()]));
+        let b_proof = com.signed(vec![nsec_record(
+            &name("b.com."),
+            &name("c.com."),
+            &[RecordType::NS, RecordType::NSEC],
+        )]);
+        let com_handler = mock(move |q| {
+            let qname = qname_of(q);
+            if qtype_of(q) == RecordType::DNSKEY && qname == name("com.") {
+                answer_msg(com_keys.clone())
+            } else if name("a.com.").zone_of(&qname) {
+                with_authority(referral_msg("a.com.", "ns.a.com.", Some(ZONE1_IP)), &a_ds)
+            } else if name("b.com.").zone_of(&qname) {
+                with_authority(
+                    referral_msg("b.com.", "ns.b.com.", Some(ZONE2_IP)),
+                    &b_proof,
+                )
+            } else if name("stripped.com.").zone_of(&qname) {
+                referral_msg("stripped.com.", "ns.stripped.com.", Some(ZONE2_IP))
+            } else {
+                nxdomain_msg()
+            }
+        });
+
+        let a_keys = a_com.signed(a_com.dnskey_rrset());
+        let www = a_com.signed(vec![a_record("www.a.com.", [192, 0, 2, 1])]);
+        let sub_ds = a_com.signed(ds_records(&sub.zone, &[sub.ds()]));
+        let sub_keys = sub.signed(sub.dnskey_rrset());
+        let www_sub = sub.signed(vec![a_record("www.sub.a.com.", [192, 0, 2, 2])]);
+        let ins_proof = a_com.signed(vec![nsec_record(
+            &name("ins.a.com."),
+            &name("www.a.com."),
+            &[RecordType::NS, RecordType::NSEC],
+        )]);
+        let a_handler = mock(
+            move |q| match (qname_of(q).to_string().as_str(), qtype_of(q)) {
+                ("a.com.", RecordType::DNSKEY) => answer_msg(a_keys.clone()),
+                ("www.a.com.", RecordType::A) => answer_msg(www.clone()),
+                ("bad.a.com.", RecordType::A) => {
+                    answer_msg(vec![a_record("bad.a.com.", [6, 6, 6, 6])])
+                }
+                ("sub.a.com.", RecordType::DS) => answer_msg(sub_ds.clone()),
+                ("sub.a.com.", RecordType::DNSKEY) => answer_msg(sub_keys.clone()),
+                ("www.sub.a.com.", RecordType::A) => answer_msg(www_sub.clone()),
+                ("ins.a.com.", RecordType::DS) => with_authority(answer_msg(vec![]), &ins_proof),
+                ("www.ins.a.com.", RecordType::A) => {
+                    answer_msg(vec![a_record("www.ins.a.com.", [192, 0, 2, 3])])
+                }
+                // NODATA without any proof.
+                _ => answer_msg(vec![]),
+            },
+        );
+
+        // Unsigned zone server (b.com, stripped.com).
+        let unsigned_handler =
+            mock(|q| answer_msg(vec![a_record(&qname_of(q).to_string(), [198, 51, 100, 7])]));
+
+        let servers = vec![
+            (ROOT_IP, root_handler),
+            (COM_IP, com_handler),
+            (ZONE1_IP, a_handler),
+            (ZONE2_IP, unsigned_handler),
+        ];
+        (servers, root)
+    }
+
+    /// Resolve `qname` / A through `servers` with a validator anchored on
+    /// `anchor`, then validate the client response like `handle_query`.
+    async fn resolve_and_validate(
+        servers: &[(Ipv4Addr, MockHandler)],
+        anchor: RootTrustAnchor,
+        qname: &str,
+    ) -> DnssecVerdict {
+        let validator = Arc::new(RecursiveDnssecValidator::with_root_anchors(&[anchor]));
+        let port = spawn_mock_hierarchy(servers).await;
+        let mut resolver = RecursiveResolver::with_roots(
+            cfg_for_tests(),
+            vec![SocketAddr::new(IpAddr::V4(ROOT_IP), port)],
+        )
+        .with_validator(Arc::clone(&validator));
+        resolver.ns_port = port;
+        let packet = make_dns_packet(qname, RecordType::A);
+        let bytes = resolver.resolve(&packet).await.expect("resolution");
+        let msg = Message::from_vec(&bytes).unwrap();
+        validator.validate_message_for(&msg, &name(qname), RecordType::A)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn dnssec_secure_chain_from_root_anchor() {
+        let (servers, root) = signed_hierarchy();
+        let verdict = resolve_and_validate(&servers, root.as_root_anchor(), "www.a.com.").await;
+        assert_eq!(verdict, DnssecVerdict::Secure);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn dnssec_stripped_answer_signature_is_bogus() {
+        let (servers, root) = signed_hierarchy();
+        let verdict = resolve_and_validate(&servers, root.as_root_anchor(), "bad.a.com.").await;
+        assert_eq!(verdict, DnssecVerdict::Bogus);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn dnssec_proven_insecure_delegation_is_insecure() {
+        let (servers, root) = signed_hierarchy();
+        let verdict = resolve_and_validate(&servers, root.as_root_anchor(), "www.b.com.").await;
+        assert_eq!(verdict, DnssecVerdict::Insecure);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn dnssec_ds_stripped_from_referral_is_bogus() {
+        let (servers, root) = signed_hierarchy();
+        let verdict =
+            resolve_and_validate(&servers, root.as_root_anchor(), "www.stripped.com.").await;
+        assert_eq!(verdict, DnssecVerdict::Bogus);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn dnssec_signed_child_on_parent_servers_is_chained() {
+        let (servers, root) = signed_hierarchy();
+        let verdict = resolve_and_validate(&servers, root.as_root_anchor(), "www.sub.a.com.").await;
+        assert_eq!(verdict, DnssecVerdict::Secure);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn dnssec_unsigned_child_on_parent_servers_is_proven_insecure() {
+        let (servers, root) = signed_hierarchy();
+        let verdict = resolve_and_validate(&servers, root.as_root_anchor(), "www.ins.a.com.").await;
+        assert_eq!(verdict, DnssecVerdict::Insecure);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn dnssec_root_key_not_matching_anchor_is_bogus() {
+        let (servers, _root) = signed_hierarchy();
+        let other_anchor = TestZone::new(".").as_root_anchor();
+        let verdict = resolve_and_validate(&servers, other_anchor, "www.a.com.").await;
+        assert_eq!(verdict, DnssecVerdict::Bogus);
+    }
+
+    /// Live check against the real root servers (network required):
+    /// `cargo nextest run -p dgaard --run-ignored only live_dnssec`.
+    /// Guards the fail-closed validator against real-world shapes the
+    /// mocks cannot cover (NSEC3 opt-out in `.com`, KSK rollovers…).
+    #[tokio::test]
+    #[ignore = "needs Internet access to the root servers"]
+    async fn live_dnssec_verdicts_from_the_real_root() {
+        let cases = [
+            ("www.isc.org.", RecordType::A, DnssecVerdict::Secure),
+            ("cloudflare.com.", RecordType::A, DnssecVerdict::Secure),
+            ("www.google.com.", RecordType::A, DnssecVerdict::Insecure),
+            (
+                "nonexistent-dgaard-probe.isc.org.",
+                RecordType::A,
+                DnssecVerdict::Secure,
+            ),
+            ("dnssec-failed.org.", RecordType::A, DnssecVerdict::Bogus),
+        ];
+        for (qname, qtype, expected) in cases {
+            let validator = Arc::new(RecursiveDnssecValidator::default());
+            let config = RecursiveConfig {
+                max_queries_per_resolution: 64,
+                ..RecursiveConfig::default()
+            };
+            let resolver = RecursiveResolver::from_config(config)
+                .unwrap()
+                .with_validator(Arc::clone(&validator));
+            let packet = make_dns_packet(qname, qtype);
+            let bytes = resolver.resolve(&packet).await.expect(qname);
+            let msg = Message::from_vec(&bytes).unwrap();
+            let verdict = validator.validate_message_for(&msg, &name(qname), qtype);
+            assert_eq!(
+                verdict, expected,
+                "{qname} ({:?})",
+                msg.metadata.response_code
+            );
+        }
+    }
+
     fn make_dns_packet(qname: &str, qtype: RecordType) -> DnsPacket {
         let mut msg = Message::query();
         msg.add_query(
@@ -2323,7 +2772,7 @@ mod tests {
             std::time::Duration::from_secs(3600),
         );
 
-        let mut dnskey_rrset = RecordSet::new(zone.clone(), RecordType::DNSKEY, 3600);
+        let mut dnskey_rrset = RecordSet::with_ttl(zone.clone(), RecordType::DNSKEY, 3600);
         dnskey_rrset.add_rdata(RData::DNSSEC(DNSSECRData::DNSKEY(dnskey.clone())));
         let now = OffsetDateTime::now_utc();
         let dnskey_rrsig = RRSIG::from_rrset(&dnskey_rrset, DNSClass::IN, now, &signer).unwrap();
@@ -2367,7 +2816,7 @@ mod tests {
             zone.clone(),
             ZoneTrustState {
                 ds_in_parent: vec![ds],
-                dnskeys: Vec::new(),
+                ..ZoneTrustState::default()
             },
         );
 
