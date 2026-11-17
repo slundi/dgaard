@@ -11,30 +11,31 @@
 //!
 //! ## Correctness notes
 //!
-//! * **Blocklist safety**: only previously-allowed domains are ever
-//!   cached (the filter pipeline judges before insert) and the cache is
-//!   cleared on blocklist reload (Phase 4). Therefore everything we
-//!   prefetch is, by construction, still allowed at the moment the trigger
-//!   fires. We deliberately skip the filter pipeline in the worker — it's
-//!   the whole point of the prefetch path being fast.
+//! * **A refresh is judged like a client query**: the name goes through
+//!   the filter pipeline again (blocklist, pre-upstream score gate) and the
+//!   fresh answer through the same post-processing as `handle_query`
+//!   ([`forward_and_inspect`](crate::dns::forward_and_inspect): DNSSEC,
+//!   rebinding shield, CNAME cloaking, ASN, low TTL, score threshold). An
+//!   allowed *name* says nothing about its next *answer*: a domain that
+//!   first answered with a public IP may refresh to `192.168.1.1`. A
+//!   rejected refresh evicts the cached entry instead of replacing it.
 //! * **Single in-flight per (domain, qtype) is not enforced** here. Two
 //!   triggers within a tight window can both land in the queue; the
 //!   second one will simply overwrite the cache entry with the same
 //!   fresh bytes. Cheap enough to ignore — adding a dedupe set would
 //!   cost a `DashSet<(String, u16)>` on the hot path.
-//! * **Filter bypass + popularity correctness**: the worker calls the
-//!   resolver directly, then `record_hit`s the tracker so the prefetch
-//!   itself counts as a popularity hit (a prefetch is, by definition,
-//!   evidence that the domain matters).
+//! * **Popularity**: an accepted refresh `record_hit`s the tracker (a
+//!   prefetch is, by definition, evidence that the domain matters).
 //!
 //! ## Counters
 //!
 //! * `prefetch_dropped_total` — `try_send` rejected because the channel
 //!   was full. Increment lives in `handle_query`, near the trigger.
-//! * `prefetch_completed_total` — resolver returned bytes AND the cache
-//!   insert was attempted.
-//! * `prefetch_failed_total` — resolver returned an error. Failures are
-//!   silent for the client; the next TTL miss will re-resolve.
+//! * `prefetch_completed_total` — the fresh answer was accepted (and
+//!   cached when it carries a TTL).
+//! * `prefetch_failed_total` — the resolver returned an error, or the name
+//!   or the fresh answer was rejected (its cached entry is then evicted).
+//!   Failures are silent for the client; the next miss re-resolves.
 
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -42,8 +43,11 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 
+use crate::debug::debug_print;
 use crate::dns::packet::DnsPacket;
 use crate::dns::resolver::UpstreamResolver;
+use crate::dns::{ForwardOutcome, block_before_upstream, evict_cached, forward_and_inspect};
+use crate::model::{Action, StatAction};
 
 /// Public alias — what the channel carries. Plain `(String, u16)` keeps
 /// the surface unsurprising and avoids leaking module-private types
@@ -90,17 +94,11 @@ pub fn try_enqueue(domain: &str, qtype: u16) -> bool {
 }
 
 /// Runtime parameters for the worker task. Plain `Copy` struct so tests
-/// can construct one literally without weaving `Config` through.
+/// can construct one literally without weaving `Config` through. Cache
+/// TTL policy is read from the live `CONFIG`, like `handle_query` does.
 #[derive(Clone, Copy, Debug)]
 pub struct PrefetchWorkerCfg {
     pub interval_ms: u64,
-    /// TTL override copied from `[cache] ttl_override` so the worker
-    /// honours the same operator-pinned TTL the main resolution path
-    /// uses. Zero means "trust the upstream TTL".
-    pub cache_ttl_override: u32,
-    /// Lowest TTL the cache is allowed to apply, copied from
-    /// `[security.low_ttl] min_ttl_floor_secs`. Zero means no floor.
-    pub low_ttl_floor: u32,
 }
 
 /// Drain `rx` and refresh the cache via `resolver`.
@@ -153,18 +151,15 @@ pub async fn run_prefetch_worker(
         }
         next_allowed = Instant::now() + interval;
 
-        process_one(&req.0, req.1, &resolver, &cfg).await;
+        process_one(&req.0, req.1, &resolver).await;
     }
 }
 
-/// Resolve one request and write the result back into the cache. Pulled
-/// out of the loop so tests can drive it directly.
-pub async fn process_one(
-    domain: &str,
-    qtype: u16,
-    resolver: &Arc<dyn UpstreamResolver>,
-    cfg: &PrefetchWorkerCfg,
-) {
+/// Refresh one cache entry. The name is re-judged by the filter pipeline
+/// and the fresh answer post-processed exactly like a client query's; a
+/// rejection evicts the entry. Pulled out of the loop so tests can drive it
+/// directly.
+pub async fn process_one(domain: &str, qtype: u16, resolver: &Arc<dyn UpstreamResolver>) {
     let Some(query) = DnsPacket::new_query(domain, qtype) else {
         // Unreachable in practice — cache keys come from validated
         // queries. Count it as a failure instead of panicking so a
@@ -174,51 +169,92 @@ pub async fn process_one(
         return;
     };
 
-    match resolver.resolve(&query).await {
-        Ok(bytes) => {
-            // Pull the TTL from the upstream answer so the cache entry
-            // expires when the upstream says it should. Matches the
-            // policy used by handle_query's main `Action::Allow` path.
-            let inspected = crate::dns::InspectedAnswer::from_response(&bytes);
-            if let (Some(cache), Some(ttl)) = (
-                crate::RESPONSE_CACHE.get(),
-                inspected.and_then(|a| a.min_ttl),
-            ) {
-                let floored = if cfg.low_ttl_floor == 0 {
-                    ttl
-                } else {
-                    ttl.max(cfg.low_ttl_floor)
-                };
-                cache.insert(domain, qtype, &bytes, floored, cfg.cache_ttl_override);
-            }
-            // Even when we have no TTL we still consider the prefetch
-            // successful — the resolver did its job, the cache just
-            // chose not to store the answer.
-            crate::POPULARITY_TRACKER.record_hit(domain);
+    let resolved = crate::resolve::resolve_with_score(&query.domain);
+    let pass_action = match resolved.action {
+        Action::Allow => StatAction::Allowed,
+        Action::ProxyToUpstream => StatAction::Proxied,
+        // No longer forwarded (newly blocked, overridden…): stop serving
+        // the cached answer.
+        _ => {
+            reject(&query);
+            return;
+        }
+    };
+    let cfg = crate::CONFIG.load();
+    if block_before_upstream(&resolved.action, &resolved.score, &cfg.security.scoring).is_some() {
+        reject(&query);
+        return;
+    }
+
+    let upstream = resolver.resolve(&query);
+    match forward_and_inspect(&query, upstream, resolved.score, pass_action, &cfg).await {
+        ForwardOutcome::Serve { .. } => {
+            crate::POPULARITY_TRACKER.record_hit(&query.domain);
             crate::STATS_COUNTERS.increment_prefetch_completed();
         }
-        Err(_) => {
+        // forward_and_inspect already evicted the entry.
+        ForwardOutcome::Blocked(_) | ForwardOutcome::Bogus => {
+            debug_print!("Prefetch rejected refreshed answer: {}", query.domain);
+            crate::STATS_COUNTERS.increment_prefetch_failed();
+        }
+        // The cached answer stays valid until its own TTL.
+        ForwardOutcome::UpstreamError => {
             crate::STATS_COUNTERS.increment_prefetch_failed();
         }
     }
 }
 
+/// Refuse a refresh before any upstream traffic: evict the entry.
+fn reject(query: &DnsPacket) {
+    debug_print!("Prefetch rejected name: {}", query.domain);
+    evict_cached(&query.domain, query.qtype);
+    crate::STATS_COUNTERS.increment_prefetch_failed();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv4Addr;
     use std::sync::Mutex;
 
     use async_trait::async_trait;
+    use hickory_resolver::proto::op::{Message, MessageType};
+    use hickory_resolver::proto::rr::rdata::A;
+    use hickory_resolver::proto::rr::{Name, RData, Record};
 
+    use crate::cache::ResponseCache;
+    use crate::config::Config;
     use crate::dns::resolver::UpstreamResolver;
+    use crate::resolve::tests::{create_test_engine, run_with_globals};
+    use crate::{CONFIG, CURRENT_ENGINE, RESPONSE_CACHE};
 
-    /// Test double: records every domain it's asked to resolve and
-    /// returns a canned wire-format A response containing a single
-    /// answer record with `ttl` seconds.
+    const QTYPE_A: u16 = 1;
+
+    /// Test double: records every domain it's asked to resolve and answers
+    /// with a single A record (`ip`, `ttl`), or fails.
     struct FakeResolver {
         ttl: u32,
+        ip: Ipv4Addr,
         calls: Mutex<Vec<String>>,
         fail: bool,
+    }
+
+    impl FakeResolver {
+        fn answering(ip: Ipv4Addr) -> Self {
+            Self {
+                ttl: 60,
+                ip,
+                calls: Mutex::new(Vec::new()),
+                fail: false,
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                fail: true,
+                ..Self::answering(Ipv4Addr::new(93, 184, 216, 34))
+            }
+        }
     }
 
     #[async_trait]
@@ -228,85 +264,163 @@ mod tests {
             if self.fail {
                 return Err(std::io::Error::other("upstream down"));
             }
-            Ok(canned_a_response(&query.domain, self.ttl))
+            Ok(canned_a_response(&query.domain, self.ttl, self.ip))
         }
     }
 
-    fn canned_a_response(domain: &str, ttl: u32) -> Vec<u8> {
-        use hickory_resolver::proto::op::Message;
-        use hickory_resolver::proto::rr::rdata::A;
-        use hickory_resolver::proto::rr::{Name, RData, Record};
-
+    fn canned_a_response(domain: &str, ttl: u32, ip: Ipv4Addr) -> Vec<u8> {
         let name = Name::parse(domain, Some(&Name::root())).unwrap();
         let mut msg = Message::query();
-        msg.metadata.message_type = hickory_resolver::proto::op::MessageType::Response;
-        msg.add_answer(Record::from_rdata(
-            name,
-            ttl,
-            RData::A(A(std::net::Ipv4Addr::new(1, 2, 3, 4))),
-        ));
+        msg.metadata.message_type = MessageType::Response;
+        msg.add_answer(Record::from_rdata(name, ttl, RData::A(A(ip))));
         msg.to_vec().unwrap()
     }
 
     fn fake_cfg() -> PrefetchWorkerCfg {
-        PrefetchWorkerCfg {
-            interval_ms: 0,
-            cache_ttl_override: 0,
-            low_ttl_floor: 0,
-        }
+        PrefetchWorkerCfg { interval_ms: 0 }
     }
 
-    #[tokio::test]
-    async fn process_one_records_completion_and_popularity() {
-        // Smoke test: resolver invoked, tracker bumped, completed counter
-        // incremented. No reliance on the cache being initialised — the
-        // worker treats "no cache" as "skip insert, still record hit".
-        //
-        // We deliberately do not assert on `prefetch_failed` here: sibling
-        // tests in this module exercise the failure branches in parallel
-        // and bump the same global counter, which would make any equality
-        // check racy. The popularity score (only this test writes
-        // "hot.example") proves the success branch actually ran.
-        let baseline_completed = crate::STATS_COUNTERS.get_prefetch_completed();
-
-        let resolver: Arc<dyn UpstreamResolver> = Arc::new(FakeResolver {
-            ttl: 60,
-            calls: Mutex::new(Vec::new()),
-            fail: false,
-        });
-        crate::POPULARITY_TRACKER.clear();
-
-        process_one("hot.example", 1, &resolver, &fake_cfg()).await;
-
-        assert!(
-            crate::STATS_COUNTERS.get_prefetch_completed() > baseline_completed,
-            "completed counter must increment on success"
-        );
-        assert_eq!(crate::POPULARITY_TRACKER.score("hot.example", 86_400), 1);
+    /// Blocklist `blocked`, DGA heuristics off (not what these tests are
+    /// about), and make sure a response cache exists.
+    fn install_policy(blocked: &[&str]) {
+        CURRENT_ENGINE.store(Arc::new(create_test_engine(blocked, &[], &[])));
+        let mut config = Config::default();
+        config.security.intelligence.enabled = false;
+        CONFIG.store(Arc::new(config));
     }
 
-    #[tokio::test]
-    async fn process_one_failure_increments_failed_counter() {
-        let baseline = crate::STATS_COUNTERS.get_prefetch_failed();
-        let resolver: Arc<dyn UpstreamResolver> = Arc::new(FakeResolver {
-            ttl: 60,
-            calls: Mutex::new(Vec::new()),
-            fail: true,
+    fn cache() -> &'static ResponseCache {
+        RESPONSE_CACHE.get_or_init(|| ResponseCache::new(1024))
+    }
+
+    /// Seed the cache with a previously accepted (public) answer.
+    fn seed_cache(domain: &str) {
+        let bytes = canned_a_response(domain, 300, Ipv4Addr::new(1, 1, 1, 1));
+        cache().insert(domain, QTYPE_A, &bytes, 300, 0);
+    }
+
+    fn cached_ip(domain: &str) -> Option<Ipv4Addr> {
+        let bytes = cache().get(domain, QTYPE_A, [0, 0])?;
+        Message::from_vec(&bytes)
+            .unwrap()
+            .answers
+            .iter()
+            .find_map(|r| match &r.data {
+                RData::A(a) => Some(a.0),
+                _ => None,
+            })
+    }
+
+    fn resolver_of(fake: FakeResolver) -> (Arc<FakeResolver>, Arc<dyn UpstreamResolver>) {
+        let fake = Arc::new(fake);
+        let dynamic: Arc<dyn UpstreamResolver> = fake.clone();
+        (fake, dynamic)
+    }
+
+    #[test]
+    fn accepted_refresh_replaces_the_cached_answer() {
+        run_with_globals(async {
+            install_policy(&[]);
+            let domain = "refreshed-site.com";
+            seed_cache(domain);
+            let baseline = crate::STATS_COUNTERS.get_prefetch_completed();
+            let (_, resolver) =
+                resolver_of(FakeResolver::answering(Ipv4Addr::new(93, 184, 216, 34)));
+
+            process_one(domain, QTYPE_A, &resolver).await;
+
+            assert_eq!(cached_ip(domain), Some(Ipv4Addr::new(93, 184, 216, 34)));
+            assert!(crate::STATS_COUNTERS.get_prefetch_completed() > baseline);
+            assert_eq!(crate::POPULARITY_TRACKER.score(domain, 86_400), 1);
         });
-        process_one("doomed.example", 1, &resolver, &fake_cfg()).await;
-        assert!(crate::STATS_COUNTERS.get_prefetch_failed() > baseline);
+    }
+
+    #[test]
+    fn refresh_to_a_private_address_evicts_the_cached_answer() {
+        // Review E4: the name was allowed, its first answer was public, the
+        // refresh rebinds to the LAN. The shield must catch it here too.
+        run_with_globals(async {
+            install_policy(&[]);
+            let domain = "rebinding-site.com";
+            seed_cache(domain);
+            let baseline = crate::STATS_COUNTERS.get_prefetch_failed();
+            let (_, resolver) = resolver_of(FakeResolver::answering(Ipv4Addr::new(192, 168, 1, 1)));
+
+            process_one(domain, QTYPE_A, &resolver).await;
+
+            assert_eq!(
+                cached_ip(domain),
+                None,
+                "neither the old nor the rebound answer"
+            );
+            assert!(crate::STATS_COUNTERS.get_prefetch_failed() > baseline);
+            assert_eq!(crate::POPULARITY_TRACKER.score(domain, 86_400), 0);
+        });
+    }
+
+    #[test]
+    fn newly_blocked_name_is_evicted_without_resolving() {
+        run_with_globals(async {
+            let domain = "now-blocked-site.com";
+            install_policy(&[domain]);
+            seed_cache(domain);
+            let (fake, resolver) =
+                resolver_of(FakeResolver::answering(Ipv4Addr::new(93, 184, 216, 34)));
+
+            process_one(domain, QTYPE_A, &resolver).await;
+
+            assert_eq!(cached_ip(domain), None);
+            assert!(fake.calls.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn over_threshold_name_is_evicted_without_resolving() {
+        // Pre-upstream score gate (review E2) applies to refreshes too.
+        run_with_globals(async {
+            install_policy(&[]);
+            let domain = format!("{}.tunnel.com", "a".repeat(50));
+            let mut config = (*CONFIG.load_full()).clone();
+            config.security.scoring.blocking_threshold = u8::MAX;
+            CONFIG.store(Arc::new(config.clone()));
+            let score = crate::resolve::resolve_with_score(&domain).score.total;
+            assert!(score > 0);
+            config.security.scoring.blocking_threshold = score;
+            CONFIG.store(Arc::new(config));
+            seed_cache(&domain);
+            let (fake, resolver) =
+                resolver_of(FakeResolver::answering(Ipv4Addr::new(93, 184, 216, 34)));
+
+            process_one(&domain, QTYPE_A, &resolver).await;
+
+            assert_eq!(cached_ip(&domain), None);
+            assert!(fake.calls.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn upstream_failure_keeps_the_cached_answer() {
+        run_with_globals(async {
+            install_policy(&[]);
+            let domain = "flaky-upstream-site.com";
+            seed_cache(domain);
+            let baseline = crate::STATS_COUNTERS.get_prefetch_failed();
+            let (_, resolver) = resolver_of(FakeResolver::failing());
+
+            process_one(domain, QTYPE_A, &resolver).await;
+
+            // Still valid until its own TTL.
+            assert_eq!(cached_ip(domain), Some(Ipv4Addr::new(1, 1, 1, 1)));
+            assert!(crate::STATS_COUNTERS.get_prefetch_failed() > baseline);
+        });
     }
 
     #[tokio::test]
     async fn process_one_malformed_domain_counts_as_failure() {
         let baseline = crate::STATS_COUNTERS.get_prefetch_failed();
-        let resolver: Arc<dyn UpstreamResolver> = Arc::new(FakeResolver {
-            ttl: 60,
-            calls: Mutex::new(Vec::new()),
-            fail: false,
-        });
+        let (_, resolver) = resolver_of(FakeResolver::answering(Ipv4Addr::new(93, 184, 216, 34)));
         // A leading dot fails `Name::parse`; the worker must not panic.
-        process_one("..bad..", 1, &resolver, &fake_cfg()).await;
+        process_one("..bad..", QTYPE_A, &resolver).await;
         assert!(
             crate::STATS_COUNTERS.get_prefetch_failed() > baseline,
             "malformed-domain branch must bump the failed counter"
@@ -316,16 +430,11 @@ mod tests {
     #[tokio::test]
     async fn try_enqueue_drops_when_channel_full() {
         // Build a 1-slot channel, fill it, then verify the next send
-        // bumps `prefetch_dropped_total`. Install into the global slot
-        // for this test; OnceLock can't be reset, so this test is
-        // structured to be the only one that touches the global.
+        // bumps `prefetch_dropped_total`. OnceLock can't be reset, so the
+        // global path is exercised through the same local sender logic.
         let (tx, _rx) = mpsc::channel::<PrefetchRequest>(1);
-        // Fill it.
         tx.try_send(("first.example".into(), 1)).unwrap();
 
-        // If the global slot is already set by another test, manually
-        // exercise try_send on the local sender and assert the same
-        // observable behaviour — the global path is just plumbing.
         let baseline_dropped = crate::STATS_COUNTERS.get_prefetch_dropped();
         let attempt = tx.try_send(("second.example".into(), 1));
         assert!(matches!(attempt, Err(mpsc::error::TrySendError::Full(_))));
@@ -337,72 +446,41 @@ mod tests {
     #[tokio::test]
     async fn worker_exits_when_senders_drop() {
         // Drop the sender → worker should observe channel closed and
-        // return without us flipping the shutdown bit. Acts as a
-        // regression test for the "Closed" arm in run_prefetch_worker.
+        // return without us flipping the shutdown bit.
         let (tx, rx) = mpsc::channel::<PrefetchRequest>(4);
-        let resolver: Arc<dyn UpstreamResolver> = Arc::new(FakeResolver {
-            ttl: 60,
-            calls: Mutex::new(Vec::new()),
-            fail: false,
-        });
+        let (_, resolver) = resolver_of(FakeResolver::answering(Ipv4Addr::new(93, 184, 216, 34)));
         let (_sd_tx, sd_rx) = watch::channel(false);
 
         let handle = tokio::spawn(run_prefetch_worker(rx, resolver, fake_cfg(), sd_rx));
         drop(tx);
 
-        // Worker should finish without us touching the shutdown signal.
         let res = tokio::time::timeout(Duration::from_secs(1), handle).await;
         assert!(res.is_ok(), "worker did not exit after senders dropped");
     }
 
-    #[tokio::test]
-    async fn worker_resolves_high_hit_domain_before_ttl_expires() {
-        // The headline Phase-5 integration test: a domain with a low
-        // remaining TTL gets refreshed by the worker before any client
-        // would hit an expired entry. We send a request through the
-        // channel; the worker drains it, calls the resolver, and our
-        // FakeResolver records the call. End-to-end the worker must
-        // resolve at least once.
-        let (tx, rx) = mpsc::channel::<PrefetchRequest>(4);
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let resolver: Arc<dyn UpstreamResolver> = Arc::new(FakeResolver {
-            ttl: 5,
-            calls: Mutex::new(Vec::new()),
-            fail: false,
-        });
-        let resolver_for_task = Arc::clone(&resolver);
-        let calls_for_task = Arc::clone(&calls);
+    #[test]
+    fn worker_refreshes_a_queued_domain() {
+        // End to end through the channel: the worker drains the request,
+        // resolves it and the fresh answer lands in the cache.
+        run_with_globals(async {
+            install_policy(&[]);
+            let domain = "expiring-site.com";
+            let (tx, rx) = mpsc::channel::<PrefetchRequest>(4);
+            let (fake, resolver) =
+                resolver_of(FakeResolver::answering(Ipv4Addr::new(93, 184, 216, 34)));
+            let (_sd_tx, sd_rx) = watch::channel(false);
+            tokio::spawn(run_prefetch_worker(rx, resolver, fake_cfg(), sd_rx));
 
-        // Wrap to capture calls observable from outside the trait
-        // object. (FakeResolver already has its own Mutex; this clone
-        // is for ergonomic access from the assertion.)
-        struct CapturingResolver {
-            inner: Arc<dyn UpstreamResolver>,
-            seen: Arc<Mutex<Vec<String>>>,
-        }
-        #[async_trait]
-        impl UpstreamResolver for CapturingResolver {
-            async fn resolve(&self, query: &DnsPacket) -> std::io::Result<Vec<u8>> {
-                self.seen.lock().unwrap().push(query.domain.clone());
-                self.inner.resolve(query).await
+            tx.send((domain.into(), QTYPE_A)).await.unwrap();
+            for _ in 0..50 {
+                if cached_ip(domain).is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-        }
-        let wrapped: Arc<dyn UpstreamResolver> = Arc::new(CapturingResolver {
-            inner: resolver_for_task,
-            seen: calls_for_task,
+
+            assert_eq!(*fake.calls.lock().unwrap(), [domain]);
+            assert_eq!(cached_ip(domain), Some(Ipv4Addr::new(93, 184, 216, 34)));
         });
-
-        let (_sd_tx, sd_rx) = watch::channel(false);
-        tokio::spawn(run_prefetch_worker(rx, wrapped, fake_cfg(), sd_rx));
-
-        tx.send(("expiring.example".into(), 1)).await.unwrap();
-        // Give the worker a moment to drain.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        let seen = calls.lock().unwrap().clone();
-        assert!(
-            seen.iter().any(|d| d == "expiring.example"),
-            "worker never resolved the prefetch request, saw: {seen:?}"
-        );
     }
 }

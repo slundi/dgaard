@@ -57,6 +57,22 @@ pub mod tests {
         guard
     }
 
+    /// Run an async test holding the global test lock on a fresh
+    /// current-thread runtime, restoring `CONFIG` and `CURRENT_ENGINE`
+    /// afterwards.
+    pub fn run_with_globals(test: impl std::future::Future<Output = ()>) {
+        let _guard = init_test_env();
+        let previous_config = CONFIG.load_full();
+        let previous_engine = CURRENT_ENGINE.load_full();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(test);
+        CONFIG.store(previous_config);
+        CURRENT_ENGINE.store(previous_engine);
+    }
+
     pub fn create_test_engine(
         blocklist: &[&str],
         whitelist: &[&str],

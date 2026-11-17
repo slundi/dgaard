@@ -365,9 +365,9 @@ if expires_at.saturating_duration_since(Instant::now()).as_secs() < ttl_remainin
 }
 ```
 
-**Filter bypass + blocklist correctness**: the prefetch worker calls `resolver.resolve()` directly, bypassing `resolve_with_score()`. By construction, only previously-allowed domains appear in the `PopularityTracker`.
+**Refreshes are judged like client queries**: the worker re-runs `resolve_with_score()` on the name (blocklist, pre-upstream score gate) and sends the fresh answer through the same post-processing as `handle_query` (`forward_and_inspect`: DNSSEC, rebinding shield, CNAME cloaking, ASN, low TTL, score threshold). An allowed name says nothing about its next answer — a domain may refresh from a public IP to `192.168.1.1` — so a rejected refresh **evicts** the cached entry instead of replacing it. The per-prefetch cost is one pipeline pass, bounded by `interval_ms`.
 
-To handle a blocklist update that newly blocks a previously-allowed domain: on blocklist reload (SIGHUP and runtime list refresh), **invalidate both the response cache and the `PopularityTracker`**. The next client query for any domain rebuilds them through the full filter pipeline. Cheap, fully correct, no per-prefetch filter cost.
+On blocklist reload (SIGHUP and runtime list refresh), the response cache and the `PopularityTracker` are still invalidated, so a newly blocked domain stops being served at once rather than at its next refresh.
 
 **Metrics**:
 

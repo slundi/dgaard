@@ -591,8 +591,6 @@ fn spawn_prefetch_worker(shutdown_rx: watch::Receiver<bool>) {
 
     let worker_cfg = crate::prefetch::PrefetchWorkerCfg {
         interval_ms: pf.interval_ms,
-        cache_ttl_override: cfg.cache.ttl_override,
-        low_ttl_floor: cfg.security.low_ttl.min_ttl_floor_secs.unwrap_or(0),
     };
 
     tokio::spawn(crate::prefetch::run_prefetch_worker(

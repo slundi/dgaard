@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use tokio::net::UdpSocket;
 
+use crate::config::Config;
 use crate::config::DnssecAction;
 use crate::config::ResolutionMode;
 use crate::config::ScoringConfig;
@@ -108,7 +109,7 @@ fn classify_score(
 /// resolution is the C2 rendezvous: blocking the *answer* is too late. The
 /// score only grows once the answer is inspected, so a query at or above
 /// the blocking threshold here would be blocked after forwarding anyway.
-fn block_before_upstream(
+pub(crate) fn block_before_upstream(
     action: &Action,
     score: &SuspicionScore,
     scoring: &ScoringConfig,
@@ -119,6 +120,126 @@ fn block_before_upstream(
     match classify_score(score, scoring, StatAction::Proxied) {
         (true, stat_action) => Some(stat_action),
         (false, _) => None,
+    }
+}
+
+/// Outcome of [`forward_and_inspect`].
+pub(crate) enum ForwardOutcome {
+    /// The answer passed every check; it was cached when it carries a TTL.
+    Serve {
+        bytes: Vec<u8>,
+        stat_action: StatAction,
+    },
+    /// Answer inspection pushed the score over the threshold: NXDOMAIN.
+    Blocked(StatAction),
+    /// DNSSEC validation failed with `action = "block"`: SERVFAIL.
+    Bogus,
+    /// The upstream resolution failed: SERVFAIL.
+    UpstreamError,
+}
+
+/// Drop any cached answer for `packet`'s name and type.
+pub(crate) fn evict_cached(domain: &str, qtype: u16) {
+    if let Some(cache) = crate::RESPONSE_CACHE.get() {
+        cache.remove(domain, qtype);
+    }
+}
+
+/// Post-processing every forwarded answer gets, whoever triggered the
+/// resolution (`handle_query` or the prefetch worker): DNSSEC (side channel
+/// in forwarder mode, chain validation in recursive mode), answer inspection
+/// (rebinding shield, CNAME cloaking, ASN, low TTL…) and the score
+/// threshold.
+///
+/// `upstream` is the pending resolution, run alongside the DNSSEC side
+/// channel. An accepted answer is cached; a rejected one evicts the cached
+/// entry for the same name and type, so a previous answer stops being
+/// served once its refresh is refused.
+pub(crate) async fn forward_and_inspect(
+    packet: &DnsPacket,
+    upstream: impl std::future::Future<Output = std::io::Result<Vec<u8>>>,
+    mut score: SuspicionScore,
+    pass_action: StatAction,
+    cfg: &Config,
+) -> ForwardOutcome {
+    let dnssec_cfg = &cfg.security.dnssec;
+    let (upstream_result, dnssec_status) = if dnssec_cfg.enabled {
+        tokio::join!(
+            upstream,
+            crate::dnssec::validate(&packet.domain, packet.qtype)
+        )
+    } else {
+        (upstream.await, DnssecStatus::Ok)
+    };
+    // In recursive mode the side channel is not started, so this is Ok and
+    // the chain validator below judges the answer bytes instead.
+    if dnssec_status == DnssecStatus::Bogus {
+        if dnssec_cfg.action == DnssecAction::Block {
+            evict_cached(&packet.domain, packet.qtype);
+            return ForwardOutcome::Bogus;
+        }
+        log::warn!("DNSSEC BOGUS (log-only): {}", packet.domain);
+    }
+
+    let Ok(upstream_bytes) = upstream_result else {
+        return ForwardOutcome::UpstreamError;
+    };
+
+    let (q_name, q_type) = packet
+        .message
+        .queries
+        .first()
+        .map(|q| (q.name().clone(), q.query_type()))
+        .unwrap_or((
+            hickory_resolver::proto::rr::Name::root(),
+            hickory_resolver::proto::rr::RecordType::A,
+        ));
+    if recursive_dnssec_status(
+        cfg.server.mode,
+        dnssec_cfg.enabled,
+        &upstream_bytes,
+        &q_name,
+        q_type,
+    ) == DnssecStatus::Bogus
+    {
+        if dnssec_cfg.action == DnssecAction::Block {
+            evict_cached(&packet.domain, packet.qtype);
+            return ForwardOutcome::Bogus;
+        }
+        log::warn!("DNSSEC BOGUS (recursive, log-only): {}", packet.domain);
+    }
+
+    // DPI: score the upstream answer; block if it crosses the threshold.
+    let inspected = InspectedAnswer::from_response(&upstream_bytes);
+    if let Some(answer) = &inspected {
+        score_answer(&mut score, answer);
+    }
+    let (is_blocked, stat_action) = classify_score(&score, &cfg.security.scoring, pass_action);
+    if is_blocked {
+        evict_cached(&packet.domain, packet.qtype);
+        return ForwardOutcome::Blocked(stat_action);
+    }
+
+    if let (Some(cache), Some(ttl)) = (
+        crate::RESPONSE_CACHE.get(),
+        inspected.and_then(|a| a.min_ttl),
+    ) {
+        let floored = cfg
+            .security
+            .low_ttl
+            .min_ttl_floor_secs
+            .map_or(ttl, |floor| ttl.max(floor));
+        cache.insert(
+            &packet.domain,
+            packet.qtype,
+            &upstream_bytes,
+            floored,
+            cfg.cache.ttl_override,
+        );
+    }
+    ForwardOutcome::Serve {
+        bytes: upstream_bytes,
+        stat_action,
     }
 }
 
@@ -232,7 +353,7 @@ pub(crate) async fn handle_query(
     // 2d. Run domain through the filter pipeline
     let resolve_result = resolve_with_score(&dns_packet.domain);
     let action = resolve_result.action;
-    let mut score = resolve_result.score;
+    let score = resolve_result.score;
     debug_print!(
         "Resolve: {} -> {:?} (score={})",
         dns_packet.domain,
@@ -243,10 +364,6 @@ pub(crate) async fn handle_query(
     // 3. Process the action and determine stat action
     let cfg_snap = CONFIG.load();
     let scoring = &cfg_snap.security.scoring;
-    let dnssec_cfg = cfg_snap.security.dnssec.clone();
-    let server_mode = cfg_snap.server.mode;
-    let cache_ttl_override = cfg_snap.cache.ttl_override;
-    let low_ttl_floor = cfg_snap.security.low_ttl.min_ttl_floor_secs;
 
     // 3a. Score gate before any upstream traffic; the post-answer check
     //     below only sees what answer inspection adds.
@@ -270,200 +387,40 @@ pub(crate) async fn handle_query(
     }
 
     let (response, stat_action) = match &action {
-        Action::Allow => {
-            let (upstream_result, dnssec_status) = if dnssec_cfg.enabled {
-                tokio::join!(
-                    resolve_via_upstream(&dns_packet),
-                    crate::dnssec::validate(&dns_packet.domain, dns_packet.qtype),
-                )
+        Action::Allow | Action::ProxyToUpstream => {
+            let allowed = matches!(action, Action::Allow);
+            let pass_action = if allowed {
+                StatAction::Allowed
             } else {
-                (resolve_via_upstream(&dns_packet).await, DnssecStatus::Ok)
+                StatAction::Proxied
             };
-            // Phase 6 (session 1): in recursive mode the side-channel
-            // validator is skipped at startup, so `dnssec_status` is
-            // always Ok above. The recursive chain validator inspects
-            // the answer bytes once they arrive (see the
-            // `Ok(upstream_bytes)` arm).
-            if dnssec_status == DnssecStatus::Bogus {
-                if dnssec_cfg.action == DnssecAction::Block {
-                    STATS_COUNTERS.increment_blocked();
-                    socket
-                        .send_to(
-                            &DnsPacket::build_servfail_response(&dns_packet.message),
-                            peer,
-                        )
-                        .await?;
-                    return Ok(());
-                } else {
-                    log::warn!("DNSSEC BOGUS (log-only): {}", dns_packet.domain);
-                }
-            }
-            match upstream_result {
-                Ok(upstream_bytes) => {
-                    // Recursive-mode validation runs on the bytes we
-                    // just received; the chain primitives short-circuit
-                    // to Ok when no DNSKEY for the zone is cached yet
-                    // (Insecure → fail-open).
-                    let (q_name, q_type) = dns_packet
-                        .message
-                        .queries
-                        .first()
-                        .map(|q| (q.name().clone(), q.query_type()))
-                        .unwrap_or((
-                            hickory_resolver::proto::rr::Name::root(),
-                            hickory_resolver::proto::rr::RecordType::A,
-                        ));
-                    if recursive_dnssec_status(
-                        server_mode,
-                        dnssec_cfg.enabled,
-                        &upstream_bytes,
-                        &q_name,
-                        q_type,
-                    ) == DnssecStatus::Bogus
-                    {
-                        if dnssec_cfg.action == DnssecAction::Block {
-                            STATS_COUNTERS.increment_blocked();
-                            socket
-                                .send_to(
-                                    &DnsPacket::build_servfail_response(&dns_packet.message),
-                                    peer,
-                                )
-                                .await?;
-                            return Ok(());
-                        }
-                        log::warn!("DNSSEC BOGUS (recursive, log-only): {}", dns_packet.domain);
-                    }
-                    // DPI: score the upstream answer; block if it crosses the configured threshold
-                    let inspected = InspectedAnswer::from_response(&upstream_bytes);
-                    if let Some(answer) = &inspected {
-                        score_answer(&mut score, answer);
-                    }
-                    let (is_blocked, stat_action) =
-                        classify_score(&score, scoring, StatAction::Allowed);
-                    if is_blocked {
-                        STATS_COUNTERS.increment_blocked();
-                        (
-                            DnsPacket::build_nxdomain_response(&dns_packet.message),
-                            Some(stat_action),
-                        )
-                    } else {
-                        if let (Some(cache), Some(ttl)) = (
-                            crate::RESPONSE_CACHE.get(),
-                            inspected.and_then(|a| a.min_ttl),
-                        ) {
-                            let floored = low_ttl_floor.map_or(ttl, |f| ttl.max(f));
-                            cache.insert(
-                                &dns_packet.domain,
-                                dns_packet.qtype,
-                                &upstream_bytes,
-                                floored,
-                                cache_ttl_override,
-                            );
-                        }
+            let upstream = resolve_via_upstream(&dns_packet);
+            match forward_and_inspect(&dns_packet, upstream, score, pass_action, &cfg_snap).await {
+                ForwardOutcome::Serve { bytes, stat_action } => {
+                    if allowed {
                         STATS_COUNTERS.increment_allowed();
-                        (upstream_bytes, Some(stat_action))
+                    } else {
+                        STATS_COUNTERS.increment_proxied();
                     }
+                    (bytes, Some(stat_action))
                 }
-                Err(_) => {
-                    // Upstream timed out / refused; we send SERVFAIL to the
-                    // client. This is neither Allowed nor Proxied — record
-                    // it as an error so dashboards reflect reality.
-                    STATS_COUNTERS.increment_upstream_errors();
+                ForwardOutcome::Blocked(stat_action) => {
+                    STATS_COUNTERS.increment_blocked();
+                    (
+                        DnsPacket::build_nxdomain_response(&dns_packet.message),
+                        Some(stat_action),
+                    )
+                }
+                ForwardOutcome::Bogus => {
+                    STATS_COUNTERS.increment_blocked();
                     (
                         DnsPacket::build_servfail_response(&dns_packet.message),
                         None,
                     )
                 }
-            }
-        }
-        Action::ProxyToUpstream => {
-            let (upstream_result, dnssec_status) = if dnssec_cfg.enabled {
-                tokio::join!(
-                    resolve_via_upstream(&dns_packet),
-                    crate::dnssec::validate(&dns_packet.domain, dns_packet.qtype),
-                )
-            } else {
-                (resolve_via_upstream(&dns_packet).await, DnssecStatus::Ok)
-            };
-            if dnssec_status == DnssecStatus::Bogus {
-                if dnssec_cfg.action == DnssecAction::Block {
-                    STATS_COUNTERS.increment_blocked();
-                    socket
-                        .send_to(
-                            &DnsPacket::build_servfail_response(&dns_packet.message),
-                            peer,
-                        )
-                        .await?;
-                    return Ok(());
-                } else {
-                    log::warn!("DNSSEC BOGUS (log-only): {}", dns_packet.domain);
-                }
-            }
-            match upstream_result {
-                Ok(upstream_bytes) => {
-                    // Recursive-mode chain validation, mirrored from
-                    // the Allow branch — see notes there.
-                    let (q_name, q_type) = dns_packet
-                        .message
-                        .queries
-                        .first()
-                        .map(|q| (q.name().clone(), q.query_type()))
-                        .unwrap_or((
-                            hickory_resolver::proto::rr::Name::root(),
-                            hickory_resolver::proto::rr::RecordType::A,
-                        ));
-                    if recursive_dnssec_status(
-                        server_mode,
-                        dnssec_cfg.enabled,
-                        &upstream_bytes,
-                        &q_name,
-                        q_type,
-                    ) == DnssecStatus::Bogus
-                    {
-                        if dnssec_cfg.action == DnssecAction::Block {
-                            STATS_COUNTERS.increment_blocked();
-                            socket
-                                .send_to(
-                                    &DnsPacket::build_servfail_response(&dns_packet.message),
-                                    peer,
-                                )
-                                .await?;
-                            return Ok(());
-                        }
-                        log::warn!("DNSSEC BOGUS (recursive, log-only): {}", dns_packet.domain);
-                    }
-                    // DPI: score the upstream answer; block if it crosses the configured threshold
-                    let inspected = InspectedAnswer::from_response(&upstream_bytes);
-                    if let Some(answer) = &inspected {
-                        score_answer(&mut score, answer);
-                    }
-                    let (is_blocked, stat_action) =
-                        classify_score(&score, scoring, StatAction::Proxied);
-                    if is_blocked {
-                        STATS_COUNTERS.increment_blocked();
-                        (
-                            DnsPacket::build_nxdomain_response(&dns_packet.message),
-                            Some(stat_action),
-                        )
-                    } else {
-                        if let (Some(cache), Some(ttl)) = (
-                            crate::RESPONSE_CACHE.get(),
-                            inspected.and_then(|a| a.min_ttl),
-                        ) {
-                            let floored = low_ttl_floor.map_or(ttl, |f| ttl.max(f));
-                            cache.insert(
-                                &dns_packet.domain,
-                                dns_packet.qtype,
-                                &upstream_bytes,
-                                floored,
-                                cache_ttl_override,
-                            );
-                        }
-                        STATS_COUNTERS.increment_proxied();
-                        (upstream_bytes, Some(stat_action))
-                    }
-                }
-                Err(_) => {
+                ForwardOutcome::UpstreamError => {
+                    // Upstream timed out / refused: neither Allowed nor
+                    // Proxied, recorded as an error so dashboards reflect it.
                     STATS_COUNTERS.increment_upstream_errors();
                     (
                         DnsPacket::build_servfail_response(&dns_packet.message),
@@ -534,7 +491,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::dns::resolver::UpstreamResolver;
-    use crate::resolve::tests::{create_test_engine, init_test_env};
+    use crate::resolve::tests::{create_test_engine, run_with_globals};
     use crate::{CONFIG, CURRENT_ENGINE};
 
     fn scoring_with_threshold(blocking_threshold: u8) -> ScoringConfig {
@@ -674,19 +631,6 @@ mod tests {
         let mut config = (*CONFIG.load_full()).clone();
         config.security.scoring.blocking_threshold = threshold;
         CONFIG.store(Arc::new(config));
-    }
-
-    fn run_with_globals(test: impl std::future::Future<Output = ()>) {
-        let _guard = init_test_env();
-        let previous_config = CONFIG.load_full();
-        let previous_engine = CURRENT_ENGINE.load_full();
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(test);
-        CONFIG.store(previous_config);
-        CURRENT_ENGINE.store(previous_engine);
     }
 
     #[test]

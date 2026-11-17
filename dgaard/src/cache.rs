@@ -102,6 +102,17 @@ impl ResponseCache {
             .put(key, entry);
     }
 
+    /// Drop the entry for `(domain, qtype)`, if any. Used when a fresh
+    /// answer for that name is rejected, so the previous one stops being
+    /// served.
+    pub fn remove(&self, domain: &str, qtype: u16) {
+        let key = (domain.to_ascii_lowercase(), qtype);
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop(&key);
+    }
+
     /// Number of entries currently held (including potentially expired ones).
     #[cfg(test)]
     pub fn len(&self) -> usize {
@@ -227,6 +238,20 @@ mod tests {
                 .get_with_remaining_ttl("nope.com", 1, txid(1))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn remove_drops_only_the_given_key() {
+        let cache = ResponseCache::new(100);
+        let r = response_with_txid(1);
+        cache.insert("example.com", 1, &r, 300, 0);
+        cache.insert("example.com", 28, &r, 300, 0);
+        cache.remove("EXAMPLE.com", 1);
+        assert!(cache.get("example.com", 1, txid(1)).is_none());
+        assert!(cache.get("example.com", 28, txid(1)).is_some());
+        // Removing a missing key is a no-op.
+        cache.remove("absent.com", 1);
+        assert_eq!(cache.len(), 1);
     }
 
     #[test]
