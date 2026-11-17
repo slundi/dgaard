@@ -52,7 +52,22 @@ impl RestServer {
     /// Spawn `dgaard-rest` with an optional blocklist and `blocked_status_code`.
     ///
     /// Blocks until the health endpoint returns 204 or panics after 10 s.
+    /// `next_port` releases its probe socket before the child binds, so a
+    /// parallel test can take the port in between: when the child exits
+    /// (bind failure) it is restarted on a fresh port.
     fn start(port: u16, blocklist: Option<&Path>, blocked_status_code: u16) -> Self {
+        let mut port = port;
+        for _ in 0..5 {
+            if let Some(srv) = Self::try_start(port, blocklist, blocked_status_code) {
+                return srv;
+            }
+            port = next_port();
+        }
+        panic!("dgaard-rest could not bind a free port in 5 attempts");
+    }
+
+    /// One start attempt; `None` when the child exited before being ready.
+    fn try_start(port: u16, blocklist: Option<&Path>, blocked_status_code: u16) -> Option<Self> {
         let dir = TempDir::new().expect("tempdir");
 
         // Engine config — explicitly clear all default source paths so the test
@@ -87,16 +102,17 @@ impl RestServer {
             .spawn()
             .expect("spawn dgaard-rest");
 
-        let srv = Self {
+        let mut srv = Self {
             port,
             child,
             _dir: dir,
         };
-        srv.wait_ready(Duration::from_secs(10));
-        srv
+        srv.wait_ready(Duration::from_secs(10)).then_some(srv)
     }
 
-    fn wait_ready(&self, timeout: Duration) {
+    /// True once healthy, false if the child exited first (port taken);
+    /// panics when it stays up but never becomes ready.
+    fn wait_ready(&mut self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
             assert!(
@@ -105,8 +121,11 @@ impl RestServer {
                 self.port,
                 timeout
             );
+            if matches!(self.child.try_wait(), Ok(Some(_))) {
+                return false;
+            }
             if http_get(self.port, "/api/v1/health").0 == 204 {
-                return;
+                return true;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
