@@ -2,6 +2,7 @@ pub mod dnssec_chain;
 pub mod packet;
 pub mod recursive;
 pub mod resolver;
+pub(crate) mod tcp;
 pub(crate) mod upstream;
 
 pub(crate) use dgaard_engine::model::InspectedAnswer;
@@ -16,7 +17,7 @@ use crate::config::ResolutionMode;
 use crate::config::ScoringConfig;
 use crate::debug::debug_print;
 use crate::dns::dnssec_chain::DnssecVerdict;
-use crate::dns::packet::{DnsPacket, Incoming};
+use crate::dns::packet::{DnsPacket, Incoming, Transport};
 use crate::dns::resolver::UPSTREAM_RESOLVER;
 use crate::dnssec::DnssecStatus;
 use crate::model::{Action, StatAction, StatBlockReason, SuspicionScore};
@@ -40,7 +41,8 @@ async fn resolve_via_upstream(packet: &DnsPacket) -> std::io::Result<Vec<u8>> {
                 .message
                 .to_vec()
                 .map_err(|e| std::io::Error::other(format!("encode query: {e}")))?;
-            crate::dns::upstream::forward_to_upstream(&bytes).await
+            crate::dns::upstream::forward_to_upstream(&bytes, packet.transport == Transport::Tcp)
+                .await
         }
     }
 }
@@ -243,7 +245,8 @@ pub(crate) async fn forward_and_inspect(
     }
 }
 
-/// Handle an incoming DNS query by running it through the filter pipeline.
+/// Answer one DNS message received over `transport`, whatever the transport:
+/// returns the response to send, or `None` when nothing must be sent.
 ///
 /// This function:
 /// 1. Parses the DNS packet; drops responses and malformed datagrams,
@@ -254,23 +257,22 @@ pub(crate) async fn forward_and_inspect(
 ///    upstream traffic when its score already reaches the blocking threshold
 /// 5. Either blocks the query (NXDOMAIN) or forwards to upstream, then
 ///    re-scores with what the answer reveals
-/// 6. Sends the response back to the client
-/// 7. Emits stats events for telemetry
-pub(crate) async fn handle_query(
-    socket: Arc<UdpSocket>,
-    packet: Vec<u8>,
+/// 6. Emits stats events for telemetry
+///
+/// Size limits are the transport's business: see [`handle_query`] for UDP.
+pub(crate) async fn answer_query(
+    packet: &[u8],
     peer: std::net::SocketAddr,
-) -> std::io::Result<()> {
+    transport: Transport,
+) -> Option<Vec<u8>> {
     // 1. Parse and screen: only standard queries reach the pipeline, and a
     //    response is never answered (no reflection loop).
-    let dns_packet = match DnsPacket::screen(&packet) {
+    let mut dns_packet = match DnsPacket::screen(packet) {
         Incoming::Query(p) => p,
-        Incoming::Drop => return Ok(()),
-        Incoming::Reject(response) => {
-            socket.send_to(&response, peer).await?;
-            return Ok(());
-        }
+        Incoming::Drop => return None,
+        Incoming::Reject(response) => return Some(response),
     };
+    dns_packet.transport = transport;
 
     // Increment total query counter
     STATS_COUNTERS.increment_total();
@@ -293,12 +295,10 @@ pub(crate) async fn handle_query(
             dns_packet.qtype,
             stat_reason
         );
-        let response = DnsPacket::build_nxdomain_response(&dns_packet.message);
-        socket.send_to(&response, peer).await?;
         if let Some(sender) = STATS_SENDER.get() {
             sender.send_event(&dns_packet.domain, peer, StatAction::Blocked(stat_reason));
         }
-        return Ok(());
+        return Some(DnsPacket::build_nxdomain_response(&dns_packet.message));
     }
 
     // 2b. QClass Warden: refuse CHAOS class (qclass=3) reconnaissance queries.
@@ -313,12 +313,10 @@ pub(crate) async fn handle_query(
             dns_packet.qclass,
             stat_reason
         );
-        let response = DnsPacket::build_refused_response(&dns_packet.message);
-        socket.send_to(&response, peer).await?;
         if let Some(sender) = STATS_SENDER.get() {
             sender.send_event(&dns_packet.domain, peer, StatAction::Blocked(stat_reason));
         }
-        return Ok(());
+        return Some(DnsPacket::build_refused_response(&dns_packet.message));
     }
 
     // 2c. Hot cache: serve a cached response before touching the filter pipeline.
@@ -345,8 +343,7 @@ pub(crate) async fn handle_query(
                 crate::prefetch::try_enqueue(&dns_packet.domain, dns_packet.qtype);
             }
 
-            socket.send_to(&cached, peer).await?;
-            return Ok(());
+            return Some(cached);
         }
     }
 
@@ -374,16 +371,10 @@ pub(crate) async fn handle_query(
             dns_packet.domain,
             score.total
         );
-        socket
-            .send_to(
-                &DnsPacket::build_nxdomain_response(&dns_packet.message),
-                peer,
-            )
-            .await?;
         if let Some(sender) = STATS_SENDER.get() {
             sender.send_event(&dns_packet.domain, peer, stat_action);
         }
-        return Ok(());
+        return Some(DnsPacket::build_nxdomain_response(&dns_packet.message));
     }
 
     let (response, stat_action) = match &action {
@@ -439,7 +430,7 @@ pub(crate) async fn handle_query(
         }
         Action::Drop => {
             STATS_COUNTERS.increment_blocked();
-            return Ok(());
+            return None;
         }
         Action::LocalResolve(ip) | Action::Respond(ip) => {
             STATS_COUNTERS.increment_allowed();
@@ -464,16 +455,31 @@ pub(crate) async fn handle_query(
         }
     };
 
-    // 4. Send response back to client
-    socket.send_to(&response, peer).await?;
-
-    // 5. Emit stat event (non-blocking)
+    // 4. Emit stat event (non-blocking)
     if let Some(stat_action) = stat_action
         && let Some(sender) = STATS_SENDER.get()
     {
         sender.send_event(&dns_packet.domain, peer, stat_action);
     }
 
+    Some(response)
+}
+
+/// Handle a query received over UDP: answer it, then fit the response in
+/// the payload size the client advertised (RFC 6891 §6.2.5; 512 bytes
+/// without EDNS) — a bigger answer becomes TC=1 so the client retries over
+/// TCP. Applies to every answer, cache hits included: an entry cached for an
+/// EDNS-4096 client may be served to a 512-byte one.
+pub(crate) async fn handle_query(
+    socket: Arc<UdpSocket>,
+    packet: Vec<u8>,
+    peer: std::net::SocketAddr,
+) -> std::io::Result<()> {
+    if let Some(response) = answer_query(&packet, peer, Transport::Udp).await {
+        socket
+            .send_to(&packet::fit_udp_response(&packet, response), peer)
+            .await?;
+    }
     Ok(())
 }
 
@@ -563,11 +569,25 @@ mod tests {
                 } else {
                     std::net::Ipv4Addr::new(93, 184, 216, 34)
                 };
-                response.add_answer(Record::from_rdata(
-                    question.name().clone(),
-                    300,
-                    RData::A(A(ip)),
-                ));
+                // `big-answer.com` answers with 60 records: larger than the
+                // 512 bytes a client without EDNS accepts over UDP.
+                let count = if question.name().to_ascii() == "big-answer.com." {
+                    60
+                } else {
+                    1
+                };
+                for idx in 0..count {
+                    let ip = if count == 1 {
+                        ip
+                    } else {
+                        std::net::Ipv4Addr::new(93, 184, 216, idx)
+                    };
+                    response.add_answer(Record::from_rdata(
+                        question.name().clone(),
+                        300,
+                        RData::A(A(ip)),
+                    ));
+                }
             }
             response
                 .to_vec()
@@ -746,6 +766,95 @@ mod tests {
             let (bounced, calls) = run_raw(reply).await;
             assert!(bounced.is_none());
             assert_eq!(calls, 0);
+        });
+    }
+
+    // ---- UDP size limit and TCP ----
+
+    fn query_with_edns(domain: &str, payload: Option<u16>) -> Vec<u8> {
+        let mut msg = Message::from_vec(&query_bytes(domain)).unwrap();
+        if let Some(size) = payload {
+            let mut edns = hickory_resolver::proto::op::Edns::new();
+            edns.set_max_payload(size);
+            msg.set_edns(edns);
+        }
+        msg.to_vec().unwrap()
+    }
+
+    /// Policy allowing many answer records (the answer-count heuristic is
+    /// not what these tests are about).
+    fn install_big_answer_policy() {
+        install_policy(&[], "big-answer.com");
+        let mut config = (*CONFIG.load_full()).clone();
+        config.security.structure.max_answers_per_query = 200;
+        CONFIG.store(Arc::new(config));
+    }
+
+    #[test]
+    fn big_udp_answer_is_truncated_for_a_512_byte_client() {
+        run_with_globals(async {
+            install_big_answer_policy();
+            let (reply, calls) = run_raw(query_with_edns("big-answer.com", None)).await;
+            let reply = reply.expect("a reply");
+            assert!(reply.len() <= 512, "{} bytes", reply.len());
+            let parsed = Message::from_vec(&reply).unwrap();
+            assert!(parsed.metadata.truncation, "TC=1: retry over TCP");
+            assert!(parsed.answers.is_empty());
+            assert_eq!(parsed.queries.len(), 1);
+            assert_eq!(calls, 1);
+        });
+    }
+
+    #[test]
+    fn big_udp_answer_fits_an_edns_client() {
+        run_with_globals(async {
+            install_big_answer_policy();
+            let (reply, _) = run_raw(query_with_edns("big-answer.com", Some(4096))).await;
+            let parsed = Message::from_vec(&reply.unwrap()).unwrap();
+            assert!(!parsed.metadata.truncation);
+            assert_eq!(parsed.answers.len(), 60);
+        });
+    }
+
+    #[test]
+    fn tcp_answers_are_never_truncated() {
+        run_with_globals(async {
+            install_big_answer_policy();
+            let peer: std::net::SocketAddr = "127.0.0.1:5353".parse().unwrap();
+            let reply = answer_query(
+                &query_with_edns("big-answer.com", None),
+                peer,
+                Transport::Tcp,
+            )
+            .await
+            .unwrap();
+            let parsed = Message::from_vec(&reply).unwrap();
+            assert!(!parsed.metadata.truncation);
+            assert_eq!(parsed.answers.len(), 60);
+        });
+    }
+
+    #[test]
+    fn cache_hit_is_truncated_for_a_smaller_client() {
+        // Cached for an EDNS-4096 client, served to a 512-byte one.
+        run_with_globals(async {
+            install_big_answer_policy();
+            let cache =
+                crate::RESPONSE_CACHE.get_or_init(|| crate::cache::ResponseCache::new(1024));
+            cache.remove("big-answer.com", 1);
+
+            let (first, calls) = run_raw(query_with_edns("big-answer.com", Some(4096))).await;
+            assert_eq!(
+                Message::from_vec(&first.unwrap()).unwrap().answers.len(),
+                60
+            );
+            assert_eq!(calls, 1);
+
+            let (second, calls) = run_raw(query_with_edns("big-answer.com", None)).await;
+            assert_eq!(calls, 0, "served from the cache");
+            let second = second.unwrap();
+            assert!(second.len() <= 512);
+            assert!(Message::from_vec(&second).unwrap().metadata.truncation);
         });
     }
 }

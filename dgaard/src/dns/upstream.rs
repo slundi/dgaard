@@ -1,27 +1,19 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use hickory_resolver::proto::op::Message;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
 use crate::CONFIG;
 
-/// Payload size every DNS server must handle without EDNS (RFC 1035 §4.2.1).
-const CLASSIC_UDP_PAYLOAD: usize = 512;
-
 /// DNS header length; the question section starts right after it.
 const HEADER_LEN: usize = 12;
 
-/// Largest response the client can accept: the EDNS payload size its query
-/// advertises (RFC 6891 §6.2.3), or 512 bytes without EDNS. A server must
-/// truncate (TC=1) anything larger, so a bigger datagram is a protocol
-/// violation and is never relayed.
+/// Largest response the client can accept: a server must truncate (TC=1)
+/// anything larger, so a bigger datagram is a protocol violation and is
+/// never relayed.
 fn advertised_payload(query: &[u8]) -> usize {
-    Message::from_vec(query)
-        .map(|msg| usize::from(msg.max_payload()))
-        .unwrap_or(CLASSIC_UDP_PAYLOAD)
-        .max(CLASSIC_UDP_PAYLOAD)
+    crate::dns::packet::client_udp_payload(query)
 }
 
 /// A fresh UDP socket on a kernel-chosen random port, connected to `addr`.
@@ -85,7 +77,15 @@ fn check_response(
 }
 
 /// Forward a DNS query to an upstream server and return the response.
-pub(crate) async fn forward_to_upstream(packet: &[u8]) -> std::io::Result<Vec<u8>> {
+///
+/// With `tcp_fallback` (the client came over TCP, so it has no size limit),
+/// an answer truncated by the server (TC=1) is fetched again over TCP from
+/// the same server; UDP clients get the truncated answer and retry over TCP
+/// themselves.
+pub(crate) async fn forward_to_upstream(
+    packet: &[u8],
+    tcp_fallback: bool,
+) -> std::io::Result<Vec<u8>> {
     if packet.len() < 2 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -140,6 +140,17 @@ pub(crate) async fn forward_to_upstream(packet: &[u8]) -> std::io::Result<Vec<u8
                     ) {
                         ResponseCheck::Accept => {
                             let mut response = buf[..len].to_vec();
+                            if tcp_fallback && response[2] & 0x02 != 0 {
+                                response = full_answer_over_tcp(
+                                    addr,
+                                    &outgoing,
+                                    timeout_duration,
+                                    random_txid,
+                                    applied_0x20,
+                                )
+                                .await
+                                .unwrap_or(response);
+                            }
                             // Restore the original client TXID before returning.
                             response[0] = original_txid[0];
                             response[1] = original_txid[1];
@@ -158,6 +169,22 @@ pub(crate) async fn forward_to_upstream(packet: &[u8]) -> std::io::Result<Vec<u8
         std::io::ErrorKind::TimedOut,
         "All upstream servers failed",
     ))
+}
+
+/// Fetch the full answer to `sent` from `addr` over TCP, under the same
+/// checks as a UDP answer. `None` when it fails: the caller keeps the
+/// truncated UDP answer, so the client still sees TC=1.
+async fn full_answer_over_tcp(
+    addr: SocketAddr,
+    sent: &[u8],
+    deadline: Duration,
+    txid: [u8; 2],
+    case_sensitive: bool,
+) -> Option<Vec<u8>> {
+    let full = crate::dns::tcp::exchange(addr, sent, deadline).await.ok()?;
+    // No receive buffer to overflow over TCP.
+    (check_response(sent, &full, full.len() + 1, txid, case_sensitive) == ResponseCheck::Accept)
+        .then_some(full)
 }
 
 /// Replace the 2-byte Transaction ID in a DNS packet with OS-provided random
@@ -327,7 +354,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
 
-    use hickory_resolver::proto::op::{Edns, MessageType, Query, ResponseCode};
+    use hickory_resolver::proto::op::{Edns, Message, MessageType, Query, ResponseCode};
     use hickory_resolver::proto::rr::{Name, RecordType};
 
     use crate::config::Config;
@@ -705,7 +732,7 @@ mod tests {
         let started = Instant::now();
         let mut tasks = tokio::task::JoinSet::new();
         for id in 0..count {
-            tasks.spawn(async move { forward_to_upstream(&client_query(id)).await });
+            tasks.spawn(async move { forward_to_upstream(&client_query(id), false).await });
         }
         let mut ok = 0;
         while let Some(result) = tasks.join_next().await {
@@ -745,7 +772,7 @@ mod tests {
             let (addr, ports) = spawn_upstream(answering(), Duration::ZERO).await;
             set_forwarder(&[&addr], 1000, true);
             for id in 0..20 {
-                forward_to_upstream(&client_query(id)).await.unwrap();
+                forward_to_upstream(&client_query(id), false).await.unwrap();
             }
             let mut seen = ports.lock().unwrap().clone();
             seen.sort_unstable();
@@ -775,7 +802,9 @@ mod tests {
             });
             let (addr, _) = spawn_upstream(behaviour, Duration::ZERO).await;
             set_forwarder(&[&addr], 1000, true);
-            let response = forward_to_upstream(&client_query(0x1234)).await.unwrap();
+            let response = forward_to_upstream(&client_query(0x1234), false)
+                .await
+                .unwrap();
             let parsed = Message::from_vec(&response).unwrap();
             assert_eq!(parsed.metadata.id, 0x1234, "client TXID restored");
             assert_eq!(parsed.metadata.message_type, MessageType::Response);
@@ -808,7 +837,7 @@ mod tests {
                     .unwrap();
             });
             set_forwarder(&[&addr], 1000, true);
-            let response = forward_to_upstream(&client_query(7)).await.unwrap();
+            let response = forward_to_upstream(&client_query(7), false).await.unwrap();
             let parsed = Message::from_vec(&response).unwrap();
             assert_eq!(parsed.metadata.response_code, ResponseCode::NoError);
         });
@@ -827,7 +856,7 @@ mod tests {
             let (first, _) = spawn_upstream(oversized, Duration::ZERO).await;
             let (second, second_ports) = spawn_upstream(answering(), Duration::ZERO).await;
             set_forwarder(&[&first, &second], 500, true);
-            let response = forward_to_upstream(&client_query(9)).await.unwrap();
+            let response = forward_to_upstream(&client_query(9), false).await.unwrap();
             assert!(response.len() < 512);
             assert_eq!(second_ports.lock().unwrap().len(), 1);
         });
@@ -846,7 +875,7 @@ mod tests {
             let (second, second_ports) = spawn_upstream(answering(), Duration::ZERO).await;
 
             set_forwarder(&[&first, &second], 500, true);
-            forward_to_upstream(&client_query(1)).await.unwrap();
+            forward_to_upstream(&client_query(1), false).await.unwrap();
             assert_eq!(
                 second_ports.lock().unwrap().len(),
                 1,
@@ -854,12 +883,94 @@ mod tests {
             );
 
             set_forwarder(&[&first, &second], 500, false);
-            forward_to_upstream(&client_query(2)).await.unwrap();
+            forward_to_upstream(&client_query(2), false).await.unwrap();
             assert_eq!(
                 second_ports.lock().unwrap().len(),
                 1,
                 "0x20 off: first answer kept"
             );
+        });
+    }
+
+    // --- TCP fallback ---
+
+    /// Mock upstream on one port: UDP answers with TC=1, TCP answers in
+    /// full. Returns the address and the number of TCP connections.
+    async fn spawn_truncating_upstream() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        loop {
+            let (addr, _) = spawn_upstream(
+                Arc::new(|query| {
+                    let mut truncated = echo_response(query);
+                    truncated[2] |= 0x02; // TC
+                    vec![truncated]
+                }),
+                Duration::ZERO,
+            )
+            .await;
+            let Ok(listener) = tokio::net::TcpListener::bind(&addr).await else {
+                continue; // TCP side of the port taken: pick another
+            };
+            let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = Arc::clone(&connections);
+            tokio::spawn(async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    tokio::spawn(async move {
+                        if let Ok(Some(query)) = crate::dns::tcp::read_message(&mut stream).await {
+                            let _ =
+                                crate::dns::tcp::write_message(&mut stream, &echo_response(&query))
+                                    .await;
+                        }
+                    });
+                }
+            });
+            return (addr, connections);
+        }
+    }
+
+    #[test]
+    fn truncated_answer_is_fetched_over_tcp_for_tcp_clients() {
+        run_with_globals(async {
+            let (addr, connections) = spawn_truncating_upstream().await;
+            set_forwarder(&[&addr], 1000, true);
+            let response = forward_to_upstream(&client_query(0x0A0A), true)
+                .await
+                .unwrap();
+            let parsed = Message::from_vec(&response).unwrap();
+            assert!(!parsed.metadata.truncation, "full answer over TCP");
+            assert_eq!(parsed.metadata.id, 0x0A0A, "client TXID restored");
+            assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 1);
+        });
+    }
+
+    #[test]
+    fn truncated_answer_is_relayed_to_udp_clients() {
+        // A UDP client retries over TCP itself: no upstream TCP here.
+        run_with_globals(async {
+            let (addr, connections) = spawn_truncating_upstream().await;
+            set_forwarder(&[&addr], 1000, true);
+            let response = forward_to_upstream(&client_query(1), false).await.unwrap();
+            assert!(Message::from_vec(&response).unwrap().metadata.truncation);
+            assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 0);
+        });
+    }
+
+    #[test]
+    fn failed_tcp_fallback_keeps_the_truncated_answer() {
+        // No TCP listener: the client still gets TC=1 rather than an error.
+        run_with_globals(async {
+            let (addr, _) = spawn_upstream(
+                Arc::new(|query| {
+                    let mut truncated = echo_response(query);
+                    truncated[2] |= 0x02;
+                    vec![truncated]
+                }),
+                Duration::ZERO,
+            )
+            .await;
+            set_forwarder(&[&addr], 300, true);
+            let response = forward_to_upstream(&client_query(2), true).await.unwrap();
+            assert!(Message::from_vec(&response).unwrap().metadata.truncation);
         });
     }
 

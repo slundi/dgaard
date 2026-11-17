@@ -4,6 +4,58 @@ use hickory_resolver::proto::op::{Message, MessageType, OpCode, Query, ResponseC
 use hickory_resolver::proto::rr::rdata::{A, AAAA};
 use hickory_resolver::proto::rr::{DNSClass, Name, RData, Record, RecordType};
 
+/// Payload size every DNS server must handle without EDNS (RFC 1035 §4.2.1).
+pub(crate) const CLASSIC_UDP_PAYLOAD: usize = 512;
+
+/// Largest UDP response the client of `query` accepts: the EDNS payload size
+/// it advertises (RFC 6891 §6.2.3), or 512 bytes without EDNS.
+pub(crate) fn client_udp_payload(query: &[u8]) -> usize {
+    Message::from_vec(query)
+        .map(|msg| usize::from(msg.max_payload()))
+        .unwrap_or(CLASSIC_UDP_PAYLOAD)
+        .max(CLASSIC_UDP_PAYLOAD)
+}
+
+/// Fit `response` in the UDP payload the client of `query` accepts. A bigger
+/// response is replaced by the same header with TC=1, the question and the
+/// EDNS OPT record but no other records (RFC 2181 §9, RFC 6891 §7), so the
+/// client retries over TCP instead of reading a cut datagram.
+pub(crate) fn fit_udp_response(query: &[u8], response: Vec<u8>) -> Vec<u8> {
+    if response.len() <= client_udp_payload(query) {
+        return response;
+    }
+    Message::from_vec(&response)
+        .ok()
+        .and_then(|mut msg| {
+            msg.answers.clear();
+            msg.authorities.clear();
+            msg.additionals.clear();
+            msg.metadata.truncation = true;
+            msg.to_vec().ok()
+        })
+        .unwrap_or_else(|| truncated_header(&response))
+}
+
+/// Last resort when `response` does not parse: its 12-byte header with TC=1
+/// and every section count zeroed.
+fn truncated_header(response: &[u8]) -> Vec<u8> {
+    let mut header = [0u8; 12];
+    let len = response.len().min(4);
+    header[..len].copy_from_slice(&response[..len]);
+    header[2] |= 0x80 | 0x02; // QR, TC
+    header.to_vec()
+}
+
+/// Transport a client query arrived on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Transport {
+    #[default]
+    Udp,
+    /// RFC 7766 TCP: no size limit, so a truncated upstream answer is
+    /// retried over TCP instead of being relayed.
+    Tcp,
+}
+
 /// What to do with a datagram received on the listening socket.
 pub enum Incoming {
     /// A standard query with exactly one question: run the pipeline.
@@ -25,6 +77,8 @@ pub struct DnsPacket {
     /// Class IN=1 is normal Internet queries. Class CH=3 (CHAOS) is blocked
     /// by default to prevent upstream reconnaissance.
     pub qclass: u16,
+    /// Transport the client used.
+    pub transport: Transport,
 }
 
 /// Encode a DNS `Message` to wire bytes.
@@ -77,6 +131,7 @@ impl DnsPacket {
             domain: domain.to_ascii_lowercase(),
             qtype,
             qclass: u16::from(DNSClass::IN),
+            transport: Transport::Udp,
         })
     }
 
@@ -119,6 +174,7 @@ impl DnsPacket {
             domain,
             qtype,
             qclass,
+            transport: Transport::Udp,
         })
     }
 
@@ -598,5 +654,87 @@ mod tests {
             };
             assert!(matches!(DnsPacket::screen(&response), Incoming::Drop));
         }
+    }
+
+    // --- fit_udp_response ---
+
+    /// A query for example.com, with an EDNS OPT advertising `payload`.
+    fn query_with_payload(payload: Option<u16>) -> Vec<u8> {
+        message_bytes(|msg| {
+            if let Some(size) = payload {
+                let mut edns = hickory_resolver::proto::op::Edns::new();
+                edns.set_max_payload(size);
+                msg.set_edns(edns);
+            }
+        })
+    }
+
+    /// The response to `query` carrying `count` A records.
+    fn response_with_answers(query: &[u8], count: usize) -> Vec<u8> {
+        let mut msg = Message::from_vec(query).unwrap();
+        msg.metadata.message_type = MessageType::Response;
+        for idx in 0..count {
+            msg.add_answer(Record::from_rdata(
+                Name::from_ascii("example.com.").unwrap(),
+                60,
+                RData::A(A(std::net::Ipv4Addr::new(192, 0, 2, (idx % 250) as u8))),
+            ));
+        }
+        msg.to_vec().unwrap()
+    }
+
+    #[test]
+    fn client_udp_payload_follows_edns() {
+        assert_eq!(client_udp_payload(&query_with_payload(None)), 512);
+        assert_eq!(client_udp_payload(&query_with_payload(Some(1232))), 1232);
+        assert_eq!(client_udp_payload(&query_with_payload(Some(100))), 512);
+        assert_eq!(client_udp_payload(&[0x00]), 512);
+    }
+
+    #[test]
+    fn fit_udp_response_keeps_responses_that_fit() {
+        let query = query_with_payload(None);
+        let small = response_with_answers(&query, 3);
+        assert_eq!(fit_udp_response(&query, small.clone()), small);
+        // 60 records do not fit 512 bytes but fit 4096.
+        let query = query_with_payload(Some(4096));
+        let big = response_with_answers(&query, 60);
+        assert!(big.len() > 512);
+        assert_eq!(fit_udp_response(&query, big.clone()), big);
+    }
+
+    #[test]
+    fn fit_udp_response_truncates_with_tc_and_keeps_question_and_edns() {
+        for payload in [None, Some(600)] {
+            let query = query_with_payload(payload);
+            let big = response_with_answers(&query, 60);
+            let fitted = fit_udp_response(&query, big);
+            assert!(fitted.len() <= client_udp_payload(&query));
+            let msg = Message::from_vec(&fitted).unwrap();
+            assert!(
+                msg.metadata.truncation,
+                "TC=1 so the client retries over TCP"
+            );
+            assert_eq!(msg.metadata.id, 0x4242);
+            assert!(msg.answers.is_empty());
+            assert_eq!(msg.queries.len(), 1);
+            assert_eq!(
+                msg.edns.is_some(),
+                payload.is_some(),
+                "OPT echoed iff asked"
+            );
+        }
+    }
+
+    #[test]
+    fn fit_udp_response_unparsable_falls_back_to_a_tc_header() {
+        let query = query_with_payload(None);
+        let mut garbage = vec![0x42, 0x42, 0x81, 0x80];
+        garbage.extend(std::iter::repeat_n(0xFF, 600));
+        let fitted = fit_udp_response(&query, garbage);
+        assert_eq!(fitted.len(), 12);
+        let msg = Message::from_vec(&fitted).unwrap();
+        assert!(msg.metadata.truncation);
+        assert_eq!(msg.metadata.message_type, MessageType::Response);
     }
 }

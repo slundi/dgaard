@@ -104,7 +104,7 @@ fn init_stats_channel() -> StatsReceiver {
 /// formed enough to locate the QNAME terminator.
 ///
 /// Returns `None` if the query is too short to contain a transaction ID.
-fn build_minimal_servfail(query: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn build_minimal_servfail(query: &[u8]) -> Option<Vec<u8>> {
     if query.len() < 2 {
         return None;
     }
@@ -221,6 +221,7 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
         ));
 
         println!("Dgaard listening on {}", CONFIG.load().server.listen_addr);
+        spawn_tcp_listener(Arc::clone(&semaphore), shutdown_rx.clone()).await;
 
         worker_loop(tokio_socket, &guard, &shutdown_tx, semaphore).await;
 
@@ -290,6 +291,8 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
         let semaphore = Arc::new(Semaphore::new(
             CONFIG.load().server.runtime.max_concurrent_queries,
         ));
+
+        spawn_tcp_listener(Arc::clone(&semaphore), shutdown_rx.clone()).await;
 
         let mut handles = Vec::new();
 
@@ -380,6 +383,31 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
         println!("Graceful shutdown complete.");
         Ok(())
     })
+}
+
+/// Start the DNS-over-TCP listener next to UDP (RFC 7766), with the same
+/// client ACL and query semaphore. A bind failure is logged and the server
+/// keeps serving UDP.
+async fn spawn_tcp_listener(semaphore: Arc<Semaphore>, shutdown_rx: watch::Receiver<bool>) {
+    let addr = CONFIG.load().server.listen_addr.clone();
+    match tokio::net::TcpListener::bind(&addr).await {
+        Ok(listener) => {
+            println!("Dgaard listening on {} (TCP)", addr);
+            let allowed =
+                Arc::new(|ip: IpAddr| is_ip_allowed(ip, &CONFIG.load().server.allowed_networks));
+            tokio::spawn(crate::dns::tcp::serve(
+                listener,
+                crate::dns::tcp::TcpLimits::default(),
+                allowed,
+                semaphore,
+                shutdown_rx,
+            ));
+        }
+        Err(e) => eprintln!(
+            "warn: TCP listener on {} failed: {} — serving UDP only",
+            addr, e
+        ),
+    }
 }
 
 /// Resolves when either SIGINT (Ctrl-C) or SIGTERM is received, whichever

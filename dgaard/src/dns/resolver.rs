@@ -29,7 +29,7 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 
-use crate::dns::packet::DnsPacket;
+use crate::dns::packet::{DnsPacket, Transport};
 use crate::dns::upstream::forward_to_upstream;
 
 /// Abstraction over "how do we resolve a clean query?".
@@ -70,7 +70,7 @@ impl UpstreamResolver for ForwardingResolver {
         // section bit-for-bit). Re-encode from the parsed message so the
         // public API stays packet-oriented.
         let bytes = encode_query(query)?;
-        forward_to_upstream(&bytes).await
+        forward_to_upstream(&bytes, query.transport == Transport::Tcp).await
     }
 }
 

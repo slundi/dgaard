@@ -214,7 +214,8 @@ flowchart TD
     CLASSIFY{Classify response}
     CLASSIFY -->|Answer| CNAME{"Answer is CNAME\nand qtype ≠ CNAME?"}
     CLASSIFY -->|NXDOMAIN| NX(["NXDOMAIN → client"])
-    CLASSIFY -->|TC bit set| TC(["SERVFAIL — TCP fallback pending"])
+    CLASSIFY -->|TC bit set| TC["Same query over TCP\n(one more query from the budget)"]
+    TC --> CLASSIFY
     CLASSIFY -->|SERVFAIL / empty| ERR(["io::Error"])
     CLASSIFY -->|Referral| BAIL
 

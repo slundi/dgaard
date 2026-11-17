@@ -17,12 +17,12 @@
 //! - Hard caps on delegation depth + total queries per resolution
 //! - EDNS0 OPT advertisement
 //! - Sequential `ns_concurrency`
+//! - TCP fallback when an authoritative answer is truncated (`TC=1`)
 //! - Root hints compiled-in (with optional `root_hints_path` override)
 //! - Metrics counters into [`crate::STATS_COUNTERS`]
 //!
 //! ## Deferred to the rest of Phase 2
 //!
-//! - TCP fallback when `TC=1` (today: increment the metric and return SERVFAIL)
 //! - QNAME minimization (today: full QNAME on every hop; the config flag is
 //!   parsed and stored so configs stay forward-compatible)
 //! - Staggered / parallel NS fanout (config accepted, runtime is sequential)
@@ -672,11 +672,10 @@ impl RecursiveResolver {
                     depth = depth.saturating_add(1);
                 }
                 ResponseKind::NxDomain => return Ok((response, current_zone)),
+                // Still truncated after the TCP fallback (or no budget left
+                // to try it): nothing complete to serve.
                 ResponseKind::NeedTcpFallback => {
-                    crate::STATS_COUNTERS.increment_recursive_tcp_fallback();
-                    return Err(io::Error::other(
-                        "UDP truncated and TCP fallback not implemented yet",
-                    ));
+                    return Err(io::Error::other("answer truncated over UDP and TCP"));
                 }
                 ResponseKind::Empty => {
                     return Err(io::Error::other("empty/SERVFAIL response"));
@@ -703,11 +702,50 @@ impl RecursiveResolver {
             *queries_used += 1;
             crate::STATS_COUNTERS.increment_recursive_queries();
             match self.query_single_ns(*addr, qname, qtype).await {
+                // Truncated over UDP: ask the same server over TCP
+                // (RFC 7766), paying one more query from the budget.
+                Ok(msg) if msg.metadata.truncation => {
+                    if *queries_used >= self.config.max_queries_per_resolution {
+                        return Ok(msg);
+                    }
+                    *queries_used += 1;
+                    crate::STATS_COUNTERS.increment_recursive_tcp_fallback();
+                    match self.query_single_ns_tcp(*addr, qname, qtype).await {
+                        Ok(full) => return Ok(full),
+                        Err(e) => last_err = Some(e),
+                    }
+                }
                 Ok(msg) => return Ok(msg),
                 Err(e) => last_err = Some(e),
             }
         }
         Err(last_err.unwrap_or_else(|| io::Error::other("no NS addresses to query")))
+    }
+
+    /// One TCP exchange, after a truncated UDP answer from `addr`. Caller
+    /// has already paid the `queries_used` cost.
+    async fn query_single_ns_tcp(
+        &self,
+        addr: SocketAddr,
+        qname: &Name,
+        qtype: RecordType,
+    ) -> io::Result<Message> {
+        let edns = self
+            .config
+            .edns0_enabled
+            .then_some(self.config.edns0_udp_payload_size);
+        let query = build_outgoing_query(qname, qtype, edns, self.validator.is_some());
+        let bytes = query
+            .to_vec()
+            .map_err(|e| io::Error::other(format!("encode query: {e}")))?;
+        let deadline = Duration::from_millis(self.config.query_timeout_ms);
+        let raw = crate::dns::tcp::exchange(addr, &bytes, deadline).await?;
+        let response = Message::from_vec(&raw)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("parse: {e}")))?;
+        if response.metadata.id != query.metadata.id {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "TXID mismatch"));
+        }
+        Ok(response)
     }
 
     /// One UDP exchange. Caller has already paid the `queries_used` cost.
@@ -2539,6 +2577,74 @@ mod tests {
                 msg.metadata.response_code
             );
         }
+    }
+
+    // ---- TCP fallback on truncation ----
+
+    /// Mock authoritative on one port: UDP answers with TC=1 and no data,
+    /// TCP answers with the A record.
+    async fn spawn_truncating_ns(ip: Ipv4Addr) -> SocketAddr {
+        loop {
+            let addr = spawn_mock_ns(|_q| {
+                let mut resp = Message::query();
+                resp.metadata.response_code = ResponseCode::NoError;
+                resp.metadata.truncation = true;
+                resp
+            })
+            .await;
+            let Ok(listener) = tokio::net::TcpListener::bind(addr).await else {
+                continue;
+            };
+            tokio::spawn(async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    tokio::spawn(async move {
+                        let Ok(Some(raw)) = crate::dns::tcp::read_message(&mut stream).await else {
+                            return;
+                        };
+                        let query = Message::from_vec(&raw).unwrap();
+                        let mut resp = Message::query();
+                        resp.metadata.id = query.metadata.id;
+                        resp.metadata.message_type = MessageType::Response;
+                        resp.metadata.response_code = ResponseCode::NoError;
+                        let qname = qname_of(&query);
+                        resp.add_query(query.queries[0].clone());
+                        resp.add_answer(Record::from_rdata(qname, 300, RData::A(A(ip))));
+                        let _ =
+                            crate::dns::tcp::write_message(&mut stream, &resp.to_vec().unwrap())
+                                .await;
+                    });
+                }
+            });
+            return addr;
+        }
+    }
+
+    #[tokio::test]
+    async fn truncated_authoritative_answer_is_fetched_over_tcp() {
+        // Used to be a SERVFAIL ("TCP fallback not implemented yet").
+        let target = Ipv4Addr::new(192, 0, 2, 77);
+        let root = spawn_truncating_ns(target).await;
+        let before = crate::STATS_COUNTERS.get_recursive_tcp_fallback();
+        let resolver = RecursiveResolver::with_roots(cfg_for_tests(), vec![root]);
+        let packet = make_dns_packet("big.example.", RecordType::A);
+        let bytes = resolver.resolve(&packet).await.expect("answer over TCP");
+        let parsed = Message::from_vec(&bytes).unwrap();
+        assert!(!parsed.metadata.truncation);
+        assert_eq!(parsed.answers, [a_record("big.example.", target.octets())]);
+        assert!(crate::STATS_COUNTERS.get_recursive_tcp_fallback() > before);
+    }
+
+    #[tokio::test]
+    async fn tcp_fallback_is_paid_from_the_query_budget() {
+        // One query allowed: the UDP query spends it, no TCP retry is made
+        // and the truncated answer is an error, not a partial answer.
+        let root = spawn_truncating_ns(Ipv4Addr::new(192, 0, 2, 78)).await;
+        let mut cfg = cfg_for_tests();
+        cfg.max_queries_per_resolution = 1;
+        let resolver = RecursiveResolver::with_roots(cfg, vec![root]);
+        let packet = make_dns_packet("big.example.", RecordType::A);
+        let err = resolver.resolve(&packet).await.unwrap_err();
+        assert!(err.to_string().contains("truncated"), "{err}");
     }
 
     fn make_dns_packet(qname: &str, qtype: RecordType) -> DnsPacket {

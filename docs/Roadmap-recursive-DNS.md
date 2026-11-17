@@ -257,7 +257,7 @@ walk_delegations(domain, qtype, &mut budget) -> Result<(Message, zone)>:
 | Bailiwick enforcement         | Referral zone must be subdomain of current zone. Strict (SERVFAIL on first bad referral) or lenient (try next ns_addr) per `strict_bailiwick`                         |
 | In-bailiwick glue             | Glue A/AAAA records only accepted for NS names inside `new_zone`. Out-of-bailiwick glue is discarded silently                                                         |
 | Out-of-zone NS resolution     | `resolve_ns_addresses` shares the `ResolutionBudget` (query cap + in-progress stack) so it cannot escape the per-query budget                                         |
-| UDP truncation (TC=1)         | Retry same query over TCP on port 53 via pooled TCP connection (see Phase 2)                                                                                          |
+| UDP truncation (TC=1)         | Retry the same query over TCP (RFC 7766 framing, fresh connection, one more query from the budget); still truncated → SERVFAIL                                        |
 | IPv4 + IPv6 root hints        | Both address families stored; prefer IPv4 on single-stack hosts                                                                                                       |
 | QNAME minimization (RFC 9156) | Each delegation hop queries only the next label, not the full QNAME                                                                                                   |
 | EDNS0 OPT record              | Advertised on every outgoing query when `edns0_enabled = true`                                                                                                        |
@@ -456,7 +456,7 @@ Added to `STATS_COUNTERS`:
 - [x] **EDNS0 OPT record** on every outgoing query; advertise `edns0_udp_payload_size`
 - [x] **ECS striping** in the OPT RR builder — never insert an EDNS0 Client Subnet (RFC 7871) option in outgoing recursive queries. Shared policy with forwarder mode, see Phase 10.7 in `Roadmap.md`. In recursive mode there is nothing to strip from an incoming client packet (the recursive resolver builds outgoing packets from scratch); the rule is simply _do not insert_ unless `[security.ecs] forward_as_prefix = true` is set, in which case insert a truncated `/24` (IPv4) or `/56` (IPv6) prefix derived from the client's address.
 - [x] **QNAME minimization** (RFC 9156): query only the next label at each delegation hop
-- [x] UDP truncation → **TCP fallback with pooled TCP connections** (mirror existing UDP `SocketPool` pattern from `dgaard/src/dns/upstream.rs`)
+- [x] UDP truncation → **TCP fallback** (fresh TCP connection per retry, shared RFC 7766 framing in `dgaard/src/dns/tcp.rs`; the forwarder does the same for TCP clients, and dgaard listens on TCP and truncates UDP answers to the client's payload)
 - [x] `ns_concurrency` policy: `sequential` | `staggered` | `parallel` with `max_concurrent_queries` and `ns_stagger_ms`; `queries_used` increments per launched query
 - [x] Resolver metrics counters in `STATS_COUNTERS`
 - [x] Integration tests:
