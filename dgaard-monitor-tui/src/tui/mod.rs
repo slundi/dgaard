@@ -34,6 +34,9 @@ use tabs::dashboard::DashboardState;
 use crate::config::TuiConfig;
 use dgaard_monitor_core::state::AppState;
 
+/// Run the TUI until the user quits, the terminal fails, or `shutdown` is
+/// signalled. Returning (rather than exiting the process) lets the caller run
+/// its clean shutdown sequence.
 pub async fn run(config: TuiConfig, state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) {
     let mut terminal = match setup_terminal() {
         Ok(t) => t,
@@ -71,7 +74,6 @@ pub async fn run(config: TuiConfig, state: Arc<AppState>, mut shutdown: watch::R
     });
 
     let mut tick = tokio::time::interval(Duration::from_millis(config.tick_ms));
-    let mut quit_requested = false;
 
     'main: loop {
         tokio::select! {
@@ -94,7 +96,7 @@ pub async fn run(config: TuiConfig, state: Arc<AppState>, mut shutdown: watch::R
             Some(key) = key_rx.recv() => {
                 if let Some(action) = app.keymap.resolve(&key_to_str(key)) {
                     match action {
-                        Action::Quit => { quit_requested = true; break 'main; }
+                        Action::Quit => break 'main,
                         _ => app.apply(action),
                     }
                 }
@@ -110,10 +112,6 @@ pub async fn run(config: TuiConfig, state: Arc<AppState>, mut shutdown: watch::R
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     restore_terminal(&mut terminal);
-
-    if quit_requested {
-        std::process::exit(0);
-    }
 }
 
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {

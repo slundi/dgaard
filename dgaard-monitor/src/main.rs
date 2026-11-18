@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod headless;
+mod lifecycle;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -132,6 +133,7 @@ async fn main() {
     )));
 
     // TUI or headless JSON logger — mutually exclusive.
+    let mut ui_task: Option<tokio::task::JoinHandle<()>> = None;
     if opts.headless {
         let s = Arc::clone(&state);
         let rx = shutdown_rx.clone();
@@ -139,13 +141,14 @@ async fn main() {
             headless::run(s, rx).await;
         }));
     } else {
+        // Kept apart from `handles`: the TUI ending (user quit) stops the run.
         #[cfg(feature = "tui")]
         {
-            let s = Arc::clone(&state);
-            let rx = shutdown_rx.clone();
-            handles.push(tokio::spawn(async move {
-                tui::run(tui_cfg, s, rx).await;
-            }));
+            ui_task = Some(tokio::spawn(tui::run(
+                tui_cfg,
+                Arc::clone(&state),
+                shutdown_rx.clone(),
+            )));
         }
         #[cfg(not(feature = "tui"))]
         {
@@ -200,55 +203,19 @@ async fn main() {
         }));
     }
 
-    // --- Wait for a termination signal ---
+    // --- Wait for a termination signal, or for the user to quit the TUI ---
 
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        match signal(SignalKind::terminate()) {
-            Ok(mut sigterm) => {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {
-                        eprintln!("\nReceived SIGINT, shutting down...");
-                    }
-                    _ = sigterm.recv() => {
-                        eprintln!("Received SIGTERM, shutting down...");
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("warn: SIGTERM handler unavailable ({e}); using Ctrl-C only");
-                let _ = tokio::signal::ctrl_c().await;
-            }
+    match lifecycle::wait_for_stop(ui_task.as_mut()).await {
+        lifecycle::StopTrigger::Signal(name) => eprintln!("Received {name}, shutting down..."),
+        lifecycle::StopTrigger::UiClosed => {
+            eprintln!("TUI closed, shutting down...");
+            // Already finished: awaiting it again would panic.
+            ui_task = None;
         }
     }
-    #[cfg(not(unix))]
-    {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            eprintln!("warn: Ctrl-C handler error: {e}");
-        }
-        eprintln!("\nReceived Ctrl-C, shutting down...");
-    }
+    handles.extend(ui_task);
 
-    // Broadcast shutdown to all tasks.
-    let _ = shutdown_tx.send(true);
-
-    // Wait for every task to finish (up to 10 s each).
-    for handle in handles {
-        let _ = tokio::time::timeout(Duration::from_secs(10), handle).await;
-    }
-
-    // Checkpoint the SQLite WAL so the main DB file is up-to-date on disk
-    // even if the OS doesn't get a chance to flush before we exit.
-    if let Some(db_arc) = db {
-        let db_for_checkpoint = std::sync::Arc::clone(&db_arc);
-        let _ = tokio::task::spawn_blocking(move || {
-            if let Err(e) = db_for_checkpoint.wal_checkpoint() {
-                eprintln!("warn: WAL checkpoint on shutdown failed: {e}");
-            }
-        })
-        .await;
-    }
+    lifecycle::shutdown(shutdown_tx, handles, db).await;
 
     eprintln!("All tasks stopped. Bye.");
 }
