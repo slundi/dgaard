@@ -84,7 +84,7 @@ async fn reload(path: &str, state: &Arc<AppState>) {
             for (hash, domain) in map {
                 state.insert_domain(hash, domain).await;
             }
-            println!("Index reloaded: {count} domains from {path}");
+            eprintln!("Index reloaded: {count} domains from {path}");
         }
         Err(e) => eprintln!("Index reload failed ({path}): {e}"),
     }

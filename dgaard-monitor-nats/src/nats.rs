@@ -167,7 +167,7 @@ pub async fn run(cfg: NatsConfig, state: Arc<AppState>, mut shutdown: watch::Rec
             return;
         }
     };
-    println!("nats: connected to {}", cfg.url);
+    eprintln!("nats: connected to {}", cfg.url);
 
     // ── Subscriber leg ──────────────────────────────────────────────────────
     let subscriber_task = if !cfg.subscribe_subject.is_empty() {
@@ -177,7 +177,7 @@ pub async fn run(cfg: NatsConfig, state: Arc<AppState>, mut shutdown: watch::Rec
                 let mut rx = shutdown.clone();
                 let subject = cfg.subscribe_subject.clone();
                 Some(tokio::spawn(async move {
-                    println!("nats: subscribed to {subject}");
+                    eprintln!("nats: subscribed to {subject}");
                     run_subscriber(sub, s, &mut rx).await;
                 }))
             }

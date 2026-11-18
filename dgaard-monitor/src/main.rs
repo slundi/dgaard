@@ -67,7 +67,7 @@ async fn main() {
     // Warm-up: load host index.
     let domain_map = match io::index::read_host_index(&index_path) {
         Ok(map) => {
-            println!("Loaded {} domains from index", map.len());
+            eprintln!("Loaded {} domains from index", map.len());
             map
         }
         Err(error::MonitorError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -89,7 +89,7 @@ async fn main() {
         persistence_cfg.aggregates_retention_days,
     ) {
         Ok(d) => {
-            println!("Persistence database opened: {}", persistence_cfg.db);
+            eprintln!("Persistence database opened: {}", persistence_cfg.db);
             Some(std::sync::Arc::new(d))
         }
         Err(e) => {
@@ -136,7 +136,7 @@ async fn main() {
                 }
                 match io::socket::connect(&socket_path).await {
                     Ok(mut stream) => {
-                        println!("Connected to {socket_path}");
+                        eprintln!("Connected to {socket_path}");
                         loop {
                             tokio::select! {
                                 biased;
@@ -202,8 +202,9 @@ async fn main() {
         }
     }
 
-    // Forwarding sink (always running).
-    {
+    // Forwarding sink — only when a file or URL is configured. It never
+    // writes to stdout, which belongs to the TUI or the headless JSON stream.
+    if fwd_cfg.has_sink() {
         let s = Arc::clone(&state);
         let rx = shutdown_rx.clone();
         handles.push(tokio::spawn(async move {
@@ -253,10 +254,10 @@ async fn main() {
             Ok(mut sigterm) => {
                 tokio::select! {
                     _ = tokio::signal::ctrl_c() => {
-                        println!("\nReceived SIGINT, shutting down...");
+                        eprintln!("\nReceived SIGINT, shutting down...");
                     }
                     _ = sigterm.recv() => {
-                        println!("Received SIGTERM, shutting down...");
+                        eprintln!("Received SIGTERM, shutting down...");
                     }
                 }
             }
@@ -271,7 +272,7 @@ async fn main() {
         if let Err(e) = tokio::signal::ctrl_c().await {
             eprintln!("warn: Ctrl-C handler error: {e}");
         }
-        println!("\nReceived Ctrl-C, shutting down...");
+        eprintln!("\nReceived Ctrl-C, shutting down...");
     }
 
     // Broadcast shutdown to all tasks.
@@ -294,5 +295,5 @@ async fn main() {
         .await;
     }
 
-    println!("All tasks stopped. Bye.");
+    eprintln!("All tasks stopped. Bye.");
 }

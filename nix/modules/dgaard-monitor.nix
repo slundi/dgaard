@@ -211,7 +211,7 @@ in
         type = lib.types.nullOr lib.types.str;
         default = null;
         example = "/var/log/dgaard/dns.log";
-        description = "Append formatted event lines to this file. Null writes to stdout.";
+        description = "Append formatted event lines to this file. Forwarding is disabled when both this and forwardUrl are null; it never writes to stdout.";
       };
       format = lib.mkOption {
         type = lib.types.enum [
@@ -223,7 +223,7 @@ in
         ];
         default = "template";
         description = ''
-          Wire format for both file/stdout and HTTP POST output: "template"
+          Wire format for both file and HTTP POST output: "template"
           (uses `template`), "json", "syslog" (RFC 5424), "cef" (ArcSight) or
           "elasticsearch" (Bulk API NDJSON).
         '';

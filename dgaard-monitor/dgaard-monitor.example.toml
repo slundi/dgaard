@@ -41,7 +41,10 @@ key_scroll_down = "down"
 # Forwarding — route enriched events to external sinks
 # ---------------------------------------------------------------------------
 [forwarding]
-# Write formatted lines to a file (omit to write to stdout).
+# Forwarding runs only when `file` and/or `forward_url` is set. It never
+# writes to stdout, which belongs to the TUI or to the headless JSON stream.
+
+# Append formatted lines to this file.
 # file = "/var/log/dgaard/dns.log"
 
 # Template for each forwarded line.

@@ -34,15 +34,19 @@ fn build_https_client() -> HttpsClient {
 
 // --- Entry point ---
 
-/// Forward enriched events to configured sinks (file/stdout and/or HTTP POST).
+/// Forward enriched events to configured sinks (file and/or HTTP POST).
 ///
 /// Applies the `filter` list and formats each event via `template` before
-/// writing or posting it.  Returns when `shutdown` is signalled.
+/// writing or posting it.  Returns when `shutdown` is signalled, or at once
+/// when no sink is configured.
 pub async fn run(
     config: ForwardingConfig,
     state: Arc<AppState>,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    if !config.has_sink() {
+        return;
+    }
     let ForwardingConfig {
         file,
         template,
@@ -52,12 +56,15 @@ pub async fn run(
     } = config;
     let filter: HashSet<String> = filter.into_iter().collect();
 
-    let mut output = match open_output(file.as_deref()).await {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("forwarding: failed to open output: {e}");
-            return;
-        }
+    let mut output = match file.as_deref() {
+        Some(path) => match open_output(path).await {
+            Ok(o) => Some(o),
+            Err(e) => {
+                eprintln!("forwarding: failed to open output {path}: {e}");
+                return;
+            }
+        },
+        None => None,
     };
 
     // Only build the HTTP client when a URL is actually configured.
@@ -87,7 +94,9 @@ pub async fn run(
                             &event.action,
                             &domain,
                         );
-                        if let Err(e) = output.write_line(&body).await {
+                        if let Some(output) = output.as_mut()
+                            && let Err(e) = output.write_line(&body).await
+                        {
                             eprintln!("forwarding: write error: {e}");
                         }
 
@@ -390,39 +399,28 @@ fn format_event(
 
 // --- Output sink ---
 
-enum Output {
-    File(tokio::fs::File),
-    Stdout,
-}
+/// Append-only file sink. There is deliberately no stdout variant: stdout
+/// is owned by the TUI or by the headless JSON stream.
+struct Output(tokio::fs::File);
 
 impl Output {
     async fn write_line(&mut self, line: &str) -> std::io::Result<()> {
         let bytes = format!("{line}\n");
-        match self {
-            Output::File(f) => {
-                f.write_all(bytes.as_bytes()).await?;
-                // tokio::fs::File buffers writes internally and `Drop` does
-                // not wait for the close to complete, so without an explicit
-                // flush we can lose the last events on shutdown.
-                f.flush().await
-            }
-            Output::Stdout => tokio::io::stdout().write_all(bytes.as_bytes()).await,
-        }
+        self.0.write_all(bytes.as_bytes()).await?;
+        // tokio::fs::File buffers writes internally and `Drop` does
+        // not wait for the close to complete, so without an explicit
+        // flush we can lose the last events on shutdown.
+        self.0.flush().await
     }
 }
 
-async fn open_output(path: Option<&str>) -> std::io::Result<Output> {
-    match path {
-        Some(p) => {
-            let f = tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(p)
-                .await?;
-            Ok(Output::File(f))
-        }
-        None => Ok(Output::Stdout),
-    }
+async fn open_output(path: &str) -> std::io::Result<Output> {
+    let file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await?;
+    Ok(Output(file))
 }
 
 // --- Helpers ---
@@ -666,7 +664,7 @@ mod tests {
             .insert_domain(0xdeadbeef, "example.com".to_string())
             .await;
 
-        let mut output = open_output(Some(&path_str)).await.unwrap();
+        let mut output = open_output(&path_str).await.unwrap();
         let event = make_event(StatAction::Allowed);
         let domain = resolve_domain(&state, event.domain_hash).await;
         let ip = format_ip(&event.client_ip);
@@ -691,16 +689,85 @@ mod tests {
 
         let line = "Allowed example.com";
 
-        let mut output = open_output(Some(&path_str)).await.unwrap();
+        let mut output = open_output(&path_str).await.unwrap();
         output.write_line(line).await.unwrap();
         drop(output);
 
-        let mut output2 = open_output(Some(&path_str)).await.unwrap();
+        let mut output2 = open_output(&path_str).await.unwrap();
         output2.write_line(line).await.unwrap();
         drop(output2);
 
         let content = tokio::fs::read_to_string(&path_str).await.unwrap();
         assert_eq!(content, "Allowed example.com\nAllowed example.com\n");
+    }
+
+    // --- run ---
+
+    #[test]
+    fn test_has_sink() {
+        let mut cfg = ForwardingConfig::default();
+        assert!(!cfg.has_sink());
+        cfg.file = Some("/tmp/fwd.log".to_string());
+        assert!(cfg.has_sink());
+        cfg.file = None;
+        cfg.forward_url = Some("https://soar.test/hook".to_string());
+        assert!(cfg.has_sink());
+    }
+
+    #[tokio::test]
+    async fn test_run_without_sink_returns_immediately() {
+        let state = make_state();
+        // Shutdown is never signalled: only the missing sink can end `run`.
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        timeout(
+            Duration::from_secs(1),
+            run(ForwardingConfig::default(), state, shutdown_rx),
+        )
+        .await
+        .expect("run() without a sink must return at once");
+    }
+
+    #[tokio::test]
+    async fn test_run_writes_filtered_events_to_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fwd.log");
+        let path_str = path.to_str().unwrap().to_string();
+
+        let state = make_state();
+        state
+            .insert_domain(0xdeadbeef, "example.com".to_string())
+            .await;
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let cfg = ForwardingConfig {
+            file: Some(path_str.clone()),
+            filter: vec!["Blocked".to_string()],
+            ..ForwardingConfig::default()
+        };
+        let handle = tokio::spawn(run(cfg, Arc::clone(&state), shutdown_rx));
+
+        // Let the task subscribe to the broadcast before emitting anything.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        state.record_event(make_event(StatAction::Allowed)).await;
+        state
+            .record_event(make_event(StatAction::Blocked(StatBlockReason::ABP_RULE)))
+            .await;
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let content = loop {
+            let content = tokio::fs::read_to_string(&path_str)
+                .await
+                .unwrap_or_default();
+            if !content.is_empty() {
+                break content;
+            }
+            assert!(std::time::Instant::now() < deadline, "nothing forwarded");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+
+        let _ = shutdown_tx.send(true);
+        let _ = timeout(Duration::from_secs(2), handle).await;
+
+        assert_eq!(content, "1700000000 192.168.1.1 Blocked example.com\n");
     }
 
     // --- HTTP sink ---

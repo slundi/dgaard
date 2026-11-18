@@ -248,7 +248,7 @@ pub async fn start(
         }
     };
 
-    println!("Web UI listening on http://{addr}");
+    eprintln!("Web UI listening on http://{addr}");
 
     let router = build_router(Arc::clone(&web), server.token);
     let serve = axum::serve(listener, router).with_graceful_shutdown(async move {

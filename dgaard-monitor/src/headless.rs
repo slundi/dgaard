@@ -8,6 +8,7 @@ use dgaard_monitor_core::util::event_to_record;
 /// Runs when `--headless` is set: emits one JSON line per event to stdout.
 /// The format is identical to the REST API's `/api/v1/queries` payload so
 /// log shippers (Vector, Filebeat, Fluentd…) can ingest it without a custom parser.
+/// These lines are the only thing written to stdout; diagnostics go to stderr.
 pub async fn run(state: Arc<AppState>, mut shutdown_rx: watch::Receiver<bool>) {
     let mut events_rx = state.subscribe();
     loop {

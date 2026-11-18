@@ -1,4 +1,4 @@
-/// Wire format for forwarded events (file/stdout and HTTP POST).
+/// Wire format for forwarded events (file and HTTP POST).
 #[derive(Debug, Default, PartialEq, Clone)]
 pub enum ForwardFormat {
     /// Template string with `{timestamp}`, `{client_ip}`, `{action}`, `{domain}` placeholders.
@@ -37,7 +37,8 @@ impl ForwardFormat {
 /// `filter` lists the action variants to forward; an empty list means *all*.
 #[derive(Debug)]
 pub struct ForwardingConfig {
-    /// Append formatted lines to this file instead of stdout.
+    /// Append formatted lines to this file. Forwarding never writes to
+    /// stdout: it belongs to the TUI or to the headless JSON stream.
     pub file: Option<String>,
     /// Template string used when `format = "template"`.
     pub template: String,
@@ -46,13 +47,21 @@ pub struct ForwardingConfig {
     /// Action variants to forward. Empty list = forward everything.
     /// Valid values: "Allowed", "Proxied", "Blocked", "Suspicious", "HighlySuspicious".
     pub filter: Vec<String>,
-    /// Wire format for both file/stdout and HTTP POST output.
+    /// Wire format for both file and HTTP POST output.
     /// Valid values: "template" (default), "json", "syslog", "cef", "elasticsearch".
     pub format: ForwardFormat,
 }
 
 fn default_template() -> String {
     "{timestamp} {client_ip} {action} {domain}".to_string()
+}
+
+impl ForwardingConfig {
+    /// `true` when at least one sink (`file` or `forward_url`) is configured.
+    /// Without one, the forwarding task has nothing to do and is not started.
+    pub fn has_sink(&self) -> bool {
+        self.file.is_some() || self.forward_url.is_some()
+    }
 }
 
 impl Default for ForwardingConfig {
