@@ -19,7 +19,7 @@ use crate::{
     dns::handle_query,
     filter::reload_lists,
     runtime::{
-        shutdown::{ShutdownGuard, TaskGuard, wait_for_tasks},
+        shutdown::{ShutdownGuard, spawn_tracked, wait_for_tasks},
         stat_collector::stats_collector_task,
     },
     utils::bind_listen_sockets,
@@ -315,7 +315,6 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
                                     }
                                     let packet = buf[..len].to_vec();
                                     let socket_inner = Arc::clone(&tokio_socket);
-                                    let task_guard = worker_guard.clone();
 
                                     let permit = match Arc::clone(&worker_semaphore).try_acquire_owned() {
                                         Ok(p) => p,
@@ -327,9 +326,8 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
                                         }
                                     };
 
-                                    tokio::spawn(async move {
+                                    spawn_tracked(&worker_guard, async move {
                                         let _permit = permit;
-                                        let _guard = TaskGuard::new(&task_guard);
                                         if let Err(e) = handle_query(socket_inner, packet, addr).await {
                                             eprintln!("Error handling query from {}: {}", addr, e);
                                         }
@@ -459,7 +457,6 @@ async fn worker_loop(
                         }
                         let packet = buf[..len].to_vec();
                         let socket_inner = Arc::clone(&tokio_socket);
-                        let task_guard = guard.clone();
 
                         let permit = match Arc::clone(&semaphore).try_acquire_owned() {
                             Ok(p) => p,
@@ -471,9 +468,8 @@ async fn worker_loop(
                             }
                         };
 
-                        tokio::spawn(async move {
+                        spawn_tracked(guard, async move {
                             let _permit = permit;
-                            let _guard = TaskGuard::new(&task_guard);
                             if let Err(e) = handle_query(socket_inner, packet, addr).await {
                                 eprintln!("Error handling query from {}: {}", addr, e);
                             }

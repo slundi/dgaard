@@ -5,7 +5,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::watch;
+use tokio::{sync::watch, task::JoinHandle};
 
 /// Tracks active query tasks for graceful shutdown
 #[derive(Clone)]
@@ -64,6 +64,21 @@ impl Drop for TaskGuard {
     fn drop(&mut self) {
         self.active_tasks.fetch_sub(1, Ordering::SeqCst);
     }
+}
+
+/// Spawns `future` with a `TaskGuard` taken *before* `tokio::spawn`, so a
+/// task that is scheduled but not yet polled already counts for
+/// `wait_for_tasks`.
+pub(crate) fn spawn_tracked<F>(guard: &ShutdownGuard, future: F) -> JoinHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let task_guard = TaskGuard::new(guard);
+    tokio::spawn(async move {
+        let _task_guard = task_guard;
+        future.await
+    })
 }
 
 /// Waits for all active tasks to complete with a timeout
@@ -200,6 +215,40 @@ mod tests {
         // Wait for tasks - should complete when the spawned task finishes
         wait_for_tasks(&guard).await;
         handle.await.unwrap();
+        assert_eq!(guard.active_count(), 0);
+    }
+
+    // The current-thread runtime does not poll a spawned task until the
+    // caller yields, which reproduces the "spawned but not yet running" window.
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_tracked_counts_task_before_first_poll() {
+        let (_, guard) = create_test_guard();
+        let handle = spawn_tracked(&guard, async {});
+        assert_eq!(guard.active_count(), 1);
+        handle.await.unwrap();
+        assert_eq!(guard.active_count(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wait_for_tasks_does_not_miss_unpolled_task() {
+        let (_, guard) = create_test_guard();
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let finished_in_task = Arc::clone(&finished);
+        let handle = spawn_tracked(&guard, async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            finished_in_task.store(true, Ordering::SeqCst);
+        });
+
+        wait_for_tasks(&guard).await;
+        assert!(finished.load(Ordering::SeqCst));
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn spawn_tracked_releases_guard_on_panic() {
+        let (_, guard) = create_test_guard();
+        let handle = spawn_tracked(&guard, async { panic!("boom") });
+        assert!(handle.await.is_err());
         assert_eq!(guard.active_count(), 0);
     }
 }
