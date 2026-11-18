@@ -1,65 +1,91 @@
 use std::path::PathBuf;
 
-use gumdrop::Options;
+use bpaf::{OptionParser, Parser, construct, long, positional, short};
 
 use crate::model::{DnsTarget, ListFormat};
 
-#[derive(Debug, Options)]
+#[derive(Debug, Clone)]
 pub struct Opts {
-    #[options(help = "print help message")]
-    pub help: bool,
-
-    #[options(help = "Do not generate the browser blocking list")]
     pub no_browser: bool,
-
-    #[options(help = "Do not generate the network blocking list")]
     pub no_network: bool,
-
-    #[options(
-        help = "Format for the network blocking list, some formats does not support wildcard."
-    )]
+    /// Parsed for compatibility only: output syntax comes from `--target`.
+    #[allow(dead_code)]
     pub format: Option<ListFormat>,
-
-    #[options(
-        help = "DNS server target (plain, hosts, dnsmasq, unbound, pihole, adguard). \
-                Determines the output syntax for the network blocking list. \
-                Defaults to plain."
-    )]
     pub target: Option<DnsTarget>,
-
-    #[options(help = "Output file for network blocking list")]
     pub network_file: Option<PathBuf>,
-
-    #[options(help = "If applicable target, output file for whitelist")]
     pub whitelist_file: Option<PathBuf>,
-
-    #[options(help = "Output file for browser blocking list")]
     pub browser_file: Option<PathBuf>,
-
-    #[options(free, help = "List of paths or URL to parse")]
     pub paths: Vec<String>,
 }
 
+/// `-h`/`--help` come from bpaf; the other short flags match the ones the
+/// previous parser assigned (`--network-file` had none: `-n` and `-N` were
+/// already taken).
+fn options() -> OptionParser<Opts> {
+    let no_browser = short('n')
+        .long("no-browser")
+        .help("Do not generate the browser blocking list")
+        .switch();
+    let no_network = short('N')
+        .long("no-network")
+        .help("Do not generate the network blocking list")
+        .switch();
+    let format = short('f')
+        .long("format")
+        .help("Deprecated and ignored: use --target to choose the output syntax.")
+        .argument::<ListFormat>("FORMAT")
+        .optional();
+    let target = short('t')
+        .long("target")
+        .help(
+            "DNS server target (plain, hosts, dnsmasq, unbound, pihole, adguard). \
+             Determines the output syntax for the network blocking list. \
+             Defaults to plain.",
+        )
+        .argument::<DnsTarget>("TARGET")
+        .optional();
+    let network_file = long("network-file")
+        .help("Output file for network blocking list")
+        .argument::<PathBuf>("FILE")
+        .optional();
+    let whitelist_file = short('w')
+        .long("whitelist-file")
+        .help("If applicable target, output file for whitelist")
+        .argument::<PathBuf>("FILE")
+        .optional();
+    let browser_file = short('b')
+        .long("browser-file")
+        .help("Output file for browser blocking list")
+        .argument::<PathBuf>("FILE")
+        .optional();
+    let paths = positional::<String>("PATHS")
+        .help("List of paths or URL to parse")
+        .many();
+    construct!(Opts {
+        no_browser,
+        no_network,
+        format,
+        target,
+        network_file,
+        whitelist_file,
+        browser_file,
+        paths,
+    })
+    .to_options()
+    .descr("Optimize and convert ad-blocking lists")
+}
+
 pub fn parse() -> Opts {
-    let args: Vec<String> = std::env::args().collect();
-    match Opts::parse_args_default(&args[1..]) {
-        Ok(opts) => opts,
-        Err(e) => {
-            eprintln!("Error: {e}");
-            eprintln!("Usage: adblockptimize [OPTIONS] PATHS");
-            eprintln!("{}", Opts::usage());
-            std::process::exit(1);
-        }
-    }
+    options().run()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gumdrop::Options;
+    use bpaf::ParseFailure;
 
-    fn parse(args: &[&str]) -> Result<Opts, gumdrop::Error> {
-        Opts::parse_args_default(args)
+    fn parse(args: &[&str]) -> Result<Opts, ParseFailure> {
+        options().run_inner(args)
     }
 
     #[test]
@@ -109,10 +135,38 @@ mod tests {
     }
 
     #[test]
+    fn whitelist_file_flag() {
+        let opts = parse(&["--whitelist-file", "allow.txt", "input.txt"]).unwrap();
+        assert_eq!(opts.whitelist_file, Some(PathBuf::from("allow.txt")));
+    }
+
+    #[test]
+    fn short_flags_match_previous_parser() {
+        let opts = parse(&[
+            "-n", "-N", "-f", "hosts", "-t", "unbound", "-w", "w.txt", "-b", "b.txt", "in.txt",
+        ])
+        .unwrap();
+        assert!(opts.no_browser);
+        assert!(opts.no_network);
+        assert_eq!(opts.format, Some(ListFormat::Hosts));
+        assert_eq!(opts.target, Some(DnsTarget::Unbound));
+        assert_eq!(opts.whitelist_file, Some(PathBuf::from("w.txt")));
+        assert_eq!(opts.browser_file, Some(PathBuf::from("b.txt")));
+        assert_eq!(opts.paths, vec!["in.txt"]);
+    }
+
+    #[test]
     fn combined_flags_and_files() {
         let opts = parse(&["--no-browser", "--format=dnsmasq", "a.txt", "b.txt"]).unwrap();
         assert!(opts.no_browser);
         assert_eq!(opts.format, Some(ListFormat::Dnsmasq));
+        assert_eq!(opts.paths, vec!["a.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn flags_after_paths_are_accepted() {
+        let opts = parse(&["a.txt", "--no-network", "b.txt"]).unwrap();
+        assert!(opts.no_network);
         assert_eq!(opts.paths, vec!["a.txt", "b.txt"]);
     }
 
@@ -172,5 +226,15 @@ mod tests {
     #[test]
     fn unknown_target_is_error() {
         assert!(parse(&["--target=bind9"]).is_err());
+    }
+
+    #[test]
+    fn help_is_printed_to_stdout() {
+        let Err(ParseFailure::Stdout(doc, _)) = parse(&["--help"]) else {
+            panic!("--help must print usage");
+        };
+        let help = doc.to_string();
+        assert!(help.contains("--network-file"), "{help}");
+        assert!(help.contains("PATHS"), "{help}");
     }
 }

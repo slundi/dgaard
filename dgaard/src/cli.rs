@@ -1,44 +1,51 @@
-use gumdrop::Options;
+use bpaf::{OptionParser, Parser, construct, short};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[derive(Debug, Options)]
+#[derive(Debug, Clone)]
 pub struct CliOptions {
-    #[options(help = "Print help information")]
-    pub help: bool,
-
-    #[options(help = "Print version information")]
-    pub version: bool,
-
-    #[options(help = "Path to the configuration file", meta = "FILE")]
     pub config: Option<String>,
 }
 
+/// `-h`/`--help` and `-v`/`--version` are handled (and exit) inside bpaf;
+/// the short flags match the ones the previous parser assigned.
+fn options() -> OptionParser<CliOptions> {
+    let config = short('c')
+        .long("config")
+        .help("Path to the configuration file")
+        .argument::<String>("FILE")
+        .optional();
+    construct!(CliOptions { config })
+        .to_options()
+        .descr("DNS filtering proxy with heuristic DGA detection")
+        .version(VERSION)
+        .version_parser(short('v').long("version").help("Print version information"))
+}
+
 pub fn parse() -> CliOptions {
-    let opts = CliOptions::parse_args_default_or_exit();
-
-    if opts.version {
-        println!("dgaard {VERSION}");
-        std::process::exit(0);
-    }
-
-    opts
+    options().run()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gumdrop::Options;
+    use bpaf::ParseFailure;
 
     fn parse(args: &[&str]) -> CliOptions {
-        CliOptions::parse_args_default(args).expect("failed to parse args")
+        options().run_inner(args).expect("failed to parse args")
+    }
+
+    /// Text bpaf prints to stdout for `--help` / `--version`.
+    fn stdout_of(args: &[&str]) -> String {
+        match options().run_inner(args) {
+            Err(ParseFailure::Stdout(doc, _)) => doc.to_string(),
+            other => panic!("expected stdout output, got {other:?}"),
+        }
     }
 
     #[test]
     fn defaults_are_empty() {
         let opts = parse(&[]);
-        assert!(!opts.help);
-        assert!(!opts.version);
         assert!(opts.config.is_none());
     }
 
@@ -55,20 +62,38 @@ mod tests {
     }
 
     #[test]
-    fn version_flag() {
-        let opts = parse(&["--version"]);
-        assert!(opts.version);
+    fn config_equals_syntax() {
+        let opts = parse(&["--config=/etc/dgaard.toml"]);
+        assert_eq!(opts.config.as_deref(), Some("/etc/dgaard.toml"));
     }
 
     #[test]
-    fn help_flag() {
-        let opts = parse(&["--help"]);
-        assert!(opts.help);
+    fn config_without_value_is_error() {
+        assert!(options().run_inner(&["--config"]).is_err());
+    }
+
+    #[test]
+    fn version_flags_print_the_version() {
+        for flag in ["--version", "-v"] {
+            assert!(stdout_of(&[flag]).contains(VERSION), "{flag}");
+        }
+    }
+
+    #[test]
+    fn help_flags_print_usage() {
+        for flag in ["--help", "-h"] {
+            let help = stdout_of(&[flag]);
+            assert!(help.contains("--config"), "{flag}: {help}");
+            assert!(help.contains("--version"), "{flag}: {help}");
+        }
     }
 
     #[test]
     fn unknown_flag_is_error() {
-        assert!(CliOptions::parse_args_default(&["--unknown"]).is_err());
+        assert!(matches!(
+            options().run_inner(&["--unknown"]),
+            Err(ParseFailure::Stderr(_))
+        ));
     }
 
     #[test]

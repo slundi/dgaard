@@ -7,7 +7,7 @@ name = "adblockptimize"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
- "gumdrop",
+ "bpaf",
  "hickory-resolver",
  "http-body-util",
  "hyper",
@@ -433,9 +433,9 @@ dependencies = [
 
 [[package]]
 name = "bpaf"
-version = "0.9.28"
+version = "0.9.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "597e81e56404b7a3e26ef7b449f82a4b7a661ae76c3cac692b42d6bad06a0fbe"
+checksum = "6ec87bdee42abd2534b8afb7b92086347dfff18e9c87751a7d25b062b33e87b4"
 
 [[package]]
 name = "bumpalo"
@@ -895,12 +895,12 @@ dependencies = [
  "async-trait",
  "bitflags 2.13.2",
  "bloom",
+ "bpaf",
  "dashmap",
  "dgaard-engine",
  "env_logger",
  "fst",
  "getrandom 0.4.3",
- "gumdrop",
  "hickory-resolver",
  "http-body-util",
  "hyper",
@@ -971,11 +971,11 @@ dependencies = [
 name = "dgaard-monitor"
 version = "0.1.0"
 dependencies = [
+ "bpaf",
  "dgaard-monitor-core",
  "dgaard-monitor-nats",
  "dgaard-monitor-rest",
  "dgaard-monitor-tui",
- "gumdrop",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
@@ -1433,26 +1433,6 @@ dependencies = [
  "r-efi 6.0.0",
  "rand_core 0.10.1",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "gumdrop"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5bc700f989d2f6f0248546222d9b4258f5b02a171a431f8285a81c08142629e3"
-dependencies = [
- "gumdrop_derive",
-]
-
-[[package]]
-name = "gumdrop_derive"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "729f9bd3449d77e7831a18abfb7ba2f99ee813dfd15b8c2167c9a54ba20aa99d"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
 ]
 
 [[package]]

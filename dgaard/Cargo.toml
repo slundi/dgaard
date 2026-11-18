@@ -52,7 +52,7 @@ fst.workspace = true
 bloom.workspace = true
 
 # CLI argument parsing
-gumdrop.workspace = true
+bpaf.workspace = true
 
 # Logging (Lightweight)
 env_logger.workspace = true

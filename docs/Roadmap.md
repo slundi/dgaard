@@ -34,7 +34,7 @@ dgaard/
 
 _Focus: Getting the "Engine" to start and manage threads correctly._
 
-- [x] 1.1. **CLI Entry**: Setup gumdrop and handle `--config` and `--version` flags.
+- [x] 1.1. **CLI Entry**: Setup the CLI parser and handle `--config` and `--version` flags.
 - [x] 1.2. **Config Discovery**: Logic to check `/etc/dgaard/` then local directory for the file.
 - [x] 1.3. **Configuration loader**: parse the configuration using `toml-span` and print the listen_addr.
 - [x] 1.4.** Runtime Setup**: Use tokio::runtime::Builder to set thread counts based on the parsed config.
@@ -136,7 +136,7 @@ pub struct StatEvent {
 }
 ```
 
-- [ ] 7.3. **CLI Control**: add (with `gumdrop`) commands (`bypass TIME`, `anonymous TIME`, `incognito TIME` where time is in minutes `30m` or hours `2h`, or maybe day or week too. We should have a TOML configurable default time) to send control signals.
+- [ ] 7.3. **CLI Control**: add (with `bpaf`) commands (`bypass TIME`, `anonymous TIME`, `incognito TIME` where time is in minutes `30m` or hours `2h`, or maybe day or week too. We should have a TOML configurable default time) to send control signals.
 
 ## Phase 8: Deep Packet Inspection (DPI Lite) & Advanced Filtering
 

@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 bitflags.workspace = true
-gumdrop.workspace = true
+bpaf.workspace = true
 hickory-resolver.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }

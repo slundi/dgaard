@@ -71,7 +71,7 @@ To maintain a footprint under 5MB and support MIPS/ARM architectures, we use a s
 ### Rust crates
 
 - **Runtime**: `tokio` (Multi-threaded with custom `Builder`).
-- **CLI Parsing**: `gumdrop` (Zero-cost macro-based parsing).
+- **CLI Parsing**: `bpaf` (combinator API, no proc-macro).
 - **Configuration**: `toml-span` (Low-dependency, span-aware parsing).
 - **Serialization**: `rkyv` (Zero-copy) and `postcard` (Compact binary).
 - **Hashing**: `xxhash-rust` (XXH3_64) for O(1) lookups.
@@ -111,7 +111,7 @@ After coding (implementing feature, refactoring, fixing) you must ends with the 
 1. format the code using `cargo fmt`
 2. ensure nothing is broken by running `cargo nextest run`
 3. run cargo clippy to fix warnings from modified coded
-4. suggest a conventionnal commit
+4. suggest a conventional commit
 
 ### 🧪 Testing Strategy
 

@@ -15,7 +15,7 @@ dgaard-monitor-nats = { workspace = true, optional = true }
 dgaard-monitor-rest = { workspace = true, optional = true }
 dgaard-monitor-tui = { workspace = true, optional = true }
 
-gumdrop.workspace = true
+bpaf.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "time", "signal", "fs"] }

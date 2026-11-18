@@ -36,8 +36,7 @@ tokio = { version = "1.52.3" }
 
 # CLI argument parsing
 argh = "0.1"
-bpaf = "0.9.26"
-gumdrop = "0.8"
+bpaf = "0.9.29"
 
 # Bitflags
 bitflags = "2.13.2"

@@ -1,4 +1,4 @@
-use gumdrop::Options;
+use bpaf::{OptionParser, Parser, construct, short};
 
 #[allow(dead_code)]
 pub const DEFAULT_SOCKET: &str = "/tmp/dns.sock";
@@ -7,24 +7,12 @@ pub const DEFAULT_INDEX: &str = "/var/lib/dns/hosts.bin";
 #[allow(dead_code)]
 pub const DEFAULT_DB: &str = "/var/dgaard/stats.sqlite";
 
-#[derive(Debug, Options)]
+#[derive(Debug, Clone)]
 pub struct Opts {
-    #[options(help = "print help message")]
-    pub help: bool,
-
-    #[options(short = "c", help = "path to TOML configuration file", meta = "PATH")]
     pub config: Option<String>,
-
-    #[options(help = "path to Unix Domain Socket (overrides config)", meta = "PATH")]
     pub socket: Option<String>,
-
-    #[options(help = "path to host index file (overrides config)", meta = "PATH")]
     pub index: Option<String>,
-
-    #[options(help = "path to SQLite database (overrides config)", meta = "PATH")]
     pub db: Option<String>,
-
-    #[options(help = "disable the TUI and run as a headless service")]
     pub headless: bool,
 }
 
@@ -45,31 +33,56 @@ impl Opts {
     }
 }
 
+/// `-h`/`--help` come from bpaf; the other short flags match the ones the
+/// previous parser assigned.
+fn options() -> OptionParser<Opts> {
+    let path = |flag: char, name: &'static str, help: &'static str| {
+        short(flag)
+            .long(name)
+            .help(help)
+            .argument::<String>("PATH")
+            .optional()
+    };
+    let config = path('c', "config", "path to TOML configuration file");
+    let socket = path(
+        's',
+        "socket",
+        "path to Unix Domain Socket (overrides config)",
+    );
+    let index = path('i', "index", "path to host index file (overrides config)");
+    let db = path('d', "db", "path to SQLite database (overrides config)");
+    let headless = short('H')
+        .long("headless")
+        .help("disable the TUI and run as a headless service")
+        .switch();
+    construct!(Opts {
+        config,
+        socket,
+        index,
+        db,
+        headless
+    })
+    .to_options()
+    .descr("Telemetry agent for the dgaard DNS proxy")
+}
+
 pub fn parse() -> Opts {
-    let args: Vec<String> = std::env::args().collect();
-    match Opts::parse_args_default(&args[1..]) {
-        Ok(opts) => opts,
-        Err(e) => {
-            eprintln!("Error: {e}");
-            eprintln!("Usage: dgaard-monitor [OPTIONS]");
-            eprintln!("{}", Opts::usage());
-            std::process::exit(1);
-        }
-    }
+    options().run()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gumdrop::Options;
+    use bpaf::ParseFailure;
 
-    fn parse_args(args: &[&str]) -> Result<Opts, gumdrop::Error> {
-        Opts::parse_args_default(args)
+    fn parse_args(args: &[&str]) -> Result<Opts, ParseFailure> {
+        options().run_inner(args)
     }
 
     #[test]
     fn test_defaults() {
         let opts = parse_args(&[]).unwrap();
+        assert!(opts.config.is_none());
         assert_eq!(opts.socket_path(), DEFAULT_SOCKET);
         assert_eq!(opts.index_path(), DEFAULT_INDEX);
         assert_eq!(opts.db_path(), DEFAULT_DB);
@@ -116,6 +129,33 @@ mod tests {
     }
 
     #[test]
+    fn test_short_flags_match_previous_parser() {
+        let opts = parse_args(&[
+            "-c",
+            "/etc/m.toml",
+            "-s",
+            "/s.sock",
+            "-i",
+            "/h.bin",
+            "-d",
+            "/s.db",
+            "-H",
+        ])
+        .unwrap();
+        assert_eq!(opts.config.as_deref(), Some("/etc/m.toml"));
+        assert_eq!(opts.socket_path(), "/s.sock");
+        assert_eq!(opts.index_path(), "/h.bin");
+        assert_eq!(opts.db_path(), "/s.db");
+        assert!(opts.headless);
+    }
+
+    #[test]
+    fn test_config_long_flag() {
+        let opts = parse_args(&["--config=/etc/monitor.toml"]).unwrap();
+        assert_eq!(opts.config.as_deref(), Some("/etc/monitor.toml"));
+    }
+
+    #[test]
     fn test_headless_default_is_false() {
         let opts = parse_args(&[]).unwrap();
         assert!(!opts.headless);
@@ -128,8 +168,19 @@ mod tests {
     }
 
     #[test]
+    fn test_help_lists_every_option() {
+        let Err(ParseFailure::Stdout(doc, _)) = parse_args(&["--help"]) else {
+            panic!("--help must print usage");
+        };
+        let help = doc.to_string();
+        for flag in ["--config", "--socket", "--index", "--db", "--headless"] {
+            assert!(help.contains(flag), "{flag} missing from:\n{help}");
+        }
+    }
+
+    #[test]
     fn test_unknown_flag_returns_error() {
         let result = parse_args(&["--unknown-flag"]);
-        assert!(result.is_err());
+        assert!(matches!(result, Err(ParseFailure::Stderr(_))));
     }
 }

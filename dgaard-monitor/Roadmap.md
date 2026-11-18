@@ -2,7 +2,7 @@
 
 ## Phase 1: Foundation
 
-- [x] **CLI Parsing**: Implement using `gumdrop` for clean argument handling (e.g., `--socket /tmp/dns.sock --index /var/lib/dns/hosts.bin --db /var/dgaard/stats.sqlite`) in `cli.rs` for future commands (default will run tui, but later `serve` for a JSON API, `websocket`, `hook`)
+- [x] **CLI Parsing**: Implement using `bpaf` for clean argument handling (e.g., `--socket /tmp/dns.sock --index /var/lib/dns/hosts.bin --db /var/dgaard/stats.sqlite`) in `cli.rs` for future commands (default will run tui, but later `serve` for a JSON API, `websocket`, `hook`)
 - [x] **Error handling**: with thiserror in `error.rs`
 - [x] **App configuration**: in config.rs
 - [x] **IO Layer**:
