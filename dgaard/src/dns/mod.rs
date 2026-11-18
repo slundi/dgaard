@@ -570,6 +570,22 @@ mod tests {
     }
 
     #[test]
+    fn classify_score_reports_the_heaviest_reason() {
+        // Review F6: stats named the first signal found ("structure")
+        // instead of the one that drove the block.
+        let mut score = SuspicionScore::new();
+        score.add(3, BlockReason::InvalidStructure);
+        score.add(10, BlockReason::CnameCloaking);
+        let (blocked, stat) =
+            classify_score(&score, &scoring_with_threshold(5), StatAction::Allowed);
+        assert!(blocked);
+        assert_eq!(
+            stat,
+            StatAction::Blocked(StatBlockReason::from(&BlockReason::CnameCloaking))
+        );
+    }
+
+    #[test]
     fn block_before_upstream_lets_low_scores_through() {
         let scoring = scoring_with_threshold(5);
         assert!(block_before_upstream(&Action::ProxyToUpstream, &score_of(4), &scoring).is_none());

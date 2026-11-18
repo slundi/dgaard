@@ -284,7 +284,10 @@ impl StatEvent {
 #[derive(Debug, Clone, Default)]
 pub struct SuspicionScore {
     pub total: u8,
+    /// Every reason added, in the order the pipeline found them.
     pub reasons: Vec<BlockReason>,
+    /// `(points, index into reasons)` of the heaviest reason so far.
+    primary: Option<(u8, usize)>,
 }
 
 /// Score points for various heuristic signals.
@@ -314,11 +317,18 @@ impl SuspicionScore {
 
     pub fn add(&mut self, points: u8, reason: BlockReason) {
         self.total = self.total.saturating_add(points);
+        if self.primary.is_none_or(|(best, _)| points > best) {
+            self.primary = Some((points, self.reasons.len()));
+        }
         self.reasons.push(reason);
     }
 
+    /// The reason that contributed the most points (the earliest one on a
+    /// tie), so logs and stats name e.g. CNAME cloaking rather than
+    /// whichever minor structural signal the pipeline happened to check
+    /// first.
     pub fn primary_reason(&self) -> Option<&BlockReason> {
-        self.reasons.first()
+        self.primary.and_then(|(_, index)| self.reasons.get(index))
     }
 }
 
@@ -355,13 +365,55 @@ mod tests {
     }
 
     #[test]
-    fn suspicion_score_primary_reason_is_first() {
+    fn suspicion_score_primary_reason_is_heaviest() {
+        // Review F6: structure is checked first but cloaking weighs more.
+        let mut s = SuspicionScore::new();
+        s.add(score_points::LONG_DOMAIN, BlockReason::InvalidStructure);
+        s.add(score_points::CNAME_CLOAKING, BlockReason::CnameCloaking);
+        s.add(score_points::LOW_TTL, BlockReason::LowTtl(5));
+        assert!(matches!(
+            s.primary_reason(),
+            Some(BlockReason::CnameCloaking)
+        ));
+        // Insertion order of the full list is unchanged.
+        assert!(matches!(s.reasons[0], BlockReason::InvalidStructure));
+    }
+
+    #[test]
+    fn suspicion_score_primary_reason_tie_keeps_earliest() {
         let mut s = SuspicionScore::new();
         s.add(score_points::ENTROPY_HIGH, BlockReason::HighEntropy(4.5));
-        s.add(score_points::NRD, BlockReason::NrdList);
+        s.add(score_points::ENTROPY_LOW, BlockReason::LowEntropy(12));
         assert!(matches!(
             s.primary_reason(),
             Some(BlockReason::HighEntropy(_))
+        ));
+    }
+
+    #[test]
+    fn suspicion_score_primary_reason_with_zero_points() {
+        // A zero-weight custom flag is still a reason worth naming.
+        let mut s = SuspicionScore::new();
+        s.add(0, BlockReason::CustomFlag(16));
+        assert!(matches!(
+            s.primary_reason(),
+            Some(BlockReason::CustomFlag(16))
+        ));
+        s.add(1, BlockReason::NrdList);
+        assert!(matches!(s.primary_reason(), Some(BlockReason::NrdList)));
+    }
+
+    #[test]
+    fn suspicion_score_primary_reason_ignores_saturated_total() {
+        let mut s = SuspicionScore::new();
+        for _ in 0..30 {
+            s.add(9, BlockReason::LexicalAnalysis);
+        }
+        s.add(10, BlockReason::DnsRebinding);
+        assert_eq!(s.total, u8::MAX);
+        assert!(matches!(
+            s.primary_reason(),
+            Some(BlockReason::DnsRebinding)
         ));
     }
 
