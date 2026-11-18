@@ -98,20 +98,38 @@ impl RollingStats {
 pub struct AppState {
     pub domain_map: Arc<RwLock<HashMap<u64, String>>>,
     pub stats: Arc<RwLock<RollingStats>>,
+    /// Every event, whatever its origin (Unix socket or federation).
     events_tx: broadcast::Sender<StatEvent>,
+    /// Only events produced by the local dgaard daemon. Federation
+    /// publishers read this one so remote events are never re-emitted.
+    local_tx: broadcast::Sender<StatEvent>,
 }
 
 impl AppState {
     pub fn new(window: Duration) -> Self {
         let (events_tx, _) = broadcast::channel(256);
+        let (local_tx, _) = broadcast::channel(256);
         Self {
             domain_map: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(RwLock::new(RollingStats::new(window))),
             events_tx,
+            local_tx,
         }
     }
 
+    /// Record an event produced by the local dgaard daemon.
     pub async fn record_event(&self, event: StatEvent) {
+        self.record(event.clone()).await;
+        let _ = self.local_tx.send(event);
+    }
+
+    /// Record an event received from a federated peer (e.g. NATS). It feeds
+    /// stats and `subscribe()` but not `subscribe_local()`.
+    pub async fn record_remote_event(&self, event: StatEvent) {
+        self.record(event).await;
+    }
+
+    async fn record(&self, event: StatEvent) {
         // Update the rolling stats first so a subscriber that reads `stats`
         // immediately after receiving the broadcast sees a counter that
         // already includes this event. The previous order opened a brief
@@ -122,6 +140,11 @@ impl AppState {
 
     pub fn subscribe(&self) -> broadcast::Receiver<StatEvent> {
         self.events_tx.subscribe()
+    }
+
+    /// Subscribe to events from the local daemon only.
+    pub fn subscribe_local(&self) -> broadcast::Receiver<StatEvent> {
+        self.local_tx.subscribe()
     }
 
     pub async fn insert_domain(&self, hash: u64, domain: String) {
@@ -282,5 +305,35 @@ mod tests {
         assert_eq!(stats.total, 2);
         assert_eq!(stats.allowed, 1);
         assert_eq!(stats.blocked, 1);
+    }
+
+    #[tokio::test]
+    async fn test_local_event_reaches_both_broadcasts() {
+        let state = AppState::new(DEFAULT_WINDOW);
+        let mut all_rx = state.subscribe();
+        let mut local_rx = state.subscribe_local();
+
+        let event = make_event(1, ip(1), StatAction::Allowed);
+        state.record_event(event.clone()).await;
+
+        assert_eq!(all_rx.try_recv().unwrap(), event);
+        assert_eq!(local_rx.try_recv().unwrap(), event);
+    }
+
+    #[tokio::test]
+    async fn test_remote_event_skips_local_broadcast() {
+        let state = AppState::new(DEFAULT_WINDOW);
+        let mut all_rx = state.subscribe();
+        let mut local_rx = state.subscribe_local();
+
+        let event = make_event(1, ip(1), StatAction::Allowed);
+        state.record_remote_event(event.clone()).await;
+
+        assert_eq!(all_rx.try_recv().unwrap(), event);
+        assert!(matches!(
+            local_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        assert_eq!(state.stats.read().await.total, 1);
     }
 }

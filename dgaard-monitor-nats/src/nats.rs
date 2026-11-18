@@ -1,11 +1,11 @@
 //! Optional NATS publisher + subscriber for federating monitors.
 //!
 //! When `[nats] enabled = true`, the monitor:
-//!   1. **Publishes** every enriched event from the local broadcast on
-//!      `publish_subject` (empty string disables this leg).
-//!   2. **Subscribes** to `subscribe_subject` and injects every incoming
-//!      event back into the local broadcast as if it had been received over
-//!      the Unix socket (empty string disables this leg).
+//!   1. **Publishes** every enriched event produced by the local dgaard
+//!      daemon on `publish_subject` (empty string disables this leg).
+//!   2. **Subscribes** to `subscribe_subject` and feeds every incoming
+//!      event into the local stats and broadcast, tagged as remote (empty
+//!      string disables this leg).
 //!
 //! Wire format (UTF-8 JSON, mirrors the in-process `StatEvent`):
 //! ```json
@@ -19,11 +19,12 @@
 //! }
 //! ```
 //!
-//! Cycles are prevented by re-encoding only events that came in over the
-//! Unix socket; events received on NATS are dropped before re-publishing.
-//! Today we approximate this with a "publish only when subscribe and
-//! publish subjects differ" rule, which is sufficient for the supported
-//! federation topologies and avoids tracking event provenance.
+//! Cycles are prevented by provenance: inbound events go through
+//! `AppState::record_remote_event` and the publisher reads
+//! `AppState::subscribe_local`, so an event received on NATS is never
+//! re-published. The connection also sets `no_echo` so that, when both
+//! subjects are equal (shared bus), the server does not hand a monitor
+//! back its own events, which would otherwise be counted twice.
 use std::net::{IpAddr, Ipv6Addr};
 use std::sync::Arc;
 
@@ -155,7 +156,11 @@ pub async fn run(cfg: NatsConfig, state: Arc<AppState>, mut shutdown: watch::Rec
         return;
     }
 
-    let client = match async_nats::connect(&cfg.url).await {
+    let client = match async_nats::ConnectOptions::new()
+        .no_echo()
+        .connect(&cfg.url)
+        .await
+    {
         Ok(c) => c,
         Err(e) => {
             eprintln!("nats: connect to {} failed: {e}, disabling", cfg.url);
@@ -240,7 +245,7 @@ async fn handle_inbound(payload: &[u8], state: &AppState) {
         state.insert_domain(wire.domain_hash, d).await;
     }
     match wire.into_event() {
-        Ok(ev) => state.record_event(ev).await,
+        Ok(ev) => state.record_remote_event(ev).await,
         Err(e) => eprintln!("nats: drop event with bad fields: {e}"),
     }
 }
@@ -251,7 +256,8 @@ async fn run_publisher(
     state: Arc<AppState>,
     shutdown: &mut watch::Receiver<bool>,
 ) {
-    let mut rx = state.subscribe();
+    // Local events only: re-publishing what came in over NATS would loop.
+    let mut rx = state.subscribe_local();
     let subject = async_nats::Subject::from(subject);
     loop {
         tokio::select! {
@@ -557,6 +563,103 @@ mod integration {
         let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
     }
 
+    /// Regression for the federation loop: with identical subjects, an event
+    /// received on NATS must not be re-published, while local events still are.
+    #[tokio::test]
+    async fn inbound_event_is_not_republished() {
+        let mock = MockNats::start().await.unwrap();
+        let state = Arc::new(AppState::new(Duration::from_secs(3600)));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        let cfg = NatsConfig {
+            enabled: true,
+            url: mock.url(),
+            publish_subject: "dgaard.events".to_string(),
+            subscribe_subject: "dgaard.events".to_string(),
+        };
+
+        let s = Arc::clone(&state);
+        let handle = tokio::spawn(async move {
+            super::run(cfg, s, shutdown_rx).await;
+        });
+
+        let wire = WireEvent {
+            ts: 1,
+            domain_hash: 7,
+            domain: Some("remote.test".to_string()),
+            client_ip: "10.0.0.9".to_string(),
+            action: WireAction::Blocked,
+            reasons: StatBlockReason::STATIC_BLACKLIST.bits(),
+        };
+        let payload = serde_json::to_vec(&wire).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !mock.push("dgaard.events", &payload).await {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "subscriber never registered"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while state.stats.read().await.total < 1 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "inbound event never reached AppState"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // Give a (buggy) publisher time to echo the inbound event, then emit
+        // a local one: only the local event may reach the broker.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        state.record_event(sample_event()).await;
+        let pubs = mock.wait_for_publishes(1, Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let pubs_after = mock.published().await;
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+
+        assert_eq!(pubs_after.len(), 1, "unexpected publishes: {pubs_after:?}");
+        let published: WireEvent = serde_json::from_slice(&pubs[0].payload).unwrap();
+        assert_eq!(published.domain_hash, 0xabc);
+    }
+
+    #[tokio::test]
+    async fn connection_disables_server_echo() {
+        let mock = MockNats::start().await.unwrap();
+        let state = Arc::new(AppState::new(Duration::from_secs(3600)));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        let cfg = NatsConfig {
+            enabled: true,
+            url: mock.url(),
+            publish_subject: "dgaard.events".to_string(),
+            subscribe_subject: String::new(),
+        };
+
+        let handle = tokio::spawn(super::run(cfg, state, shutdown_rx));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let connect = loop {
+            if let Some(connect) = mock.connects().await.into_iter().next() {
+                break connect;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "client never sent CONNECT"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+
+        let options: serde_json::Value = serde_json::from_str(&connect).unwrap();
+        assert_eq!(options["echo"], serde_json::Value::Bool(false));
+    }
+
     #[tokio::test]
     async fn disabled_config_is_a_noop() {
         let state = Arc::new(AppState::new(Duration::from_secs(3600)));
@@ -604,6 +707,7 @@ mod mock_nats {
         addr: SocketAddr,
         published: Arc<Mutex<Vec<Published>>>,
         subs: SubMap,
+        connects: Arc<Mutex<Vec<String>>>,
     }
 
     impl MockNats {
@@ -613,9 +717,11 @@ mod mock_nats {
 
             let published: Arc<Mutex<Vec<Published>>> = Arc::new(Mutex::new(Vec::new()));
             let subs: SubMap = Arc::new(Mutex::new(HashMap::new()));
+            let connects: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
             let pub_clone = Arc::clone(&published);
             let subs_clone = Arc::clone(&subs);
+            let connects_clone = Arc::clone(&connects);
 
             tokio::spawn(async move {
                 loop {
@@ -623,8 +729,9 @@ mod mock_nats {
                         Ok((stream, _)) => {
                             let p = Arc::clone(&pub_clone);
                             let s = Arc::clone(&subs_clone);
+                            let c = Arc::clone(&connects_clone);
                             tokio::spawn(async move {
-                                let _ = handle_client(stream, p, s).await;
+                                let _ = handle_client(stream, p, s, c).await;
                             });
                         }
                         Err(_) => return,
@@ -636,6 +743,7 @@ mod mock_nats {
                 addr,
                 published,
                 subs,
+                connects,
             })
         }
 
@@ -645,6 +753,11 @@ mod mock_nats {
 
         pub async fn published(&self) -> Vec<Published> {
             self.published.lock().await.clone()
+        }
+
+        /// JSON option blocks of every CONNECT frame received so far.
+        pub async fn connects(&self) -> Vec<String> {
+            self.connects.lock().await.clone()
         }
 
         pub async fn wait_for_publishes(&self, count: usize, timeout: Duration) -> Vec<Published> {
@@ -682,6 +795,7 @@ mod mock_nats {
         stream: TcpStream,
         published: Arc<Mutex<Vec<Published>>>,
         subs: SubMap,
+        connects: Arc<Mutex<Vec<String>>>,
     ) -> std::io::Result<()> {
         let (reader, writer) = stream.into_split();
         let writer = Arc::new(Mutex::new(writer));
@@ -706,7 +820,7 @@ mod mock_nats {
             let rest = parts.next().unwrap_or("");
 
             match verb.as_str() {
-                "CONNECT" => {}
+                "CONNECT" => connects.lock().await.push(rest.to_string()),
                 "PING" => {
                     writer.lock().await.write_all(b"PONG\r\n").await?;
                 }

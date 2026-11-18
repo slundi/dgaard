@@ -122,7 +122,11 @@ url = "nats://127.0.0.1:4222"
 # Subject the monitor publishes enriched events on. Empty disables this leg.
 publish_subject = "dgaard.events"
 
-# Subject the monitor subscribes to. Set to "dgaard.events" to relay events
-# from a peer monitor, or "dgaard.scores" to consume a daemon's scoring
-# feed. Empty disables this leg.
+# Subject the monitor subscribes to. Set to "dgaard.events" to receive
+# events from peer monitors, or "dgaard.scores" to consume a daemon's
+# scoring feed. Empty disables this leg.
+# Only events from the local daemon are published: events received here are
+# never re-published, so monitors sharing one subject do not loop. The
+# connection disables server echo, so a monitor does not receive its own
+# events back either.
 subscribe_subject = ""
