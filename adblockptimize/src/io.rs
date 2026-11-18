@@ -38,11 +38,7 @@ pub(crate) fn load_list_file(path: &str) -> std::io::Result<Vec<Rule>> {
         let bytes_read = reader.read(&mut chunk)?;
 
         if bytes_read == 0 {
-            if !leftover.is_empty()
-                && let Some(rule) = parse_line(&leftover)
-            {
-                rules.push(rule);
-            }
+            rules.extend(parse_line(&leftover));
             break;
         }
 
@@ -61,9 +57,7 @@ pub(crate) fn load_list_file(path: &str) -> std::io::Result<Vec<Rule>> {
         };
 
         for line in complete.lines() {
-            if let Some(rule) = parse_line(line) {
-                rules.push(rule);
-            }
+            rules.extend(parse_line(line));
         }
 
         leftover = new_leftover.to_string();
@@ -74,33 +68,34 @@ pub(crate) fn load_list_file(path: &str) -> std::io::Result<Vec<Rule>> {
 
 /// Load a list from raw content (e.g., downloaded from URL).
 pub fn load_list_content(content: &str) -> Vec<Rule> {
-    content.lines().filter_map(parse_line).collect()
+    content.lines().flat_map(parse_line).collect()
 }
 
-/// Parse a single line into a `Rule`, returning `None` for blank lines, comments, and parse errors.
-fn parse_line(line: &str) -> Option<Rule> {
+/// Parse a single line into its rules (a dnsmasq line may list several
+/// domains); empty for blank lines, comments, and parse errors.
+fn parse_line(line: &str) -> Vec<Rule> {
     let trimmed = line.trim();
 
     // Skip empty lines and comments (hosts/dnsmasq use #, ABP uses !)
     if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
-        return None;
+        return Vec::new();
     }
 
     // ABP browser-only rules (cosmetic CSS, element-hiding, scriptlets) — not DNS-filterable
     const BROWSER_MARKERS: &[&str] = &["##", "#@#", "#$#", "#%#", "#^#", "#?#"];
     if BROWSER_MARKERS.iter().any(|m| trimmed.contains(m)) {
-        return Some(Rule::Browser(trimmed.to_string()));
+        return vec![Rule::Browser(trimmed.to_string())];
     }
 
-    let result: Result<Rule, ListError<'_>> = match detect_format(trimmed) {
-        ListFormat::Hosts => parse_host_line(trimmed),
+    let result: Result<Vec<Rule>, ListError<'_>> = match detect_format(trimmed) {
+        ListFormat::Hosts => parse_host_line(trimmed).map(|rule| vec![rule]),
         ListFormat::Dnsmasq => parse_dnsmasq_line(trimmed),
-        ListFormat::Plain => parse_plain_domain(trimmed),
-        ListFormat::Abp => parse_abp_line(trimmed),
-        ListFormat::Unknown => return None,
+        ListFormat::Plain => parse_plain_domain(trimmed).map(|rule| vec![rule]),
+        ListFormat::Abp => parse_abp_line(trimmed).map(|rule| vec![rule]),
+        ListFormat::Unknown => return Vec::new(),
     };
 
-    result.ok()
+    result.unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -164,6 +159,23 @@ mod tests {
     fn load_content_empty_string() {
         let rules = load_list_content("");
         assert!(rules.is_empty());
+    }
+
+    #[test]
+    fn load_content_dnsmasq_keeps_only_blocks_and_every_domain() {
+        let content = "server=/ads.com/\n\
+                       address=/a.net/b.net/0.0.0.0\n\
+                       server=/corp.example/10.0.0.53\n\
+                       address=/printer.lan/192.168.1.20\n";
+        let rules = load_list_content(content);
+        assert_eq!(
+            rules,
+            [
+                Rule::NetworkDomain("ads.com".into()),
+                Rule::NetworkDomain("a.net".into()),
+                Rule::NetworkDomain("b.net".into()),
+            ]
+        );
     }
 
     #[test]

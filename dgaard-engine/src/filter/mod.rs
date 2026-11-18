@@ -210,7 +210,7 @@ pub(crate) fn process_line(
     let result: Result<Vec<RawDomainEntry>, ListError<'_>> =
         parse_line(line, |trimmed| match detect_format(trimmed) {
             ListFormat::Hosts => parse_host_line(trimmed, seed),
-            ListFormat::Dnsmasq => parse_dnsmasq_line(trimmed, seed).map(|entry| vec![entry]),
+            ListFormat::Dnsmasq => parse_dnsmasq_line(trimmed, seed),
             ListFormat::Plain => parse_plain_domain(trimmed, seed).map(|entry| vec![entry]),
             ListFormat::Abp => parse_abp_line(trimmed, seed).map(|entry| vec![entry]),
             ListFormat::Unknown => Err(ListError::ParseError(

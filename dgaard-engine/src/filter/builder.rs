@@ -359,6 +359,41 @@ mod tests {
     }
 
     #[test]
+    fn dnsmasq_lists_block_like_dnsmasq() {
+        // Review F14: forwarding rules were loaded as blocks, and block
+        // rules missed the subdomains dnsmasq covers.
+        let config = empty_sources_config();
+        let mut builder = FilterEngineBuilder::new(&config, SEED);
+        builder.add_content(
+            "server=/ads.com/\n\
+             address=/tracker.net/pixel.org/0.0.0.0\n\
+             server=/corp.example/10.0.0.53\n\
+             address=/printer.lan/192.168.1.20\n",
+            ListKind::Blacklist,
+        );
+        let engine = builder.build().engine;
+        let blocked = |name: &str| {
+            crate::resolve::is_blocked(name, &engine)
+                || crate::resolve::is_suffix_blocked(name, &engine)
+        };
+        for name in [
+            "ads.com",
+            "x.ads.com",
+            "tracker.net",
+            "a.b.tracker.net",
+            "pixel.org",
+        ] {
+            assert!(blocked(name), "{name} must be blocked");
+        }
+        for name in ["corp.example", "host.corp.example", "printer.lan"] {
+            assert!(
+                !blocked(name),
+                "{name} is forwarded/redirected, not blocked"
+            );
+        }
+    }
+
+    #[test]
     fn build_deduplicates_and_keeps_hierarchical_order() {
         let mut config = empty_sources_config();
         config.tld.exclude = vec!["zz".into()];

@@ -18,7 +18,8 @@ fn is_hosts_line(line: &str) -> bool {
 
 /// Detect format type from a line
 pub(crate) fn detect_format(line: &str) -> ListFormat {
-    if line.starts_with("server=/") || line.starts_with("address=/") {
+    if line.starts_with("server=/") || line.starts_with("address=/") || line.starts_with("local=/")
+    {
         ListFormat::Dnsmasq
     } else if is_hosts_line(line) {
         ListFormat::Hosts
@@ -104,25 +105,62 @@ pub fn parse_host_line(line: &str, seed: u64) -> Result<Vec<RawDomainEntry>, Lis
     }))
 }
 
-/// Parse dnsmasq format line: "server=/domain.com/" or "address=/domain.com/127.0.0.1"
-pub fn parse_dnsmasq_line(line: &str, seed: u64) -> Result<RawDomainEntry, ListError<'_>> {
-    let domain = line.split('/').nth(1).ok_or_else(|| {
+/// `address=` targets that make the rule a block rather than a redirect:
+/// none (NXDOMAIN), a sinkhole, or `#` (dnsmasq's 0.0.0.0 / ::).
+const DNSMASQ_SINKHOLES: &[&str] = &["", "#", "0.0.0.0", "::", "127.0.0.1", "::1"];
+
+/// Parse a dnsmasq rule: `directive=/domain/[domain/...]target`.
+///
+/// Only the forms that block are kept, the way dnsmasq itself reads them:
+/// * `server=/x/` and `local=/x/` (no server): answered locally only, so
+///   NXDOMAIN;
+/// * `address=/x/` with no address, a sinkhole address or `#`.
+///
+/// `server=/x/1.2.3.4` (forward to that server), `server=/x/#` (use the
+/// default servers) and `address=/x/192.0.2.10` (redirect to a real host)
+/// are not blocks and are rejected. A dnsmasq rule covers the domain and
+/// all its subdomains, so each entry is a suffix rule like `||x^`; every
+/// domain is validated, and `#` ("every domain") is refused.
+pub fn parse_dnsmasq_line(line: &str, seed: u64) -> Result<Vec<RawDomainEntry>, ListError<'_>> {
+    let invalid = |reason: &str| {
         ListError::ParseError(
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid dnsmasq format"),
+            std::io::Error::new(std::io::ErrorKind::InvalidData, reason.to_string()),
             line,
             "dnsmasq",
         )
-    })?;
+    };
 
-    if domain.is_empty() {
-        return Err(ListError::ParseError(
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "Empty domain"),
-            line,
-            "dnsmasq",
-        ));
+    let (directive, rest) = line
+        .split_once('=')
+        .ok_or_else(|| invalid("Invalid dnsmasq format"))?;
+    let (domains, target) = rest
+        .strip_prefix('/')
+        .and_then(|rest| rest.rsplit_once('/'))
+        .ok_or_else(|| invalid("Invalid dnsmasq format"))?;
+
+    let blocks = match directive {
+        "server" | "local" => target.is_empty(),
+        "address" => DNSMASQ_SINKHOLES.contains(&target),
+        _ => return Err(invalid("Unsupported dnsmasq directive")),
+    };
+    if !blocks {
+        return Err(invalid("Forwarding or redirect rule, not a block"));
     }
 
-    Ok(exact_entry(domain, seed))
+    let mut entries = Vec::new();
+    for domain in domains.split('/') {
+        if domain.is_empty() {
+            return Err(invalid("Empty domain"));
+        }
+        if domain == "#" {
+            return Err(invalid("'#' (every domain) is not a block rule"));
+        }
+        Name::from_str(domain).map_err(|e| ListError::InvalidDomain(e, domain))?;
+        let mut entry = exact_entry(domain, seed);
+        entry.flags = DomainEntryFlags::WILDCARD;
+        entries.push(entry);
+    }
+    Ok(entries)
 }
 
 /// Parse plain domain format: just the domain name with no IP prefix.
@@ -247,7 +285,88 @@ mod tests {
     #[test]
     fn test_parse_dnsmasq_line_normalizes() {
         let result = parse_dnsmasq_line("server=/Ads.Example.COM/", SEED).unwrap();
-        assert_eq!(result.value, "ads.example.com");
+        assert_eq!(result[0].value, "ads.example.com");
+    }
+
+    fn dnsmasq_values(line: &str) -> Vec<String> {
+        parse_dnsmasq_line(line, SEED)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.value)
+            .collect()
+    }
+
+    #[test]
+    fn test_parse_dnsmasq_block_forms() {
+        for line in [
+            "server=/ads.com/",
+            "local=/ads.com/",
+            "address=/ads.com/",
+            "address=/ads.com/0.0.0.0",
+            "address=/ads.com/127.0.0.1",
+            "address=/ads.com/::",
+            "address=/ads.com/::1",
+            "address=/ads.com/#",
+        ] {
+            assert_eq!(dnsmasq_values(line), ["ads.com"], "{line}");
+        }
+    }
+
+    #[test]
+    fn test_parse_dnsmasq_forwarding_and_redirects_are_not_blocks() {
+        // Review F14: these used to be loaded as blocks.
+        for line in [
+            "server=/corp.example/10.0.0.53",
+            "server=/corp.example/10.0.0.53#5353",
+            "server=/corp.example/#",
+            "address=/printer.lan/192.168.1.20",
+            "address=/printer.lan/fd00::20",
+        ] {
+            assert!(
+                matches!(
+                    parse_dnsmasq_line(line, SEED),
+                    Err(ListError::ParseError(..))
+                ),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_dnsmasq_rule_covers_subdomains() {
+        // dnsmasq rules match the domain and every name below it.
+        let entry = &parse_dnsmasq_line("address=/ads.com/0.0.0.0", SEED).unwrap()[0];
+        assert_eq!(entry.flags, DomainEntryFlags::WILDCARD);
+        assert_eq!(entry.hash, twox_hash::XxHash64::oneshot(SEED, b"ads.com"));
+    }
+
+    #[test]
+    fn test_parse_dnsmasq_several_domains() {
+        assert_eq!(
+            dnsmasq_values("address=/a.com/B.com/c.net/0.0.0.0"),
+            ["a.com", "b.com", "c.net"]
+        );
+        assert_eq!(dnsmasq_values("server=/a.com/b.com/"), ["a.com", "b.com"]);
+    }
+
+    #[test]
+    fn test_parse_dnsmasq_validates_domains() {
+        let long_label = "a".repeat(64);
+        let line = format!("server=/{long_label}.com/");
+        assert!(matches!(
+            parse_dnsmasq_line(&line, SEED),
+            Err(ListError::InvalidDomain(..))
+        ));
+        // `#` means every domain in dnsmasq: never a list entry.
+        assert!(parse_dnsmasq_line("address=/#/0.0.0.0", SEED).is_err());
+        assert!(parse_dnsmasq_line("server=/a.com//", SEED).is_err());
+        assert!(parse_dnsmasq_line("server=ads.com", SEED).is_err());
+        assert!(parse_dnsmasq_line("cname=/a.com/b.com", SEED).is_err());
+    }
+
+    #[test]
+    fn test_detect_format_dnsmasq_local() {
+        assert_eq!(detect_format("local=/example.com/"), ListFormat::Dnsmasq);
     }
 
     #[test]
@@ -290,16 +409,17 @@ mod tests {
     #[test]
     fn test_parse_dnsmasq_line_simple() {
         let result = parse_dnsmasq_line("server=/doubleclick.net/", SEED).unwrap();
-        assert_eq!(result.value, "doubleclick.net");
-        assert_eq!(result.flags, DomainEntryFlags::NONE);
-        assert_eq!(result.depth, 1);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].value, "doubleclick.net");
+        assert_eq!(result[0].flags, DomainEntryFlags::WILDCARD);
+        assert_eq!(result[0].depth, 1);
     }
 
     #[test]
     fn test_parse_dnsmasq_line_address_format() {
         let result = parse_dnsmasq_line("address=/ads.example.com/127.0.0.1", SEED).unwrap();
-        assert_eq!(result.value, "ads.example.com");
-        assert_eq!(result.depth, 2);
+        assert_eq!(result[0].value, "ads.example.com");
+        assert_eq!(result[0].depth, 2);
     }
 
     #[test]
