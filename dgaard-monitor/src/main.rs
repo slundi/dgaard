@@ -22,7 +22,7 @@ async fn main() {
     let opts = cli::parse();
 
     // Load config from file, or fall back to compiled-in defaults.
-    let cfg = match &opts.config {
+    let mut cfg = match &opts.config {
         Some(path) => match config::Config::load(path) {
             Ok(c) => c,
             Err(e) => {
@@ -32,22 +32,17 @@ async fn main() {
         },
         None => config::Config::default(),
     };
-
-    // CLI flags override config for the two input paths.
-    let socket_path = opts
-        .socket
-        .as_deref()
-        .unwrap_or(&cfg.input.socket)
-        .to_string();
-    let index_path = opts
-        .index
-        .as_deref()
-        .unwrap_or(&cfg.input.index)
-        .to_string();
+    // CLI path flags (socket, index, db) win over the config.
+    opts.apply_overrides(&mut cfg);
 
     // Destructure config so each task can take ownership of its section.
     let config::Config {
-        input: _,
+        input:
+            config::InputConfig {
+                socket: socket_path,
+                index: index_path,
+                ..
+            },
         persistence: persistence_cfg,
         tui: tui_cfg,
         forwarding: fwd_cfg,

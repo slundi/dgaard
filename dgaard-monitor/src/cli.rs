@@ -1,11 +1,6 @@
 use bpaf::{OptionParser, Parser, construct, short};
 
-#[allow(dead_code)]
-pub const DEFAULT_SOCKET: &str = "/tmp/dns.sock";
-#[allow(dead_code)]
-pub const DEFAULT_INDEX: &str = "/var/lib/dns/hosts.bin";
-#[allow(dead_code)]
-pub const DEFAULT_DB: &str = "/var/dgaard/stats.sqlite";
+use crate::config::Config;
 
 #[derive(Debug, Clone)]
 pub struct Opts {
@@ -17,19 +12,18 @@ pub struct Opts {
 }
 
 impl Opts {
-    #[allow(dead_code)]
-    pub fn socket_path(&self) -> &str {
-        self.socket.as_deref().unwrap_or(DEFAULT_SOCKET)
-    }
-
-    #[allow(dead_code)]
-    pub fn index_path(&self) -> &str {
-        self.index.as_deref().unwrap_or(DEFAULT_INDEX)
-    }
-
-    #[allow(dead_code)]
-    pub fn db_path(&self) -> &str {
-        self.db.as_deref().unwrap_or(DEFAULT_DB)
+    /// Apply the path flags on top of the loaded config: a flag, when given,
+    /// wins over the config file and the built-in default.
+    pub fn apply_overrides(&self, cfg: &mut Config) {
+        if let Some(socket) = &self.socket {
+            cfg.input.socket.clone_from(socket);
+        }
+        if let Some(index) = &self.index {
+            cfg.input.index.clone_from(index);
+        }
+        if let Some(db) = &self.db {
+            cfg.persistence.db.clone_from(db);
+        }
     }
 }
 
@@ -79,42 +73,57 @@ mod tests {
         options().run_inner(args)
     }
 
+    /// Parse `args` and apply them to the built-in default config.
+    fn resolved(args: &[&str]) -> Config {
+        let mut cfg = Config::default();
+        parse_args(args).unwrap().apply_overrides(&mut cfg);
+        cfg
+    }
+
     #[test]
-    fn test_defaults() {
-        let opts = parse_args(&[]).unwrap();
-        assert!(opts.config.is_none());
-        assert_eq!(opts.socket_path(), DEFAULT_SOCKET);
-        assert_eq!(opts.index_path(), DEFAULT_INDEX);
-        assert_eq!(opts.db_path(), DEFAULT_DB);
+    fn test_no_flag_keeps_config_paths() {
+        let defaults = Config::default();
+        let cfg = resolved(&[]);
+        assert_eq!(cfg.input.socket, defaults.input.socket);
+        assert_eq!(cfg.input.index, defaults.input.index);
+        assert_eq!(cfg.persistence.db, defaults.persistence.db);
     }
 
     #[test]
     fn test_long_socket_flag() {
-        let opts = parse_args(&["--socket", "/custom/dns.sock"]).unwrap();
-        assert_eq!(opts.socket_path(), "/custom/dns.sock");
-        assert_eq!(opts.index_path(), DEFAULT_INDEX);
-        assert_eq!(opts.db_path(), DEFAULT_DB);
+        let defaults = Config::default();
+        let cfg = resolved(&["--socket", "/custom/dns.sock"]);
+        assert_eq!(cfg.input.socket, "/custom/dns.sock");
+        assert_eq!(cfg.input.index, defaults.input.index);
+        assert_eq!(cfg.persistence.db, defaults.persistence.db);
     }
 
     #[test]
     fn test_long_index_flag() {
-        let opts = parse_args(&["--index", "/custom/hosts.bin"]).unwrap();
-        assert_eq!(opts.socket_path(), DEFAULT_SOCKET);
-        assert_eq!(opts.index_path(), "/custom/hosts.bin");
-        assert_eq!(opts.db_path(), DEFAULT_DB);
+        let defaults = Config::default();
+        let cfg = resolved(&["--index", "/custom/hosts.bin"]);
+        assert_eq!(cfg.input.socket, defaults.input.socket);
+        assert_eq!(cfg.input.index, "/custom/hosts.bin");
+        assert_eq!(cfg.persistence.db, defaults.persistence.db);
     }
 
+    /// Regression: `--db` was parsed but never applied.
     #[test]
     fn test_long_db_flag() {
-        let opts = parse_args(&["--db", "/custom/stats.sqlite"]).unwrap();
-        assert_eq!(opts.socket_path(), DEFAULT_SOCKET);
-        assert_eq!(opts.index_path(), DEFAULT_INDEX);
-        assert_eq!(opts.db_path(), "/custom/stats.sqlite");
+        let defaults = Config::default();
+        let cfg = resolved(&["--db", "/custom/stats.sqlite"]);
+        assert_eq!(cfg.input.socket, defaults.input.socket);
+        assert_eq!(cfg.input.index, defaults.input.index);
+        assert_eq!(cfg.persistence.db, "/custom/stats.sqlite");
     }
 
     #[test]
-    fn test_all_combined() {
-        let opts = parse_args(&[
+    fn test_flags_override_config_file_values() {
+        let mut cfg = Config::default();
+        cfg.input.socket = "/from/config.sock".to_string();
+        cfg.input.index = "/from/config.bin".to_string();
+        cfg.persistence.db = "/from/config.sqlite".to_string();
+        parse_args(&[
             "--socket",
             "/run/dns.sock",
             "--index",
@@ -122,10 +131,11 @@ mod tests {
             "--db",
             "/data/stats.db",
         ])
-        .unwrap();
-        assert_eq!(opts.socket_path(), "/run/dns.sock");
-        assert_eq!(opts.index_path(), "/data/hosts.bin");
-        assert_eq!(opts.db_path(), "/data/stats.db");
+        .unwrap()
+        .apply_overrides(&mut cfg);
+        assert_eq!(cfg.input.socket, "/run/dns.sock");
+        assert_eq!(cfg.input.index, "/data/hosts.bin");
+        assert_eq!(cfg.persistence.db, "/data/stats.db");
     }
 
     #[test]
@@ -143,9 +153,9 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(opts.config.as_deref(), Some("/etc/m.toml"));
-        assert_eq!(opts.socket_path(), "/s.sock");
-        assert_eq!(opts.index_path(), "/h.bin");
-        assert_eq!(opts.db_path(), "/s.db");
+        assert_eq!(opts.socket.as_deref(), Some("/s.sock"));
+        assert_eq!(opts.index.as_deref(), Some("/h.bin"));
+        assert_eq!(opts.db.as_deref(), Some("/s.db"));
         assert!(opts.headless);
     }
 
