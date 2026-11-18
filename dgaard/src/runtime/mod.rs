@@ -211,6 +211,7 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
         }
 
         spawn_popularity_persistence(shutdown_rx.clone());
+        spawn_popularity_purge(shutdown_rx.clone());
         spawn_prefetch_worker(shutdown_rx.clone());
 
         let semaphore = Arc::new(Semaphore::new(
@@ -279,6 +280,7 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
         }
 
         spawn_popularity_persistence(shutdown_rx.clone());
+        spawn_popularity_purge(shutdown_rx.clone());
         spawn_prefetch_worker(shutdown_rx.clone());
 
         let semaphore = Arc::new(Semaphore::new(
@@ -713,6 +715,20 @@ fn spawn_popularity_persistence(shutdown_rx: watch::Receiver<bool>) {
         tracker,
         path,
         task_cfg,
+        shutdown_rx,
+    ));
+}
+
+/// Spawn the task that drops fully-decayed popularity entries. Unlike
+/// persistence it is always on: cache hits feed the tracker regardless
+/// of `save_path`. It runs once per half-life, so an entry lingers at
+/// most one period after its score reaches 0.
+fn spawn_popularity_purge(shutdown_rx: watch::Receiver<bool>) {
+    let half_life_secs = CONFIG.load().recursive.decay_half_life_secs;
+    tokio::spawn(crate::popularity::run_purge_task(
+        Arc::clone(&crate::POPULARITY_TRACKER),
+        std::time::Duration::from_secs(half_life_secs),
+        half_life_secs,
         shutdown_rx,
     ));
 }

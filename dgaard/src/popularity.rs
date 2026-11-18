@@ -15,6 +15,8 @@
 //! * Decay is **lazy**, computed at read time with one subtraction, one
 //!   integer division by a compile-time constant, and one right-shift.
 //!   No background ticker. After 8 half-lives the score is forced to 0.
+//! * Entries whose score reached 0 are dropped once per half-life by
+//!   [`run_purge_task`], so the map tracks recent traffic only.
 //! * `record_hit` resets `last_hit_at = Instant::now()` so fresh activity
 //!   restarts the decay clock against the (already saturated) raw count.
 //!
@@ -119,12 +121,29 @@ pub fn effective_score_for(hit_count: u8, last_hit_at: Instant, half_life_secs: 
     }
 }
 
+/// Longest name a DNS packet can carry (RFC 1035 §3.1). Longer inputs
+/// fall back to a heap-allocated lowercase copy in [`hash_domain`].
+const MAX_STACK_DOMAIN_LEN: usize = 255;
+
 /// Compute `xxh3_64` of the lowercase domain with the fixed seed.
 #[inline]
 pub fn hash_domain(domain: &str) -> u64 {
     // ASCII-only lowercase is the canonicalisation used everywhere else
-    // in dgaard (cache keys, stats, host-index lookups). DNS labels are
-    // ASCII by construction, so this stays allocation-light.
+    // in dgaard (cache keys, stats, host-index lookups). The runtime
+    // already lowercases query names, so the common case hashes the
+    // input as-is; otherwise lowercase into a stack buffer. Both paths
+    // hash the same bytes as `to_ascii_lowercase()` would.
+    let bytes = domain.as_bytes();
+    if !bytes.iter().any(u8::is_ascii_uppercase) {
+        return XxHash3_64::oneshot_with_seed(POPULARITY_HASH_SEED, bytes);
+    }
+    if bytes.len() <= MAX_STACK_DOMAIN_LEN {
+        let mut buf = [0u8; MAX_STACK_DOMAIN_LEN];
+        let lower = &mut buf[..bytes.len()];
+        lower.copy_from_slice(bytes);
+        lower.make_ascii_lowercase();
+        return XxHash3_64::oneshot_with_seed(POPULARITY_HASH_SEED, lower);
+    }
     let lower = domain.to_ascii_lowercase();
     XxHash3_64::oneshot_with_seed(POPULARITY_HASH_SEED, lower.as_bytes())
 }
@@ -201,6 +220,22 @@ impl PopularityTracker {
         self.map.clear();
     }
 
+    /// Drop every entry whose decayed score has reached 0 and return how
+    /// many were removed. `score` already reads such entries as 0, so
+    /// this changes no observable score — it only keeps the map from
+    /// growing with every domain ever seen.
+    pub fn purge_decayed(&self, half_life_secs: u64) -> usize {
+        let mut removed = 0;
+        self.map.retain(|_, entry| {
+            let alive = effective_score_for(entry.hit_count, entry.last_hit_at, half_life_secs) > 0;
+            if !alive {
+                removed += 1;
+            }
+            alive
+        });
+        removed
+    }
+
     /// Iterate `(hash, effective_score)` pairs filtered to non-zero
     /// scores. Used by the Phase-4 snapshot writer; returning an owned
     /// `Vec` releases the shard locks before sorting.
@@ -219,6 +254,44 @@ impl PopularityTracker {
 impl Default for PopularityTracker {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Background task — calls [`PopularityTracker::purge_decayed`] every
+/// `interval` so the map stays bounded by recent traffic. Runs whether
+/// or not snapshot persistence is enabled, since `record_hit` always is.
+///
+/// A zero `half_life_secs` disables decay (nothing ever reaches 0) and
+/// a zero `interval` would busy-spin; both make the task return at once.
+pub async fn run_purge_task(
+    tracker: Arc<PopularityTracker>,
+    interval: Duration,
+    half_life_secs: u64,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    if half_life_secs == 0 || interval.is_zero() {
+        return;
+    }
+
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    // Skip the immediate first tick: nothing has decayed at startup.
+    ticker.tick().await;
+
+    loop {
+        tokio::select! {
+            biased;
+            changed = shutdown_rx.changed() => {
+                // A dropped sender also ends the task instead of spinning
+                // on an always-ready `changed()`.
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    return;
+                }
+            }
+            _ = ticker.tick() => {
+                tracker.purge_decayed(half_life_secs);
+            }
+        }
     }
 }
 
@@ -351,6 +424,15 @@ pub fn write_snapshot(path: &Path, pairs: &[(u64, u8)]) -> Result<(), SnapshotEr
     Ok(())
 }
 
+/// [`write_snapshot`] on tokio's blocking pool, so the file writes and
+/// `fsync` (slow on router flash) never stall a runtime worker thread.
+async fn write_snapshot_blocking(path: &Path, pairs: Vec<(u64, u8)>) -> Result<(), SnapshotError> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || write_snapshot(&path, &pairs))
+        .await
+        .map_err(|e| SnapshotError::Io(io::Error::other(e)))?
+}
+
 /// Read a snapshot from `path`. Header is validated; on success returns
 /// the deserialised `(hash, score)` pairs.
 pub fn read_snapshot(path: &Path) -> Result<Vec<(u64, u8)>, SnapshotError> {
@@ -420,7 +502,7 @@ pub async fn run_snapshot_task(
         // Defensive: a zero interval would busy-spin. Treat 0 as "save
         // only on shutdown" — useful in tests, harmless in prod.
         let _ = shutdown_rx.changed().await;
-        flush_once(&tracker, &path, &cfg);
+        flush_once(&tracker, &path, &cfg).await;
         return;
     }
 
@@ -437,7 +519,7 @@ pub async fn run_snapshot_task(
             biased;
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
-                    flush_once(&tracker, &path, &cfg);
+                    flush_once(&tracker, &path, &cfg).await;
                     return;
                 }
             }
@@ -450,7 +532,7 @@ pub async fn run_snapshot_task(
                 if fp == last_fp {
                     continue;
                 }
-                match write_snapshot(&path, &pairs) {
+                match write_snapshot_blocking(&path, pairs).await {
                     Ok(()) => last_fp = fp,
                     Err(e) => eprintln!(
                         "popularity: snapshot write to {} failed: {e}",
@@ -462,12 +544,12 @@ pub async fn run_snapshot_task(
     }
 }
 
-fn flush_once(tracker: &PopularityTracker, path: &Path, cfg: &SnapshotTaskCfg) {
+async fn flush_once(tracker: &PopularityTracker, path: &Path, cfg: &SnapshotTaskCfg) {
     let pairs = top_n_pairs(tracker, cfg.top_n, cfg.half_life_secs);
     if pairs.is_empty() {
         return;
     }
-    if let Err(e) = write_snapshot(path, &pairs) {
+    if let Err(e) = write_snapshot_blocking(path, pairs).await {
         eprintln!(
             "popularity: final snapshot write to {} failed: {e}",
             path.display()
@@ -824,6 +906,135 @@ mod tests {
         write_snapshot(&path, &pairs).unwrap();
         assert_eq!(read_snapshot(&path).unwrap(), pairs);
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    // -----------------------------------------------------------------
+    // F2: allocation-free hashing, purge, off-runtime writes
+    // -----------------------------------------------------------------
+
+    fn reference_hash(domain: &str) -> u64 {
+        // The pre-F2 implementation; snapshot keys depend on matching it.
+        XxHash3_64::oneshot_with_seed(POPULARITY_HASH_SEED, domain.to_ascii_lowercase().as_bytes())
+    }
+
+    fn insert_stale(tracker: &PopularityTracker, domain: &str) -> u64 {
+        let key = hash_domain(domain);
+        tracker.map.insert(
+            key,
+            PopularityEntry {
+                hit_count: 1,
+                last_hit_at: Instant::now() - Duration::from_secs(10_000),
+            },
+        );
+        key
+    }
+
+    #[test]
+    fn hash_domain_matches_lowercase_reference_on_every_path() {
+        let long_mixed = format!("{}.Example.COM", "Ab".repeat(200));
+        assert!(long_mixed.len() > MAX_STACK_DOMAIN_LEN);
+        let at_limit = format!("{}A", "b".repeat(MAX_STACK_DOMAIN_LEN - 1));
+        for domain in [
+            "example.com",
+            "ExAmPle.CoM",
+            "",
+            "xn--bcher-kva.example",
+            "Bücher.Example",
+            at_limit.as_str(),
+            long_mixed.as_str(),
+        ] {
+            assert_eq!(hash_domain(domain), reference_hash(domain), "{domain}");
+        }
+    }
+
+    #[test]
+    fn purge_decayed_drops_only_zero_score_entries() {
+        let tracker = PopularityTracker::new();
+        tracker.record_hit("fresh.example");
+        let stale_key = insert_stale(&tracker, "stale.example");
+
+        assert_eq!(tracker.purge_decayed(1), 1);
+        assert_eq!(tracker.len(), 1);
+        assert!(tracker.map.get(&stale_key).is_none());
+        assert_eq!(tracker.score("fresh.example", 1), 1);
+        assert_eq!(tracker.purge_decayed(1), 0);
+    }
+
+    #[test]
+    fn purge_decayed_keeps_everything_when_decay_is_disabled() {
+        let tracker = PopularityTracker::new();
+        insert_stale(&tracker, "stale.example");
+        assert_eq!(tracker.purge_decayed(0), 0);
+        assert_eq!(tracker.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn purge_task_purges_on_tick_and_stops_on_shutdown() {
+        let tracker = Arc::new(PopularityTracker::new());
+        tracker.record_hit("fresh.example");
+        insert_stale(&tracker, "stale.example");
+
+        let (tx, rx) = watch::channel(false);
+        let handle = tokio::spawn(run_purge_task(
+            Arc::clone(&tracker),
+            Duration::from_millis(20),
+            1,
+            rx,
+        ));
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(tracker.len(), 1, "stale entry not purged");
+
+        let _ = tx.send(true);
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("purge task ignored shutdown")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn purge_task_stops_when_sender_is_dropped() {
+        let (tx, rx) = watch::channel(false);
+        let handle = tokio::spawn(run_purge_task(
+            Arc::new(PopularityTracker::new()),
+            Duration::from_millis(10),
+            1,
+            rx,
+        ));
+        drop(tx);
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("purge task spun on a closed channel")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn purge_task_returns_immediately_when_disabled() {
+        let (_tx, rx) = watch::channel(false);
+        let tracker = Arc::new(PopularityTracker::new());
+        insert_stale(&tracker, "stale.example");
+        run_purge_task(
+            Arc::clone(&tracker),
+            Duration::from_millis(10),
+            0,
+            rx.clone(),
+        )
+        .await;
+        run_purge_task(Arc::clone(&tracker), Duration::ZERO, 1, rx).await;
+        assert_eq!(tracker.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn write_snapshot_blocking_roundtrips_and_reports_errors() {
+        let path = tmp_path("blocking");
+        let pairs = vec![(7u64, 3u8)];
+        write_snapshot_blocking(&path, pairs.clone()).await.unwrap();
+        assert_eq!(read_snapshot(&path).unwrap(), pairs);
+
+        // A regular file used as parent directory makes the write fail.
+        let bad = path.join("child.bin");
+        let err = write_snapshot_blocking(&bad, pairs).await.unwrap_err();
+        assert!(matches!(err, SnapshotError::Io(_)), "got {err:?}");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
