@@ -316,6 +316,11 @@ pub fn ngram_check_embedded(domain: &str, languages: &[NgramLanguage], threshold
 /// - N-gram size: 1 byte (2 for bigrams, 3 for trigrams)
 /// - Entry count: 4 bytes u32
 /// - Entries: [ngram_bytes..., log_prob as f32] repeated
+///
+/// The loader trusts nothing in the header: the entry count is bounded by
+/// 26^n (see [`max_external_entries`]) and must match the file length
+/// exactly before anything is allocated, so a hostile file cannot request
+/// a multi-gigabyte map. The largest accepted file is ~3.7 MB (n = 4).
 #[derive(Debug)]
 #[allow(dead_code)] // External model loading not yet integrated
 pub struct ExternalNgramModel {
@@ -327,13 +332,26 @@ pub struct ExternalNgramModel {
     default_prob: f32,
 }
 
+/// Magic (4) + version (1) + n-gram size (1) + entry count (4).
+const EXTERNAL_HEADER_LEN: u64 = 10;
+
+/// Most entries a model of `ngram_size` can usefully hold: [`ExternalNgramModel::score`]
+/// only looks up windows of `a-z`, so there are at most 26^n distinct keys.
+/// A larger count is padding or a hostile header.
+const fn max_external_entries(ngram_size: u8) -> usize {
+    26usize.pow(ngram_size as u32)
+}
+
 #[allow(dead_code)] // External model loading not yet integrated
 impl ExternalNgramModel {
     /// Load an N-gram model from a binary file.
     ///
-    /// Returns `None` if the file cannot be read or has invalid format.
+    /// Returns `None` if the file cannot be read or has invalid format,
+    /// including a header whose entry count exceeds 26^n or disagrees with
+    /// the file length, and any log-probability that is not finite and ≤ 0.
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Option<Self> {
         let file = File::open(path).ok()?;
+        let file_len = file.metadata().ok()?.len();
         let mut reader = BufReader::new(file);
 
         // Read and verify magic header
@@ -362,19 +380,33 @@ impl ExternalNgramModel {
         let mut count_buf = [0u8; 4];
         reader.read_exact(&mut count_buf).ok()?;
         let entry_count = u32::from_le_bytes(count_buf) as usize;
+        if entry_count > max_external_entries(ngram_size) {
+            return None;
+        }
+
+        // Validate the declared count against the real size before
+        // allocating: a truncated or padded file is rejected up front.
+        let entry_size = ngram_size as usize + 4; // ngram bytes + f32
+        if file_len != EXTERNAL_HEADER_LEN + (entry_count * entry_size) as u64 {
+            return None;
+        }
 
         // Read entries
         let mut entries = HashMap::with_capacity(entry_count);
-        let entry_size = ngram_size as usize + 4; // ngram bytes + f32
         let mut entry_buf = vec![0u8; entry_size];
 
         for _ in 0..entry_count {
             if reader.read_exact(&mut entry_buf).is_err() {
-                return None; // truncated file — reject the partial model
+                return None; // file shrank while reading — reject the partial model
             }
             let ngram = entry_buf[..ngram_size as usize].to_vec();
             let prob_bytes: [u8; 4] = entry_buf[ngram_size as usize..].try_into().ok()?;
             let prob = f32::from_le_bytes(prob_bytes);
+            // A log-probability is finite and ≤ 0. NaN would fail every
+            // domain and +inf would pass every one.
+            if !prob.is_finite() || prob > 0.0 {
+                return None;
+            }
             entries.insert(ngram, prob);
         }
 
@@ -839,6 +871,100 @@ mod tests {
         let model = ExternalNgramModel::load_from_file(&path);
         assert!(model.is_none(), "Truncated file should return None");
         let _ = std::fs::remove_file(&path);
+    }
+
+    // --- hostile headers and payloads (review F5) ---
+
+    /// Write `bytes` to a unique temp file and return its path.
+    fn write_raw_ngram_file(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "dgaard_ngram_f5_{tag}_{}_{nonce}",
+            std::process::id()
+        ));
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn ngram_header(ngram_size: u8, entry_count: u32) -> Vec<u8> {
+        let mut bytes = b"NGRM".to_vec();
+        bytes.push(1);
+        bytes.push(ngram_size);
+        bytes.extend_from_slice(&entry_count.to_le_bytes());
+        bytes
+    }
+
+    /// Bigram file holding the first `count` distinct `a-z` bigrams.
+    fn bigram_file_bytes(declared: u32, count: usize, prob: f32) -> Vec<u8> {
+        let mut bytes = ngram_header(2, declared);
+        for index in 0..count {
+            bytes.push(b'a' + (index / 26) as u8);
+            bytes.push(b'a' + (index % 26) as u8);
+            bytes.extend_from_slice(&prob.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn load_bytes(tag: &str, bytes: &[u8]) -> Option<ExternalNgramModel> {
+        let path = write_raw_ngram_file(tag, bytes);
+        let model = ExternalNgramModel::load_from_file(&path);
+        let _ = std::fs::remove_file(&path);
+        model
+    }
+
+    #[test]
+    fn max_external_entries_is_26_pow_n() {
+        assert_eq!(max_external_entries(2), 676);
+        assert_eq!(max_external_entries(3), 17_576);
+        assert_eq!(max_external_entries(4), 456_976);
+    }
+
+    #[test]
+    fn external_ngram_model_rejects_huge_declared_count_without_allocating() {
+        // Before the fix this asked HashMap::with_capacity for ~4 billion
+        // entries and aborted the process.
+        for ngram_size in 2..=4u8 {
+            let bytes = ngram_header(ngram_size, u32::MAX);
+            assert!(load_bytes("huge", &bytes).is_none(), "n={ngram_size}");
+        }
+    }
+
+    #[test]
+    fn external_ngram_model_rejects_count_above_26_pow_n() {
+        let full = bigram_file_bytes(676, 676, -1.0);
+        assert_eq!(load_bytes("at_cap", &full).unwrap().entries.len(), 676);
+
+        // One more entry, consistent length: still refused by the cap.
+        let mut over = bigram_file_bytes(677, 676, -1.0);
+        over.extend_from_slice(b"z-");
+        over.extend_from_slice(&(-1.0f32).to_le_bytes());
+        assert!(load_bytes("over_cap", &over).is_none());
+    }
+
+    #[test]
+    fn external_ngram_model_rejects_length_mismatch() {
+        let mut trailing = bigram_file_bytes(2, 2, -1.0);
+        trailing.push(0);
+        assert!(load_bytes("trailing", &trailing).is_none());
+
+        let short = bigram_file_bytes(3, 2, -1.0);
+        assert!(load_bytes("short", &short).is_none());
+
+        let header_only = ngram_header(2, 0);
+        assert!(load_bytes("empty", &header_only).is_some());
+    }
+
+    #[test]
+    fn external_ngram_model_rejects_invalid_log_probabilities() {
+        for prob in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.5] {
+            let bytes = bigram_file_bytes(1, 1, prob);
+            assert!(load_bytes("bad_prob", &bytes).is_none(), "{prob}");
+        }
+        let certain = bigram_file_bytes(1, 1, 0.0);
+        assert!(load_bytes("zero_prob", &certain).is_some());
     }
 
     #[test]
