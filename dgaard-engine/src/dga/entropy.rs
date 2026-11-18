@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn entropy_counts_characters_not_bytes() {
-        // Review F4: multi-byte characters used to be divided by the byte
+        // Multi-byte characters used to be divided by the byte
         // length, so "éé" scored 0.5 instead of 0.
         assert_eq!(calculate_entropy("éé"), 0.0);
         assert!((calculate_entropy("éèêë") - calculate_entropy("abcd")).abs() < f32::EPSILON);

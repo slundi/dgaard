@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn check_dga_heuristics_ngram_ignores_names_without_letter_transitions() {
-        // Review F4: these SLDs pass every other heuristic but have no
+        // These SLDs pass every other heuristic but have no
         // letter-to-letter transition for the bigram model to score; they
         // used to score -inf and be blocked.
         let config = ngram_config();

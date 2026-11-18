@@ -671,7 +671,7 @@ mod tests {
         assert_eq!(advertised_payload(&[0x00]), 512);
     }
 
-    // --- forward_to_upstream against mock upstream servers (review E5) ---
+    // --- forward_to_upstream against mock upstream servers ---
 
     /// Datagrams a mock upstream sends back for one query, in order.
     type Behaviour = Arc<dyn Fn(&[u8]) -> Vec<Vec<u8>> + Send + Sync>;
@@ -818,7 +818,7 @@ mod tests {
         });
     }
 
-    // --- the client sees its own question case (review M4) ---
+    // --- the client sees its own question case ---
 
     fn client_query_for(id: u16, name: &str) -> Vec<u8> {
         let mut msg = Message::query();

@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn validate_path() {
         // A private temp file, deleted on drop: no fixed name another test
-        // or user could race on (review F11).
+        // or user could race on.
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(b"Hello, world!").unwrap();
         let path = file.path().to_str().unwrap();

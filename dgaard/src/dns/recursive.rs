@@ -2801,7 +2801,7 @@ mod tests {
         })
     }
 
-    // ---- DNSSEC through the iterative loop (review E1) ----
+    // ---- DNSSEC through the iterative loop ----
 
     use crate::dns::dnssec_chain::RootTrustAnchor;
     use crate::dns::dnssec_chain::test_support::{TestZone, ds_records, nsec_record};
@@ -3494,7 +3494,7 @@ mod tests {
         assert_question(&parsed, "www.a.com.", RecordType::A);
     }
 
-    // ---- review M5: delegation cache, NS address hygiene, forged packets ----
+    // ---- Delegation cache, NS address hygiene, forged packets ----
 
     #[test]
     fn name_hash_ignores_case_and_tells_names_apart() {

@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn suspicion_score_primary_reason_is_heaviest() {
-        // Review F6: structure is checked first but cloaking weighs more.
+        // Structure is checked first but cloaking weighs more.
         let mut s = SuspicionScore::new();
         s.add(score_points::LONG_DOMAIN, BlockReason::InvalidStructure);
         s.add(score_points::CNAME_CLOAKING, BlockReason::CnameCloaking);

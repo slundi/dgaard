@@ -103,7 +103,7 @@ mod tests {
         assert_eq!(normalize_domain("already.ok"), "already.ok");
     }
 
-    // ---- write_atomic (review F15) ----
+    // ---- write_atomic ----
 
     fn entries(dir: &Path) -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(dir)

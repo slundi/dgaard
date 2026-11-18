@@ -56,7 +56,7 @@ pub mod tests {
     /// Held by every test that mutates process-wide state. It serialises
     /// them and, on drop, puts `CONFIG` and `CURRENT_ENGINE` back as it
     /// found them — also when the test panics, so a failing test cannot
-    /// leak its configuration into the next one (review F11).
+    /// leak its configuration into the next one.
     pub struct GlobalsGuard {
         config: Arc<crate::config::Config>,
         engine: Arc<FilterEngine>,

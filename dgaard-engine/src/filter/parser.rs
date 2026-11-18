@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_parse_dnsmasq_forwarding_and_redirects_are_not_blocks() {
-        // Review F14: these used to be loaded as blocks.
+        // These used to be loaded as blocks.
         for line in [
             "server=/corp.example/10.0.0.53",
             "server=/corp.example/10.0.0.53#5353",

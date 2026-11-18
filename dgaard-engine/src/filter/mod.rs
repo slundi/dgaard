@@ -475,7 +475,7 @@ pub fn write_browser_rules(path: &str, rules: &[String]) -> std::io::Result<()> 
 mod tests {
     use super::*;
 
-    // ---- write_browser_rules (review F15) ----
+    // ---- write_browser_rules ----
 
     #[test]
     fn write_browser_rules_writes_one_rule_per_line() {
@@ -503,7 +503,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "##.ad\n");
     }
 
-    // ---- canonical hierarchical list (review M12) ----
+    // ---- canonical hierarchical list ----
 
     fn suffix(key: u64, flags: DomainEntryFlags) -> DomainEntry {
         DomainEntry {

@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn refresh_to_a_private_address_evicts_the_cached_answer() {
-        // Review E4: the name was allowed, its first answer was public, the
+        // The name was allowed, its first answer was public, the
         // refresh rebinds to the LAN. The shield must catch it here too.
         run_with_globals(async {
             install_policy(&[]);
@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn over_threshold_name_is_evicted_without_resolving() {
-        // Pre-upstream score gate (review E2) applies to refreshes too.
+        // Pre-upstream score gate applies to refreshes too.
         run_with_globals(async {
             install_policy(&[]);
             let domain = format!("{}.tunnel.com", "a".repeat(50));
@@ -549,7 +549,7 @@ mod tests {
         });
     }
 
-    // ---- the refresh keeps the whole cache key (review M4) ----
+    // ---- the refresh keeps the whole cache key ----
 
     #[test]
     fn refresh_asks_with_the_entry_dnssec_bits_and_refills_it() {

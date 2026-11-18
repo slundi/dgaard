@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn idn_entries_dropped_only_when_every_idn_is_blocked() {
-        // Review E8: Smart used to drop explicitly listed IDN entries.
+        // Smart used to drop explicitly listed IDN entries.
         assert!(skip_idn(true, IdnMode::Off));
         assert!(skip_idn(false, IdnMode::Strict));
         assert!(!skip_idn(false, IdnMode::Smart));

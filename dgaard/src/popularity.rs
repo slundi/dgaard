@@ -886,7 +886,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn write_snapshot_does_not_follow_a_planted_temp_symlink() {
-        // Review F15: the writer used `File::create("<path>.tmp")`, so a
+        // The writer used `File::create("<path>.tmp")`, so a
         // symlink planted under that predictable name made a root daemon
         // truncate whatever it pointed to.
         let dir = tempfile::tempdir().unwrap();

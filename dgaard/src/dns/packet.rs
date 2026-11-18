@@ -338,7 +338,7 @@ mod tests {
     use super::*;
     use hickory_resolver::proto::rr::rdata::opt::EdnsOption;
 
-    // ---- new_query carries the whole cache key (review M4) ----
+    // ---- new_query carries the whole cache key ----
 
     #[test]
     fn new_query_sets_class_and_dnssec_bits() {
@@ -768,7 +768,7 @@ mod tests {
         }
     }
 
-    // --- screen: only standard queries reach the pipeline (review E3) ---
+    // --- screen: only standard queries reach the pipeline ---
 
     fn message_bytes(configure: impl FnOnce(&mut Message)) -> Vec<u8> {
         let mut msg = Message::query();

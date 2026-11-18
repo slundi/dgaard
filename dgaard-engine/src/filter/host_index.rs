@@ -127,7 +127,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn write_does_not_follow_a_symlink_at_the_destination() {
-        // Review F15: `File::create(path)` wrote through a planted symlink.
+        // `File::create(path)` wrote through a planted symlink.
         let dir = tempfile::tempdir().unwrap();
         let victim = dir.path().join("victim");
         std::fs::write(&victim, b"precious").unwrap();

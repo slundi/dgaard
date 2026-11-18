@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn render_exports_every_stats_counter() {
-        // Review F8: recursive, prefetch and DNSSEC counters were never
+        // Recursive, prefetch and DNSSEC counters were never
         // exported. A distinct value per field proves each metric reads
         // its own counter.
         // StatsCounters holds only AtomicU64 fields: a counter added

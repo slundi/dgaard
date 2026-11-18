@@ -1085,7 +1085,7 @@ mod tests {
 
     #[tokio::test]
     async fn setup_unix_socket_refuses_to_delete_other_files() {
-        // Review M2: any file at the configured path used to be removed,
+        // Any file at the configured path used to be removed,
         // with the daemon often running as root.
         let dir = tempfile::tempdir().unwrap();
         let path = socket_path(&dir);

@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn user_agent_names_this_tool_and_its_version() {
-        // Review F13: it used to send a frozen "list-stats/0.1".
+        // It used to send a frozen "list-stats/0.1".
         assert_eq!(
             USER_AGENT,
             format!("list-stats/{}", env!("CARGO_PKG_VERSION"))

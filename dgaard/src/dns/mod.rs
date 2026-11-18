@@ -571,7 +571,7 @@ mod tests {
 
     #[test]
     fn classify_score_reports_the_heaviest_reason() {
-        // Review F6: stats named the first signal found ("structure")
+        // Stats named the first signal found ("structure")
         // instead of the one that drove the block.
         let mut score = SuspicionScore::new();
         score.add(3, BlockReason::InvalidStructure);
@@ -817,7 +817,7 @@ mod tests {
         });
     }
 
-    // ---- packet screening in handle_query (review E3) ----
+    // ---- packet screening in handle_query  ----
 
     /// Feed raw `bytes` to `handle_query`; return the reply, if any, and
     /// how many upstream calls it caused.
@@ -967,7 +967,7 @@ mod tests {
         });
     }
 
-    // ---- cache key, TTLs, negative answers and question case (review M4) ----
+    // ---- cache key, TTLs, negative answers and question case ----
 
     /// A/IN query for `domain` with EDNS, optionally DO, and CD.
     fn query_with_flags(domain: &str, dnssec_ok: bool, checking_disabled: bool) -> Vec<u8> {
@@ -1279,7 +1279,7 @@ mod tests {
         });
     }
 
-    // ---- every answer emits a stats event (review M3) ----
+    // ---- every answer emits a stats event ----
 
     /// Receiving end of the global stats channel, installed once per process.
     static STATS_RX: std::sync::LazyLock<std::sync::Mutex<Option<crate::stats::StatsReceiver>>> =

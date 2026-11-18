@@ -314,7 +314,7 @@ fn idn_action(
 
 #[test]
 fn smart_mode_keeps_listed_idn_phishing_domains_blocked() {
-    // Review E8: Smart used to drop IDN blacklist entries at load time
+    // Smart used to drop IDN blacklist entries at load time
     // while nothing blocked them at query time.
     use dgaard_engine::config::IdnMode;
     // "café" in Latin: an allowed script, so only the list can block it.

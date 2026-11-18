@@ -828,7 +828,7 @@ pub mod tests {
 
     #[test]
     fn home_arpa_resolves_through_overrides_and_never_leaks() {
-        // Review F16: RFC 8375 names are answered locally or not at all.
+        // RFC 8375 names are answered locally or not at all.
         let engine = create_test_engine(&[], &[], &[]);
         let config = Config {
             overrides: vec![OverrideEntry {
@@ -862,7 +862,7 @@ pub mod tests {
         ));
     }
 
-    // ---- input normalization (review M14) ----
+    // ---- input normalization ----
 
     #[test]
     fn normalize_domain_lowercases_and_drops_the_root_dot() {

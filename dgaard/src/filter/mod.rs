@@ -763,7 +763,7 @@ mod tests {
 
     #[test]
     fn outage_during_update_keeps_the_list() {
-        // Review E6: a network failure at update time used to rebuild the
+        // A network failure at update time used to rebuild the
         // engine without the list.
         run_with_globals(async {
             let dir = tempfile::tempdir().unwrap();
@@ -844,7 +844,7 @@ mod tests {
         });
     }
 
-    // ---- single construction path (review E7) ----
+    // ---- single construction path ----
 
     fn flagged_list(dir: &Path) -> String {
         let path = dir.join("flagged.txt");

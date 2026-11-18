@@ -148,7 +148,7 @@ mod tests {
         assert!(is_special_use_domain("deep.sub.example", &config_enabled()));
     }
 
-    // --- RFC 8375 home.arpa (review F16) ---
+    // --- RFC 8375 home.arpa ---
 
     #[test]
     fn blocks_home_arpa_and_names_below_it() {
@@ -174,7 +174,7 @@ mod tests {
         assert!(!is_special_use_domain("nas.home.arpa", &config_disabled()));
     }
 
-    // --- .local opt-out (review F16) ---
+    // --- .local opt-out ---
 
     #[test]
     fn isolate_local_false_forwards_local_only() {

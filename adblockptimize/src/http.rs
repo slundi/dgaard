@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn user_agent_names_this_tool_and_its_version() {
-        // Review F13: it used to send a frozen "dgaard/0.1".
+        // it used to send a frozen "dgaard/0.1".
         assert_eq!(
             USER_AGENT,
             format!("adblockptimize/{}", env!("CARGO_PKG_VERSION"))

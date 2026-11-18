@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn build_loads_custom_flags() {
-        // Review E7: the daemon's own construction never loaded these.
+        // The daemon's own construction never loaded these.
         let flagged = temp_list("flagged.com\n# comment\n");
         let mut config = empty_sources_config();
         config.security.custom_flags = vec![CustomFlagConfig {
@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn dnsmasq_lists_block_like_dnsmasq() {
-        // Review F14: forwarding rules were loaded as blocks, and block
+        // Forwarding rules were loaded as blocks, and block
         // rules missed the subdomains dnsmasq covers.
         let config = empty_sources_config();
         let mut builder = FilterEngineBuilder::new(&config, SEED);
@@ -415,7 +415,7 @@ mod tests {
         assert_eq!(keys.len(), 3, "ads.com, a.b.tracker.net and the zz TLD");
     }
 
-    // ---- [tld] suspicious_tlds without the keyword filter (review M10) ----
+    // ---- [tld] suspicious_tlds without the keyword filter ----
 
     fn score_of(domain: &str, config: &Config) -> crate::model::SuspicionScore {
         let engine = FilterEngineBuilder::new(config, SEED).build().engine;
@@ -470,7 +470,7 @@ mod tests {
         assert!(crate::resolve::check_lexical("casino.xyz", &engine).is_some());
     }
 
-    // ---- list order does not change the engine (review M12) ----
+    // ---- list order does not change the engine ----
 
     #[test]
     fn list_order_does_not_change_the_hierarchical_list() {

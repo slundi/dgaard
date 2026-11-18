@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn ngram_score_without_letter_transitions_is_none() {
-        // Review F4: these used to score -inf and be blocked.
+        // These used to score -inf and be blocked.
         for domain in ["x-y-z-w-v", "12345678", "a1b2c3d4", "---"] {
             for lang in [
                 NgramLanguage::English,
@@ -861,7 +861,7 @@ mod tests {
 
     #[test]
     fn temp_ngram_file_is_deleted_on_drop() {
-        // Review F11: test files no longer outlive their test.
+        // Test files no longer outlive their test.
         let path = write_valid_ngram_file("drop", &[([b'a', b'b'], -1.0)]);
         let location = path.to_path_buf();
         assert!(location.exists());
@@ -870,7 +870,7 @@ mod tests {
         assert!(!location.exists());
     }
 
-    // --- hostile headers and payloads (review F5) ---
+    // --- hostile headers and payloads ---
 
     fn ngram_header(ngram_size: u8, entry_count: u32) -> Vec<u8> {
         let mut bytes = b"NGRM".to_vec();

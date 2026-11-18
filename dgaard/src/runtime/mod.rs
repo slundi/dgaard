@@ -207,7 +207,7 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
 
 /// Body shared by both runtime flavours: start every service, read
 /// `sockets` until SIGINT/SIGTERM, then drain in-flight queries. Keeping a
-/// single copy stops the two modes from drifting apart (review F12).
+/// single copy stops the two modes from drifting apart.
 async fn serve(sockets: Vec<Arc<UdpSocket>>) {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let guard = ShutdownGuard::new(shutdown_rx.clone());
@@ -968,7 +968,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Startup binds before serving (review M7)
+    // Startup binds before serving
     // -----------------------------------------------------------------------
 
     /// Run both startup paths against `listen_addr`; they must fail at once

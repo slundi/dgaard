@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn parse_dnsmasq_forwarding_and_redirects_are_not_blocks() {
-        // Review F14: these used to become block rules.
+        // these used to become block rules.
         for line in [
             "server=/corp.example/10.0.0.53",
             "server=/corp.example/#",
