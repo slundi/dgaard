@@ -69,9 +69,13 @@
         # Define the rust toolchain from your toml
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
 
-        # Read per-crate Cargo.toml files for package metadata
+        # Read per-crate Cargo.toml files for package metadata.
+        # `features` are enabled on top of the crate's default features.
         mkCrate =
           name:
+          {
+            features ? [ ],
+          }:
           pkgs.rustPlatform.buildRustPackage {
             pname = name;
             version = (builtins.fromTOML (builtins.readFile ./${name}/Cargo.toml)).package.version;
@@ -81,6 +85,7 @@
               "-p"
               name
             ];
+            buildFeatures = features;
           };
 
         # Cross-compile to aarch64-musl (for OpenWrt on MediaTek/Filogic routers
@@ -97,6 +102,9 @@
 
         mkCrateAarch64Musl =
           name:
+          {
+            features ? [ ],
+          }:
           rustPlatformCross.buildRustPackage {
             pname = "${name}-aarch64-musl";
             version = (builtins.fromTOML (builtins.readFile ./${name}/Cargo.toml)).package.version;
@@ -106,6 +114,7 @@
               "-p"
               name
             ];
+            buildFeatures = features;
 
             nativeBuildInputs = [ crossCC ];
 
@@ -121,15 +130,16 @@
       in
       {
         # `nix build .#dgaard` / `nix run .#dgaard`
-        packages.dgaard = mkCrate "dgaard";
-        packages.dgaard-daemon = mkCrate "dgaard-daemon";
-        packages.dgaard-monitor = mkCrate "dgaard-monitor";
-        packages.dgaard-rest = mkCrate "dgaard-rest";
+        packages.dgaard = mkCrate "dgaard" { };
+        packages.dgaard-daemon = mkCrate "dgaard-daemon" { };
+        # `nats` backs services.dgaard-monitor.nats; tui/rest are defaults.
+        packages.dgaard-monitor = mkCrate "dgaard-monitor" { features = [ "nats" ]; };
+        packages.dgaard-rest = mkCrate "dgaard-rest" { };
         packages.default = self.packages.${system}.dgaard;
 
         # OpenWrt / aarch64-musl cross builds — `nix build .#dgaard-aarch64-musl`
-        packages.dgaard-aarch64-musl = mkCrateAarch64Musl "dgaard";
-        packages.dgaard-monitor-aarch64-musl = mkCrateAarch64Musl "dgaard-monitor";
+        packages.dgaard-aarch64-musl = mkCrateAarch64Musl "dgaard" { };
+        packages.dgaard-monitor-aarch64-musl = mkCrateAarch64Musl "dgaard-monitor" { };
 
         # `nix run .#codium` — VSCodium with all extensions pre-installed
         packages.codium = custom-codium;

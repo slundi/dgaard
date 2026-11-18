@@ -29,14 +29,22 @@ in
         1:1 to dgaard.toml. See config.example.toml in the dgaard source for
         the full reference with comments.
 
-        Minimal required keys: server.listen_addr, upstream.servers.
+        Minimal required keys: server.listen_addr, forwarder.servers (or
+        server.mode = "recursive"). The former [upstream] table is rejected
+        by dgaard: use [forwarder]. TLD lists take bare lowercase labels
+        ("xyz", not ".xyz").
+
+        Paths dgaard writes to (stats socket, host index, list cache,
+        popularity snapshot) default to the service's RuntimeDirectory and
+        StateDirectory, the only writable locations under ProtectSystem=strict.
       '';
       example = lib.literalExpression ''
         {
           server = {
             listen_addr = "192.168.1.1:53";
+            mode = "forwarder";
             allowed_networks = [ "127.0.0.1/32" "192.168.1.0/24" ];
-            stats_socket_path = "/run/dgaard/stats.sock";
+            metrics_listen = "127.0.0.1:9153";
             pipeline = [ "Whitelist" "HotCache" "StaticBlock" "SuffixMatch" "Heuristics" "Upstream" ];
           };
           server.runtime = {
@@ -52,11 +60,16 @@ in
             enabled = true;
             entropy_threshold = 4.0;
           };
-          upstream = {
+          security.special_use = {
+            enabled = true;
+            isolate_local = true;
+          };
+          forwarder = {
             servers = [ "1.1.1.1:53" "9.9.9.9:53" ];
             timeout_ms = 2000;
             use_0x20_randomization = true;
           };
+          tld.exclude = [ "top" "xyz" ];
           cache = {
             enabled = true;
             max_entries = 10000;
@@ -72,6 +85,19 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # The compiled-in defaults point at /tmp (private here) and /var/dgaard
+    # (read-only here), so redirect every written path into the unit's own
+    # runtime and state directories.
+    services.dgaard.settings = {
+      server.stats_socket_path = lib.mkDefault "/run/dgaard/stats.sock";
+      sources = {
+        host_index_path = lib.mkDefault "/var/lib/dgaard/host_mapping.bin";
+        browser_rules_path = lib.mkDefault "/var/lib/dgaard/browser_rules.txt";
+        list_cache_dir = lib.mkDefault "/var/lib/dgaard/lists";
+      };
+      recursive.save_path = lib.mkDefault "/var/lib/dgaard/top-domains.bin";
+    };
+
     environment.etc."dgaard/dgaard.toml".source = configFile;
 
     systemd.services.dgaard = {

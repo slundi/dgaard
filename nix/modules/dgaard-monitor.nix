@@ -8,26 +8,17 @@ let
   cfg = config.services.dgaard-monitor;
   tomlFormat = pkgs.formats.toml { };
 
+  # Listen address and token are shared by every REST module ([server]).
   mkConnectivity = desc: defaultPort: defaultRootPath: {
     enabled = lib.mkOption {
       type = lib.types.bool;
       default = false;
       description = "Enable the ${desc} endpoint.";
     };
-    listen = lib.mkOption {
-      type = lib.types.str;
-      default = "127.0.0.1";
-      description = "Listen address for the ${desc} endpoint.";
-    };
     port = lib.mkOption {
       type = lib.types.port;
       default = defaultPort;
       description = "Port for the ${desc} endpoint.";
-    };
-    token = lib.mkOption {
-      type = lib.types.str;
-      default = "changeme";
-      description = "Static bearer token for the ${desc} endpoint.";
     };
     rootPath = lib.mkOption {
       type = lib.types.str;
@@ -63,6 +54,7 @@ let
     };
 
     forwarding = {
+      format = cfg.forwarding.format;
       template = cfg.forwarding.template;
       filter = cfg.forwarding.filter;
     }
@@ -71,35 +63,32 @@ let
       forward_url = cfg.forwarding.forwardUrl;
     };
 
+    server = {
+      listen = cfg.server.listen;
+      token = cfg.server.token;
+    };
+
     api = {
       enabled = cfg.api.enabled;
-      listen = cfg.api.listen;
       port = cfg.api.port;
-      token = cfg.api.token;
       root_path = cfg.api.rootPath;
     };
 
     websocket = {
       enabled = cfg.websocket.enabled;
-      listen = cfg.websocket.listen;
       port = cfg.websocket.port;
-      token = cfg.websocket.token;
       root_path = cfg.websocket.rootPath;
     };
 
     mcp = {
       enabled = cfg.mcp.enabled;
-      listen = cfg.mcp.listen;
       port = cfg.mcp.port;
-      token = cfg.mcp.token;
       root_path = cfg.mcp.rootPath;
     };
 
     web = {
       enabled = cfg.web.enabled;
-      listen = cfg.web.listen;
       port = cfg.web.port;
-      token = cfg.web.token;
       history_size = cfg.web.historySize;
       beaconing_min_observations = cfg.web.beaconingMinObservations;
       beaconing_cov_threshold = cfg.web.beaconingCovThreshold;
@@ -224,10 +213,25 @@ in
         example = "/var/log/dgaard/dns.log";
         description = "Append formatted event lines to this file. Null writes to stdout.";
       };
+      format = lib.mkOption {
+        type = lib.types.enum [
+          "template"
+          "json"
+          "syslog"
+          "cef"
+          "elasticsearch"
+        ];
+        default = "template";
+        description = ''
+          Wire format for both file/stdout and HTTP POST output: "template"
+          (uses `template`), "json", "syslog" (RFC 5424), "cef" (ArcSight) or
+          "elasticsearch" (Bulk API NDJSON).
+        '';
+      };
       template = lib.mkOption {
         type = lib.types.str;
         default = "{timestamp} {client_ip} {action} {domain}";
-        description = "Template for each forwarded line. Placeholders: {timestamp}, {client_ip}, {action}, {domain}.";
+        description = "Template for each forwarded line when format = \"template\". Placeholders: {timestamp}, {client_ip}, {action}, {domain}.";
       };
       forwardUrl = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
@@ -256,9 +260,28 @@ in
     };
 
     # -------------------------------------------------------------------------
+    # [server] — shared by [api] / [websocket] / [mcp] / [web]
+    # -------------------------------------------------------------------------
+    server = {
+      listen = lib.mkOption {
+        type = lib.types.str;
+        default = "127.0.0.1";
+        description = "Listen address shared by every REST module; each binds its own port.";
+      };
+      token = lib.mkOption {
+        type = lib.types.str;
+        default = "changeme";
+        description = ''
+          Static bearer token required by every REST module. The value is
+          written to the world-readable Nix store.
+        '';
+      };
+    };
+
+    # -------------------------------------------------------------------------
     # [api] / [websocket] / [mcp]
     # -------------------------------------------------------------------------
-    api = mkConnectivity "REST API" 8080 "/api";
+    api = mkConnectivity "REST API" 8080 "/api/v1";
     websocket = mkConnectivity "WebSocket" 8081 "/ws";
     mcp = mkConnectivity "MCP (Model Context Protocol)" 8082 "/mcp";
 
@@ -271,20 +294,10 @@ in
         default = false;
         description = "Enable the embedded web UI server.";
       };
-      listen = lib.mkOption {
-        type = lib.types.str;
-        default = "127.0.0.1";
-        description = "Listen address for the web UI.";
-      };
       port = lib.mkOption {
         type = lib.types.port;
         default = 8083;
         description = "Port for the web UI.";
-      };
-      token = lib.mkOption {
-        type = lib.types.str;
-        default = "changeme";
-        description = "Static bearer token for all web UI requests.";
       };
       historySize = lib.mkOption {
         type = lib.types.int;
@@ -317,6 +330,8 @@ in
         description = ''
           Connect to a NATS server to publish enriched events and/or subscribe
           to a remote feed. The local Unix socket input still runs in parallel.
+          The package must be built with the `nats` cargo feature (the flake's
+          dgaard-monitor package is); otherwise the [nats] table is ignored.
         '';
       };
       url = lib.mkOption {

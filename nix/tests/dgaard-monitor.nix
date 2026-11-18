@@ -42,10 +42,10 @@ let
 
   # --- scenario: web UI enabled ---
   cfgWeb = eval {
+    server.token = "s3cr3t";
     web = {
       enabled = true;
       port = 9090;
-      token = "s3cr3t";
       historySize = 5000;
       beaconingCovThreshold = 0.10;
     };
@@ -53,14 +53,19 @@ let
 
   # --- scenario: connectivity endpoints enabled ---
   cfgApi = eval {
+    server = {
+      listen = "0.0.0.0";
+      token = "api-token";
+    };
     api = {
       enabled = true;
-      listen = "0.0.0.0";
       port = 8080;
-      token = "api-token";
-      rootPath = "/api/v1";
+      rootPath = "/api/v2";
     };
   };
+
+  # --- scenario: structured forwarding format ---
+  cfgJson = eval { forwarding.format = "json"; };
 
   # --- scenario: NATS federation enabled ---
   cfgNats = eval {
@@ -124,6 +129,16 @@ pkgs.runCommand "test-dgaard-monitor-module" { nativeBuildInputs = [ pkgs.ripgre
   # [tui] defaults
   rg -qF 'tick_ms = 250'   ${toml cfgDefaults}
   rg -qF 'key_quit = "q"'  ${toml cfgDefaults}
+  # [forwarding] defaults
+  rg -qF 'format = "template"' ${toml cfgDefaults}
+  # [server] defaults, shared by every REST module
+  rg -qF '[server]'              ${toml cfgDefaults}
+  rg -qF 'listen = "127.0.0.1"'  ${toml cfgDefaults}
+  rg -qF 'token = "changeme"'    ${toml cfgDefaults}
+  # listen/token live only in [server]: exactly one occurrence each
+  test "$(rg -c '^(listen|token) = ' ${toml cfgDefaults})" -eq 2
+  # [api] default root path matches the monitor's compiled-in one
+  rg -qF 'root_path = "/api/v1"' ${toml cfgDefaults}
   # [web] defaults
   rg -qF 'enabled = false'                    ${toml cfgDefaults}
   rg -qF 'port = 8083'                        ${toml cfgDefaults}
@@ -147,6 +162,10 @@ pkgs.runCommand "test-dgaard-monitor-module" { nativeBuildInputs = [ pkgs.ripgre
     exit 1
   fi
 
+  echo "=== dgaard-monitor: json forwarding ==="
+  cat ${toml cfgJson}
+  rg -qF 'format = "json"' ${toml cfgJson}
+
   echo "=== dgaard-monitor: web UI ==="
   cat ${toml cfgWeb}
   rg -qF 'enabled = true'                  ${toml cfgWeb}
@@ -161,7 +180,7 @@ pkgs.runCommand "test-dgaard-monitor-module" { nativeBuildInputs = [ pkgs.ripgre
   rg -qF 'listen = "0.0.0.0"' ${toml cfgApi}
   rg -qF 'port = 8080'        ${toml cfgApi}
   rg -qF 'token = "api-token"' ${toml cfgApi}
-  rg -qF 'root_path = "/api/v1"' ${toml cfgApi}
+  rg -qF 'root_path = "/api/v2"' ${toml cfgApi}
 
   echo "=== dgaard-monitor: [nats] absent by default ==="
   if rg -q '\[nats\]' ${toml cfgDefaults}; then
