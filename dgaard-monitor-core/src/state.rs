@@ -96,7 +96,11 @@ impl RollingStats {
 }
 
 pub struct AppState {
+    /// Host-index entries merged with `live_domains`. Readers use this one.
     pub domain_map: Arc<RwLock<HashMap<u64, String>>>,
+    /// Mappings learned at runtime (socket `DomainMapping`, NATS). Kept apart
+    /// so an index reload can replace `domain_map` without dropping them.
+    live_domains: RwLock<HashMap<u64, String>>,
     pub stats: Arc<RwLock<RollingStats>>,
     /// Every event, whatever its origin (Unix socket or federation).
     events_tx: broadcast::Sender<StatEvent>,
@@ -111,6 +115,7 @@ impl AppState {
         let (local_tx, _) = broadcast::channel(256);
         Self {
             domain_map: Arc::new(RwLock::new(HashMap::new())),
+            live_domains: RwLock::new(HashMap::new()),
             stats: Arc::new(RwLock::new(RollingStats::new(window))),
             events_tx,
             local_tx,
@@ -147,8 +152,25 @@ impl AppState {
         self.local_tx.subscribe()
     }
 
+    /// Record a mapping learned at runtime. It survives index reloads.
     pub async fn insert_domain(&self, hash: u64, domain: String) {
+        // Lock order: live_domains, then domain_map (same as replace_index).
+        let mut live = self.live_domains.write().await;
+        live.insert(hash, domain.clone());
         self.domain_map.write().await.insert(hash, domain);
+    }
+
+    /// Replace the host-index part of `domain_map` under a single write lock.
+    /// Entries missing from `index` disappear; runtime mappings are kept.
+    pub async fn replace_index(&self, mut index: HashMap<u64, String>) {
+        // Hold the read lock across the swap so a concurrent `insert_domain`
+        // cannot land in the old map and be lost.
+        let live = self.live_domains.read().await;
+        index.extend(live.iter().map(|(hash, domain)| (*hash, domain.clone())));
+        let old = std::mem::replace(&mut *self.domain_map.write().await, index);
+        drop(live);
+        // Free a potentially multi-million-entry map outside the locks.
+        drop(old);
     }
 }
 
@@ -305,6 +327,45 @@ mod tests {
         assert_eq!(stats.total, 2);
         assert_eq!(stats.allowed, 1);
         assert_eq!(stats.blocked, 1);
+    }
+
+    #[tokio::test]
+    async fn test_replace_index_drops_stale_entries_and_keeps_live_ones() {
+        let state = AppState::new(DEFAULT_WINDOW);
+        state
+            .replace_index(HashMap::from([
+                (1, "old.test".to_string()),
+                (2, "kept.test".to_string()),
+            ]))
+            .await;
+        state.insert_domain(9, "live.test".to_string()).await;
+
+        state
+            .replace_index(HashMap::from([
+                (2, "kept.test".to_string()),
+                (3, "new.test".to_string()),
+            ]))
+            .await;
+
+        let map = state.domain_map.read().await;
+        assert_eq!(map.len(), 3);
+        assert!(map.get(&1).is_none(), "entry removed from the index");
+        assert_eq!(map.get(&2).map(String::as_str), Some("kept.test"));
+        assert_eq!(map.get(&3).map(String::as_str), Some("new.test"));
+        assert_eq!(map.get(&9).map(String::as_str), Some("live.test"));
+    }
+
+    #[tokio::test]
+    async fn test_live_mapping_wins_over_index_entry() {
+        let state = AppState::new(DEFAULT_WINDOW);
+        state.insert_domain(1, "from-socket.test".to_string()).await;
+        state
+            .replace_index(HashMap::from([(1, "from-index.test".to_string())]))
+            .await;
+        assert_eq!(
+            state.domain_map.read().await.get(&1).map(String::as_str),
+            Some("from-socket.test")
+        );
     }
 
     #[tokio::test]

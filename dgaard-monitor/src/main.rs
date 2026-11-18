@@ -72,7 +72,7 @@ async fn main() {
         }
         Err(error::MonitorError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
             eprintln!(
-                "Warning: host index not found at {index_path}, starting without domain names"
+                "Warning: host index not found at {index_path}, starting without domain names until it is created"
             );
             std::collections::HashMap::new()
         }
@@ -103,9 +103,9 @@ async fn main() {
 
     let state = Arc::new(AppState::new(Duration::from_secs(3600)));
 
-    for (hash, domain) in domain_map {
-        state.insert_domain(hash, domain).await;
-    }
+    // One write lock for the whole index, and kept apart from runtime
+    // mappings so later reloads can drop entries removed from the lists.
+    state.replace_index(domain_map).await;
 
     // Shutdown channel: false = running, true = stop.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
