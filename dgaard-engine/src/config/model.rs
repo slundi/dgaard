@@ -773,6 +773,12 @@ pub struct SpecialUseConfig {
     ///
     /// Common values: `["corp", "lan", "internal", "home", "intranet"]`
     pub extra_local_tlds: Vec<String>,
+
+    /// Answer NXDOMAIN for `.local` (RFC 6762, mDNS) instead of forwarding
+    /// it. Default `true`: device names never leak upstream. Set `false`
+    /// when the unicast DNS behind dgaard serves a `.local` zone, as Active
+    /// Directory domains often do; `.local` is then forwarded like any name.
+    pub isolate_local: bool,
 }
 
 impl Default for SpecialUseConfig {
@@ -780,6 +786,7 @@ impl Default for SpecialUseConfig {
         Self {
             enabled: true,
             extra_local_tlds: Vec::new(),
+            isolate_local: true,
         }
     }
 }
@@ -1825,13 +1832,14 @@ mod tests {
         let s = SpecialUseConfig::default();
         assert!(s.enabled);
         assert!(s.extra_local_tlds.is_empty());
+        assert!(s.isolate_local, ".local stays isolated by default");
     }
 
     #[test]
     fn special_use_config_extra_tlds_can_be_set() {
         let s = SpecialUseConfig {
-            enabled: true,
             extra_local_tlds: vec!["corp".to_string(), "lan".to_string()],
+            ..SpecialUseConfig::default()
         };
         assert_eq!(s.extra_local_tlds.len(), 2);
     }

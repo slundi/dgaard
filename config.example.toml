@@ -426,7 +426,15 @@ suspicious_tlds = ["biz", "top", "xyz", "sbs", "cfd", "online", "click", "vip", 
 #   .test       — Reserved for testing; no public delegation (RFC 6761).
 #   .example    — Reserved for documentation (RFC 2606).
 [security.special_use]
+# Names answered NXDOMAIN instead of being forwarded upstream: the TLDs
+# local (mDNS), localhost, invalid, test, example, and the home.arpa
+# suffix (RFC 8375). [[overrides]] entries are checked first, so names you
+# define there (e.g. nas.home.arpa) still resolve.
 enabled = true
+# .local is mDNS (RFC 6762) and isolated by default so device names never
+# leak upstream. Set to false when the DNS server behind dgaard hosts a
+# .local zone (Active Directory domains often do): .local is then forwarded.
+# isolate_local = true
 # Additional TLDs to isolate beyond the RFC 6761 defaults.
 # Common in split-horizon / corporate deployments.
 # Must be canonical: lowercase, no leading dot.

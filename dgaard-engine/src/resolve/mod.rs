@@ -826,6 +826,42 @@ pub mod tests {
         assert_eq!(result.score.total, 0, "override should skip scoring");
     }
 
+    #[test]
+    fn home_arpa_resolves_through_overrides_and_never_leaks() {
+        // Review F16: RFC 8375 names are answered locally or not at all.
+        let engine = create_test_engine(&[], &[], &[]);
+        let config = Config {
+            overrides: vec![OverrideEntry {
+                domain: "nas.home.arpa".into(),
+                to: ipv4("192.168.1.10"),
+            }],
+            ..Config::default()
+        };
+        assert!(matches!(
+            resolve_with_score("nas.home.arpa", &engine, &config).action,
+            Action::Override(ip) if ip == ipv4("192.168.1.10")
+        ));
+        assert!(matches!(
+            resolve_with_score("tv.home.arpa", &engine, &config).action,
+            Action::Block(BlockReason::SpecialUseDomain)
+        ));
+    }
+
+    #[test]
+    fn local_is_forwarded_when_isolate_local_is_off() {
+        let engine = create_test_engine(&[], &[], &[]);
+        let mut config = Config::default();
+        assert!(matches!(
+            resolve_with_score("dc01.corp.local", &engine, &config).action,
+            Action::Block(BlockReason::SpecialUseDomain)
+        ));
+        config.security.special_use.isolate_local = false;
+        assert!(matches!(
+            resolve_with_score("dc01.corp.local", &engine, &config).action,
+            Action::ProxyToUpstream
+        ));
+    }
+
     // ---- input normalization (review M14) ----
 
     #[test]

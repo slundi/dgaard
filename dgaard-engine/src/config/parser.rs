@@ -632,6 +632,9 @@ fn parse_special_use(table: &toml_span::value::Table<'_>) -> Result<SpecialUseCo
     if let Some(arr) = get_tld_array(table, "extra_local_tlds")? {
         cfg.extra_local_tlds = arr;
     }
+    if let Some(b) = get_bool(table, "isolate_local")? {
+        cfg.isolate_local = b;
+    }
 
     Ok(cfg)
 }
@@ -2529,6 +2532,37 @@ mod tests {
         assert!(matches!(
             Config::parse(toml),
             Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_special_use_isolate_local() {
+        assert!(
+            Config::parse("")
+                .unwrap()
+                .security
+                .special_use
+                .isolate_local
+        );
+        let toml = r#"
+            [security.special_use]
+            isolate_local = false
+        "#;
+        assert!(
+            !Config::parse(toml)
+                .unwrap()
+                .security
+                .special_use
+                .isolate_local
+        );
+
+        let wrong_type = r#"
+            [security.special_use]
+            isolate_local = "no"
+        "#;
+        assert!(matches!(
+            Config::parse(wrong_type),
+            Err(ConfigError::InvalidType { .. })
         ));
     }
 
