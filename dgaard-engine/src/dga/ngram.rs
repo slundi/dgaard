@@ -765,25 +765,27 @@ mod tests {
         assert!(ngram_check_external("xyzqwrt", &models, -4.0));
     }
 
-    /// Write a minimal valid binary ngram file and return its path.
-    fn write_valid_ngram_file(tag: &str, entries: &[([u8; 2], f32)]) -> String {
+    /// Write `bytes` to a fresh temp file; the returned path deletes it on
+    /// drop, even when the test panics.
+    fn write_raw_ngram_file(tag: &str, bytes: &[u8]) -> tempfile::TempPath {
         use std::io::Write;
-        let path = format!("/tmp/dgaard_ngram_test_{tag}_{}", std::process::id());
-        let mut f = std::fs::File::create(&path).unwrap();
-        // Magic
-        f.write_all(b"NGRM").unwrap();
-        // Version
-        f.write_all(&[1u8]).unwrap();
-        // N-gram size (bigrams = 2)
-        f.write_all(&[2u8]).unwrap();
-        // Entry count
-        f.write_all(&(entries.len() as u32).to_le_bytes()).unwrap();
-        // Entries
+        let mut file = tempfile::Builder::new()
+            .prefix(&format!("dgaard_ngram_{tag}_"))
+            .tempfile()
+            .unwrap();
+        file.write_all(bytes).unwrap();
+        file.into_temp_path()
+    }
+
+    /// Write a minimal valid binary bigram file.
+    fn write_valid_ngram_file(tag: &str, entries: &[([u8; 2], f32)]) -> tempfile::TempPath {
+        // Magic, version, n-gram size (bigrams = 2), entry count
+        let mut bytes = ngram_header(2, entries.len() as u32);
         for (ngram, prob) in entries {
-            f.write_all(ngram).unwrap();
-            f.write_all(&prob.to_le_bytes()).unwrap();
+            bytes.extend_from_slice(ngram);
+            bytes.extend_from_slice(&prob.to_le_bytes());
         }
-        path
+        write_raw_ngram_file(tag, &bytes)
     }
 
     #[test]
@@ -792,7 +794,6 @@ mod tests {
         let path = write_valid_ngram_file("valid", &entries);
         let model = ExternalNgramModel::load_from_file(&path);
         assert!(model.is_some(), "Should load valid ngram file");
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -808,7 +809,6 @@ mod tests {
             (score - (-1.0)).abs() < 1e-5,
             "Expected score ~-1.0, got {score}"
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -823,7 +823,6 @@ mod tests {
             (score - (-10.0)).abs() < 1e-5,
             "Unknown ngram should use default -10.0, got {score}"
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -838,56 +837,40 @@ mod tests {
             score.is_infinite() && score < 0.0,
             "Expected -inf, got {score}"
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn external_ngram_model_load_wrong_magic_returns_none() {
-        use std::io::Write;
-        let path = format!("/tmp/dgaard_ngram_bad_magic_{}", std::process::id());
-        let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(b"BADD").unwrap(); // Wrong magic
-        f.write_all(&[1u8, 2u8, 0u8, 0u8, 0u8, 0u8]).unwrap();
-        let model = ExternalNgramModel::load_from_file(&path);
-        assert!(model.is_none(), "Wrong magic should return None");
-        let _ = std::fs::remove_file(&path);
+        let mut bytes = b"BADD".to_vec(); // Wrong magic
+        bytes.extend_from_slice(&[1u8, 2u8, 0u8, 0u8, 0u8, 0u8]);
+        assert!(
+            load_bytes("bad_magic", &bytes).is_none(),
+            "Wrong magic should return None"
+        );
     }
 
     #[test]
     fn external_ngram_model_load_truncated_file_returns_none() {
-        use std::io::Write;
-        let path = format!("/tmp/dgaard_ngram_truncated_{}", std::process::id());
-        let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(b"NGRM").unwrap();
-        f.write_all(&[1u8]).unwrap(); // version
-        f.write_all(&[2u8]).unwrap(); // bigrams
-        f.write_all(&10u32.to_le_bytes()).unwrap(); // claims 10 entries
-        // Write only 2 entries instead of 10
-        f.write_all(b"ab").unwrap();
-        f.write_all(&(-1.0f32).to_le_bytes()).unwrap();
-        f.write_all(b"bc").unwrap();
-        f.write_all(&(-2.0f32).to_le_bytes()).unwrap();
-        drop(f);
-        let model = ExternalNgramModel::load_from_file(&path);
-        assert!(model.is_none(), "Truncated file should return None");
-        let _ = std::fs::remove_file(&path);
+        // Claims 10 entries, carries only 2.
+        let bytes = bigram_file_bytes(10, 2, -1.0);
+        assert!(
+            load_bytes("truncated", &bytes).is_none(),
+            "Truncated file should return None"
+        );
+    }
+
+    #[test]
+    fn temp_ngram_file_is_deleted_on_drop() {
+        // Review F11: test files no longer outlive their test.
+        let path = write_valid_ngram_file("drop", &[([b'a', b'b'], -1.0)]);
+        let location = path.to_path_buf();
+        assert!(location.exists());
+        assert!(location.starts_with(std::env::temp_dir()));
+        drop(path);
+        assert!(!location.exists());
     }
 
     // --- hostile headers and payloads (review F5) ---
-
-    /// Write `bytes` to a unique temp file and return its path.
-    fn write_raw_ngram_file(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "dgaard_ngram_f5_{tag}_{}_{nonce}",
-            std::process::id()
-        ));
-        std::fs::write(&path, bytes).unwrap();
-        path
-    }
 
     fn ngram_header(ngram_size: u8, entry_count: u32) -> Vec<u8> {
         let mut bytes = b"NGRM".to_vec();
@@ -909,10 +892,7 @@ mod tests {
     }
 
     fn load_bytes(tag: &str, bytes: &[u8]) -> Option<ExternalNgramModel> {
-        let path = write_raw_ngram_file(tag, bytes);
-        let model = ExternalNgramModel::load_from_file(&path);
-        let _ = std::fs::remove_file(&path);
-        model
+        ExternalNgramModel::load_from_file(write_raw_ngram_file(tag, bytes))
     }
 
     #[test]
@@ -977,7 +957,6 @@ mod tests {
 
         // "goo" has bigrams 'go'(-1.0) and 'oo'(-1.5), avg = -1.25 > -4.0
         assert!(ngram_check_external("goo", &models, -4.0));
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -990,6 +969,5 @@ mod tests {
 
         // "zz" only has unknown bigrams → default -10.0 < -4.0
         assert!(!ngram_check_external("zz", &models, -4.0));
-        let _ = std::fs::remove_file(&path);
     }
 }

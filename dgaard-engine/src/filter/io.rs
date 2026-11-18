@@ -145,15 +145,23 @@ mod tests {
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
     }
 
-    fn write_temp_list(tag: &str, content: &str) -> String {
-        let path = format!("/tmp/dgaard_engine_io_test_{tag}_{}", std::process::id());
-        std::fs::write(&path, content).expect("write temp file");
-        path
+    /// Write `content` to a fresh temp file. Keep the returned guard alive:
+    /// it deletes the file on drop, even when the test panics.
+    fn write_temp_list(tag: &str, content: &str) -> (String, tempfile::TempPath) {
+        use std::io::Write;
+        let mut file = tempfile::Builder::new()
+            .prefix(&format!("dgaard_engine_io_{tag}_"))
+            .tempfile()
+            .expect("create temp file");
+        file.write_all(content.as_bytes()).expect("write temp file");
+        let guard = file.into_temp_path();
+        (guard.to_str().expect("utf-8 temp path").to_owned(), guard)
     }
 
     #[test]
     fn test_load_plain_domain_list() {
-        let path = write_temp_list("plain", "example.com\ngoogle.com\n# comment\n\nbad.com\n");
+        let (path, _file) =
+            write_temp_list("plain", "example.com\ngoogle.com\n# comment\n\nbad.com\n");
         let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
         let result = load_list_file(
             &path,
@@ -170,13 +178,12 @@ mod tests {
         assert!(result.is_ok());
         // 3 valid domains (comment and blank line skipped)
         assert_eq!(fm.len(), 3, "expected 3 entries, got {}", fm.len());
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_load_hosts_format_list() {
         let content = "0.0.0.0 example.com\n0.0.0.0 ads.evil.com\n127.0.0.1 tracker.net\n";
-        let path = write_temp_list("hosts", content);
+        let (path, _file) = write_temp_list("hosts", content);
         let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
         let result = load_list_file(
             &path,
@@ -192,12 +199,11 @@ mod tests {
         );
         assert!(result.is_ok());
         assert_eq!(fm.len(), 3);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_load_whitelist_file() {
-        let path = write_temp_list("whitelist", "safe.com\nallowed.org\n");
+        let (path, _file) = write_temp_list("whitelist", "safe.com\nallowed.org\n");
         let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
         let result = load_list_file(
             &path,
@@ -218,13 +224,12 @@ mod tests {
             DomainEntryFlags::from_bits_truncate(*flags).contains(DomainEntryFlags::WHITELIST)
         }));
         assert!(hl.is_empty());
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_load_abp_format_list() {
         let content = "||ads.example.com^\n||tracker.net^\n@@||safe.com^\n";
-        let path = write_temp_list("abp", content);
+        let (path, _file) = write_temp_list("abp", content);
         let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
         let result = load_list_file(
             &path,
@@ -239,12 +244,11 @@ mod tests {
             None,
         );
         assert!(result.is_ok());
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_load_empty_file() {
-        let path = write_temp_list("empty", "");
+        let (path, _file) = write_temp_list("empty", "");
         let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
         let result = load_list_file(
             &path,
@@ -260,13 +264,12 @@ mod tests {
         );
         assert!(result.is_ok());
         assert!(fm.is_empty());
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_load_comments_only_file() {
         let content = "# This is a comment\n! ABP comment\n# Another comment\n";
-        let path = write_temp_list("comments", content);
+        let (path, _file) = write_temp_list("comments", content);
         let (mut fm, mut hl, mut wp, mut rp, mut hi, mut br) = make_collections();
         let result = load_list_file(
             &path,
@@ -285,6 +288,5 @@ mod tests {
             fm.is_empty(),
             "comments-only file should produce no entries"
         );
-        let _ = std::fs::remove_file(&path);
     }
 }

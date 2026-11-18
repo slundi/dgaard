@@ -53,30 +53,75 @@ pub mod tests {
     // Serialise all tests that mutate shared globals (CURRENT_ENGINE, CONFIG).
     static TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(Mutex::default);
 
-    pub fn init_test_env() -> MutexGuard<'static, ()> {
+    /// Held by every test that mutates process-wide state. It serialises
+    /// them and, on drop, puts `CONFIG` and `CURRENT_ENGINE` back as it
+    /// found them — also when the test panics, so a failing test cannot
+    /// leak its configuration into the next one (review F11).
+    pub struct GlobalsGuard {
+        config: Arc<crate::config::Config>,
+        engine: Arc<FilterEngine>,
+        // Dropped after `Drop::drop` restored the globals: the next test
+        // only gets the lock once the state is back.
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for GlobalsGuard {
+        fn drop(&mut self) {
+            CONFIG.store(Arc::clone(&self.config));
+            CURRENT_ENGINE.store(Arc::clone(&self.engine));
+        }
+    }
+
+    pub fn init_test_env() -> GlobalsGuard {
         // A test that panicked while holding the lock must not fail every
-        // test after it: the state it guards is reset below anyway.
-        let guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        // test after it: its guard already restored the shared state.
+        let lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         GLOBAL_SEED.store(42, Ordering::Relaxed);
-        guard
+        GlobalsGuard {
+            config: CONFIG.load_full(),
+            engine: CURRENT_ENGINE.load_full(),
+            _lock: lock,
+        }
     }
 
     /// Run an async test holding the global test lock on a fresh
-    /// current-thread runtime, restoring `CONFIG` and `CURRENT_ENGINE`
-    /// afterwards. Per-client behavioral state starts empty: every test
-    /// queries from 127.0.0.1, and `cargo test` runs them in one process.
+    /// current-thread runtime; the guard restores `CONFIG` and
+    /// `CURRENT_ENGINE` afterwards. Per-client behavioral state starts
+    /// empty: every test queries from 127.0.0.1, and `cargo test` runs
+    /// them in one process.
     pub fn run_with_globals(test: impl std::future::Future<Output = ()>) {
         let _guard = init_test_env();
         crate::behavior::BEHAVIOR.clear();
-        let previous_config = CONFIG.load_full();
-        let previous_engine = CURRENT_ENGINE.load_full();
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap()
             .block_on(test);
-        CONFIG.store(previous_config);
-        CURRENT_ENGINE.store(previous_engine);
+    }
+
+    #[test]
+    fn globals_guard_restores_state_even_when_the_test_panics() {
+        let before = {
+            let _guard = init_test_env();
+            (CONFIG.load_full(), CURRENT_ENGINE.load_full())
+        };
+        let outcome = std::thread::spawn(|| {
+            let _guard = init_test_env();
+            let mut config = (*CONFIG.load_full()).clone();
+            config.server.listen_addr = "192.0.2.1:5353".into();
+            CONFIG.store(Arc::new(config));
+            CURRENT_ENGINE.store(Arc::new(FilterEngine::empty()));
+            panic!("simulated test failure");
+        })
+        .join();
+        assert!(outcome.is_err(), "the inner test must have panicked");
+
+        let _guard = init_test_env();
+        assert!(Arc::ptr_eq(&CONFIG.load_full(), &before.0), "CONFIG leaked");
+        assert!(
+            Arc::ptr_eq(&CURRENT_ENGINE.load_full(), &before.1),
+            "CURRENT_ENGINE leaked"
+        );
     }
 
     pub fn create_test_engine(

@@ -107,10 +107,17 @@ fn parse_line(line: &str) -> Option<Rule> {
 mod tests {
     use super::*;
 
-    fn write_temp(tag: &str, content: &str) -> String {
-        let path = format!("/tmp/dgaard_abpopt_io_test_{tag}_{}", std::process::id());
-        std::fs::write(&path, content).unwrap();
-        path
+    /// Write `content` to a fresh temp file. Keep the returned guard alive:
+    /// it deletes the file on drop, even when the test panics.
+    fn write_temp(tag: &str, content: &str) -> (String, tempfile::TempPath) {
+        use std::io::Write;
+        let mut file = tempfile::Builder::new()
+            .prefix(&format!("dgaard_abpopt_io_{tag}_"))
+            .tempfile()
+            .unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+        let guard = file.into_temp_path();
+        (guard.to_str().unwrap().to_owned(), guard)
     }
 
     // ── load_list_content ─────────────────────────────────────────────────────
@@ -178,27 +185,24 @@ mod tests {
 
     #[test]
     fn load_list_file_plain_domains() {
-        let path = write_temp("plain", "example.com\ngoogle.com\nbad.org\n");
+        let (path, _file) = write_temp("plain", "example.com\ngoogle.com\nbad.org\n");
         let rules = load_list_file(&path).unwrap();
         assert_eq!(rules.len(), 3);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn load_list_file_mixed_formats() {
         let content =
             "# blocklist\n0.0.0.0 tracker.net\nexample.com\n||ads.evil.com^\n@@||safe.com^\n";
-        let path = write_temp("mixed", content);
+        let (path, _file) = write_temp("mixed", content);
         let rules = load_list_file(&path).unwrap();
         assert_eq!(rules.len(), 4);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn load_list_file_empty_file() {
-        let path = write_temp("empty", "");
+        let (path, _file) = write_temp("empty", "");
         let rules = load_list_file(&path).unwrap();
         assert!(rules.is_empty());
-        let _ = std::fs::remove_file(&path);
     }
 }

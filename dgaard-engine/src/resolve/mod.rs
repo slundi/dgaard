@@ -796,11 +796,13 @@ pub mod tests {
     #[test]
     fn resolve_override_bypasses_blocklist() {
         let engine = create_test_engine(&["blocked.com"], &[], &[]);
-        let mut config = Config::default();
-        config.overrides = vec![OverrideEntry {
-            domain: "blocked.com".into(),
-            to: ipv4("1.2.3.4"),
-        }];
+        let config = Config {
+            overrides: vec![OverrideEntry {
+                domain: "blocked.com".into(),
+                to: ipv4("1.2.3.4"),
+            }],
+            ..Config::default()
+        };
         let action = resolve_with_score("blocked.com", &engine, &config).action;
         assert!(
             matches!(action, Action::Override(ip) if ip == ipv4("1.2.3.4")),
@@ -812,11 +814,13 @@ pub mod tests {
     #[test]
     fn resolve_override_score_is_zero() {
         let engine = create_test_engine(&[], &[], &[]);
-        let mut config = Config::default();
-        config.overrides = vec![OverrideEntry {
-            domain: "example.com".into(),
-            to: ipv4("9.9.9.9"),
-        }];
+        let config = Config {
+            overrides: vec![OverrideEntry {
+                domain: "example.com".into(),
+                to: ipv4("9.9.9.9"),
+            }],
+            ..Config::default()
+        };
         let result = resolve_with_score("example.com", &engine, &config);
         assert!(matches!(result.action, Action::Override(_)));
         assert_eq!(result.score.total, 0, "override should skip scoring");

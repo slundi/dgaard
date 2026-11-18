@@ -848,8 +848,8 @@ mod tests {
     /// Serialise tests that mutate the global CONFIG. The lock is the one
     /// every other test touching CONFIG holds (`run_with_globals`): with
     /// two locks, `cargo test` let a reload test and a filter test restore
-    /// each other's configuration.
-    fn config_lock() -> std::sync::MutexGuard<'static, ()> {
+    /// each other's configuration. The guard restores CONFIG on drop.
+    fn config_lock() -> crate::resolve::tests::GlobalsGuard {
         crate::resolve::tests::init_test_env()
     }
 
@@ -909,7 +909,6 @@ mod tests {
     #[test]
     fn acl_is_parsed_once_per_configuration() {
         let _lock = config_lock();
-        let previous = CONFIG.load_full();
         let mut config = Config::default();
         config.server.allowed_networks = vec!["10.0.0.0/8".into()];
         CONFIG.store(Arc::new(config));
@@ -926,8 +925,6 @@ mod tests {
         CONFIG.store(Arc::new(reloaded));
         assert!(is_client_allowed("192.168.1.1".parse().unwrap()));
         assert!(!is_client_allowed("10.1.2.3".parse().unwrap()));
-
-        CONFIG.store(previous);
     }
 
     // -----------------------------------------------------------------------
@@ -938,13 +935,11 @@ mod tests {
     /// (before, the multi-worker path kept a process alive serving nothing).
     fn startup_errors(listen_addr: &str) -> (String, String) {
         let _lock = config_lock();
-        let previous = CONFIG.load_full();
         let mut config = Config::default();
         config.server.listen_addr = listen_addr.to_string();
         CONFIG.store(Arc::new(config));
         let multi = start_with_workers(2).expect_err("multi-worker must fail");
         let single = start_with_single_worker().expect_err("single worker must fail");
-        CONFIG.store(previous);
         (multi.to_string(), single.to_string())
     }
 

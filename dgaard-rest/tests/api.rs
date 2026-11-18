@@ -196,11 +196,16 @@ async fn check_blocked_domain_returns_200_when_blocked_status_code_is_200() {
 
 // ── GET /api/v1/blocklists — with real files ──────────────────────────────────
 
-fn write_temp_blocklist(tag: &str, content: &str) -> String {
-    let path = format!("/tmp/dgaard_rest_bl_test_{tag}_{}", std::process::id());
-    let mut f = std::fs::File::create(&path).unwrap();
-    f.write_all(content.as_bytes()).unwrap();
-    path
+/// Write `content` to a fresh temp file. Keep the returned guard alive: it
+/// deletes the file on drop, even when the test panics.
+fn write_temp_blocklist(tag: &str, content: &str) -> (String, tempfile::TempPath) {
+    let mut file = tempfile::Builder::new()
+        .prefix(&format!("dgaard_rest_bl_{tag}_"))
+        .tempfile()
+        .unwrap();
+    file.write_all(content.as_bytes()).unwrap();
+    let guard = file.into_temp_path();
+    (guard.to_str().unwrap().to_owned(), guard)
 }
 
 fn empty_sources_config() -> EngineConfig {
@@ -220,7 +225,8 @@ fn state_with_blacklist(path: &str) -> AppState {
 
 #[tokio::test]
 async fn get_blocklists_with_file_returns_correct_count() {
-    let path = write_temp_blocklist("count", "example.com\n# comment\ngoogle.com\n\nbad.org\n");
+    let (path, _file) =
+        write_temp_blocklist("count", "example.com\n# comment\ngoogle.com\n\nbad.org\n");
     let state = state_with_blacklist(&path);
 
     let resp = routes::router()
@@ -242,8 +248,6 @@ async fn get_blocklists_with_file_returns_correct_count() {
         !entry["last_updated"].is_null(),
         "last_updated should be set for an existing file"
     );
-
-    let _ = std::fs::remove_file(&path);
 }
 
 #[tokio::test]
@@ -270,7 +274,7 @@ async fn get_blocklists_missing_file_has_zero_count() {
 
 #[tokio::test]
 async fn get_blocklists_nrd_list_included() {
-    let path = write_temp_blocklist("nrd", "nrd1.com\nnrd2.com\n");
+    let (path, _file) = write_temp_blocklist("nrd", "nrd1.com\nnrd2.com\n");
     let mut config = empty_sources_config();
     config.sources.nrd_list_path = path.clone();
     let engine = FilterEngine::build_from_files(&config, HASH_SEED);
@@ -286,14 +290,12 @@ async fn get_blocklists_nrd_list_included() {
     let arr = json.as_array().unwrap();
     assert_eq!(arr.len(), 1, "NRD list should appear as one entry");
     assert_eq!(arr[0]["count"], 2u64);
-
-    let _ = std::fs::remove_file(&path);
 }
 
 #[tokio::test]
 async fn get_blocklists_whitelist_and_blacklist_both_appear() {
-    let bl_path = write_temp_blocklist("bl", "bad.com\nevil.net\n");
-    let wl_path = write_temp_blocklist("wl", "safe.com\n");
+    let (bl_path, _bl_file) = write_temp_blocklist("bl", "bad.com\nevil.net\n");
+    let (wl_path, _wl_file) = write_temp_blocklist("wl", "safe.com\n");
 
     let mut config = empty_sources_config();
     config.sources.blacklists = vec![bl_path.clone()];
@@ -310,9 +312,6 @@ async fn get_blocklists_whitelist_and_blacklist_both_appear() {
     let json = response_json(resp).await;
     let arr = json.as_array().unwrap();
     assert_eq!(arr.len(), 2, "Both blacklist and whitelist should appear");
-
-    let _ = std::fs::remove_file(&bl_path);
-    let _ = std::fs::remove_file(&wl_path);
 }
 
 // ── POST /api/v1/check — input validation (R2.5) ─────────────────────────────

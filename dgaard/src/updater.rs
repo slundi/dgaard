@@ -136,7 +136,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{fs::File, io::Write};
+    use std::io::Write;
 
     use super::*;
 
@@ -150,12 +150,12 @@ mod tests {
 
     #[test]
     fn validate_path() {
-        let mut file = File::create("/tmp/foo.txt").unwrap();
+        // A private temp file, deleted on drop: no fixed name another test
+        // or user could race on (review F11).
+        let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(b"Hello, world!").unwrap();
-        assert!(
-            validate_input("/tmp/foo.txt").unwrap()
-                == Resource::FilePath(PathBuf::from("/tmp/foo.txt"))
-        );
+        let path = file.path().to_str().unwrap();
+        assert!(validate_input(path).unwrap() == Resource::FilePath(PathBuf::from(path)));
 
         assert!(
             validate_input("../README.md").unwrap()
@@ -227,8 +227,6 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use crate::config::Config;
-
     fn set_interval(hours: u32) {
         let mut config = (*CONFIG.load_full()).clone();
         config.sources.update_interval_hours = hours;
@@ -237,17 +235,15 @@ mod tests {
     }
 
     /// Run `test` on a paused clock (hours pass instantly) with the global
-    /// test lock held and `CONFIG` restored afterwards.
+    /// test lock held; its guard restores `CONFIG` afterwards.
     fn with_paused_clock(test: impl std::future::Future<Output = ()>) {
         let _guard = crate::resolve::tests::init_test_env();
-        let previous: Arc<Config> = CONFIG.load_full();
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .start_paused(true)
             .build()
             .unwrap()
             .block_on(test);
-        CONFIG.store(previous);
     }
 
     fn counting_schedule() -> (Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
