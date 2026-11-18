@@ -175,57 +175,8 @@ pub(crate) fn start_with_single_worker() -> Result<(), Box<dyn std::error::Error
         .build()?;
     runtime.block_on(async {
         // Bind before anything else starts: no listening socket, no server.
-        let tokio_socket = bind_listen_sockets(&CONFIG.load().server.listen_addr, 1)?.remove(0);
-
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        tokio::spawn(watch_for_reloads(shutdown_rx.clone()));
-        let guard = ShutdownGuard::new(shutdown_rx.clone());
-
-        // Initial list load (supports both file paths and URLs)
-        let initial = reload_lists().await;
-
-        tokio::spawn(spawn_update_task(initial.is_degraded()));
-
-        // Initialize stats channel and spawn collector
-        let stats_receiver = init_stats_channel();
-        tokio::spawn(stats_collector_task(stats_receiver, shutdown_rx.clone()));
-
-        if let Some(addr) = CONFIG.load().server.metrics_listen.clone() {
-            tokio::spawn(crate::metrics::serve(addr, shutdown_rx.clone()));
-        }
-
-        if CONFIG.load().security.dnssec.enabled {
-            // Both modes validate the answer bytes with the chain validator
-            // (`crate::RECURSIVE_DNSSEC`); nothing to start here.
-            println!("DNSSEC validation enabled");
-        }
-
-        let cache_cfg = CONFIG.load().cache.clone();
-        if cache_cfg.enabled {
-            let _ =
-                crate::RESPONSE_CACHE.set(crate::cache::ResponseCache::new(cache_cfg.max_entries));
-            println!(
-                "Response cache enabled ({} max entries)",
-                cache_cfg.max_entries
-            );
-        }
-
-        spawn_popularity_persistence(shutdown_rx.clone());
-        spawn_popularity_purge(shutdown_rx.clone());
-        spawn_prefetch_worker(shutdown_rx.clone());
-
-        let semaphore = Arc::new(Semaphore::new(
-            CONFIG.load().server.runtime.max_concurrent_queries,
-        ));
-
-        println!("Dgaard listening on {}", CONFIG.load().server.listen_addr);
-        spawn_tcp_listener(Arc::clone(&semaphore), shutdown_rx.clone()).await;
-
-        worker_loop(tokio_socket, &guard, &shutdown_tx, semaphore).await;
-
-        // Wait for all active tasks to complete
-        wait_for_tasks(&guard).await;
-        println!("Graceful shutdown complete.");
+        let sockets = bind_listen_sockets(&CONFIG.load().server.listen_addr, 1)?;
+        serve(sockets).await;
         Ok(())
     })
 }
@@ -249,119 +200,155 @@ pub(crate) fn start_with_workers(cpus: usize) -> Result<(), Box<dyn std::error::
         // starts: a bind failure aborts startup instead of leaving workers
         // that exit one by one and a process that serves nothing.
         let sockets = bind_listen_sockets(&CONFIG.load().server.listen_addr, cpus)?;
-
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let guard = ShutdownGuard::new(shutdown_rx.clone());
-        tokio::spawn(watch_for_reloads(shutdown_rx.clone()));
-
-        // Initial list load (supports both file paths and URLs)
-        let initial = reload_lists().await;
-
-        tokio::spawn(spawn_update_task(initial.is_degraded()));
-
-        // Initialize stats channel and spawn collector
-        let stats_receiver = init_stats_channel();
-        tokio::spawn(stats_collector_task(stats_receiver, shutdown_rx.clone()));
-
-        if let Some(addr) = CONFIG.load().server.metrics_listen.clone() {
-            tokio::spawn(crate::metrics::serve(addr, shutdown_rx.clone()));
-        }
-
-        if CONFIG.load().security.dnssec.enabled {
-            // Both modes validate the answer bytes with the chain validator
-            // (`crate::RECURSIVE_DNSSEC`); nothing to start here.
-            println!("DNSSEC validation enabled");
-        }
-
-        let cache_cfg = CONFIG.load().cache.clone();
-        if cache_cfg.enabled {
-            let _ = crate::RESPONSE_CACHE.set(crate::cache::ResponseCache::new(cache_cfg.max_entries));
-            println!("Response cache enabled ({} max entries)", cache_cfg.max_entries);
-        }
-
-        spawn_popularity_persistence(shutdown_rx.clone());
-        spawn_popularity_purge(shutdown_rx.clone());
-        spawn_prefetch_worker(shutdown_rx.clone());
-
-        let semaphore = Arc::new(Semaphore::new(
-            CONFIG.load().server.runtime.max_concurrent_queries,
-        ));
-
-        spawn_tcp_listener(Arc::clone(&semaphore), shutdown_rx.clone()).await;
-
-        let mut handles = Vec::new();
-
-        for tokio_socket in sockets {
-            let worker_guard = guard.clone();
-            let worker_semaphore = Arc::clone(&semaphore);
-            let mut worker_shutdown_rx = shutdown_rx.clone();
-
-            handles.push(tokio::spawn(async move {
-                let mut buf = [0u8; 4096];
-
-                loop {
-                    tokio::select! {
-                        biased;
-
-                        _ = worker_shutdown_rx.changed() => {
-                            if *worker_shutdown_rx.borrow() {
-                                break;
-                            }
-                        }
-
-                        result = tokio_socket.recv_from(&mut buf) => {
-                            match result {
-                                Ok((len, addr)) => {
-                                    if !is_client_allowed(addr.ip()) {
-                                        continue;
-                                    }
-                                    let packet = buf[..len].to_vec();
-                                    let socket_inner = Arc::clone(&tokio_socket);
-
-                                    let permit = match Arc::clone(&worker_semaphore).try_acquire_owned() {
-                                        Ok(p) => p,
-                                        Err(_) => {
-                                            if let Some(resp) = build_minimal_servfail(&packet) {
-                                                let _ = tokio_socket.send_to(&resp, addr).await;
-                                            }
-                                            continue;
-                                        }
-                                    };
-
-                                    spawn_tracked(&worker_guard, async move {
-                                        let _permit = permit;
-                                        if let Err(e) = handle_query(socket_inner, packet, addr).await {
-                                            eprintln!("Error handling query from {}: {}", addr, e);
-                                        }
-                                    });
-                                }
-                                Err(e) => {
-                                    eprintln!("Error receiving packet: {}", e);
-                                }
-                            }
-                        }
-                    }
-                }
-            }));
-        }
-
-        println!("Dgaard listening on {} with {} workers", CONFIG.load().server.listen_addr, cpus);
-
-        // Wait for shutdown signal (SIGINT or SIGTERM).
-        wait_for_shutdown_signal().await;
-        println!("\nShutdown signal received, waiting for {} active tasks...", guard.active_count());
-        let _ = shutdown_tx.send(true);
-
-        // Wait for all worker tasks to exit
-        for h in handles {
-            let _ = h.await;
-        }
-
-        // Wait for all active query tasks to complete
-        wait_for_tasks(&guard).await;
-        println!("Graceful shutdown complete.");
+        serve(sockets).await;
         Ok(())
     })
+}
+
+/// Body shared by both runtime flavours: start every service, read
+/// `sockets` until SIGINT/SIGTERM, then drain in-flight queries. Keeping a
+/// single copy stops the two modes from drifting apart (review F12).
+async fn serve(sockets: Vec<Arc<UdpSocket>>) {
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let guard = ShutdownGuard::new(shutdown_rx.clone());
+    let semaphore = start_services(&shutdown_rx).await;
+
+    let workers = sockets.len();
+    let handles: Vec<_> = sockets
+        .into_iter()
+        .map(|socket| {
+            tokio::spawn(udp_receive_loop(
+                socket,
+                guard.clone(),
+                Arc::clone(&semaphore),
+                shutdown_rx.clone(),
+            ))
+        })
+        .collect();
+    println!(
+        "Dgaard listening on {} ({workers} UDP worker{})",
+        CONFIG.load().server.listen_addr,
+        if workers == 1 { "" } else { "s" }
+    );
+
+    wait_for_shutdown_signal().await;
+    println!(
+        "\nShutdown signal received, waiting for {} active tasks...",
+        guard.active_count()
+    );
+    drain(shutdown_tx, handles, &guard).await;
+    println!("Graceful shutdown complete.");
+}
+
+/// Stop the receive loops, wait for them to exit, then for the query tasks
+/// they spawned.
+async fn drain(
+    shutdown_tx: Sender<bool>,
+    receive_loops: Vec<tokio::task::JoinHandle<()>>,
+    guard: &ShutdownGuard,
+) {
+    let _ = shutdown_tx.send(true);
+    for handle in receive_loops {
+        let _ = handle.await;
+    }
+    wait_for_tasks(guard).await;
+}
+
+/// Start everything that runs next to the UDP listener: reload watcher,
+/// initial list load and updater, stats, metrics, response cache,
+/// popularity, prefetch and the TCP listener. Returns the semaphore that
+/// caps concurrent queries over both transports.
+async fn start_services(shutdown_rx: &watch::Receiver<bool>) -> Arc<Semaphore> {
+    tokio::spawn(watch_for_reloads(shutdown_rx.clone()));
+
+    // Initial list load (supports both file paths and URLs)
+    let initial = reload_lists().await;
+    tokio::spawn(spawn_update_task(initial.is_degraded()));
+
+    // Initialize stats channel and spawn collector
+    let stats_receiver = init_stats_channel();
+    tokio::spawn(stats_collector_task(stats_receiver, shutdown_rx.clone()));
+
+    if let Some(addr) = CONFIG.load().server.metrics_listen.clone() {
+        tokio::spawn(crate::metrics::serve(addr, shutdown_rx.clone()));
+    }
+
+    if CONFIG.load().security.dnssec.enabled {
+        // Both modes validate the answer bytes with the chain validator
+        // (`crate::RECURSIVE_DNSSEC`); nothing to start here.
+        println!("DNSSEC validation enabled");
+    }
+
+    let cache_cfg = CONFIG.load().cache.clone();
+    if cache_cfg.enabled {
+        let _ = crate::RESPONSE_CACHE.set(crate::cache::ResponseCache::new(cache_cfg.max_entries));
+        println!(
+            "Response cache enabled ({} max entries)",
+            cache_cfg.max_entries
+        );
+    }
+
+    spawn_popularity_persistence(shutdown_rx.clone());
+    spawn_popularity_purge(shutdown_rx.clone());
+    spawn_prefetch_worker(shutdown_rx.clone());
+
+    let semaphore = Arc::new(Semaphore::new(
+        CONFIG.load().server.runtime.max_concurrent_queries,
+    ));
+    spawn_tcp_listener(Arc::clone(&semaphore), shutdown_rx.clone()).await;
+    semaphore
+}
+
+/// Read datagrams from `socket` until the shutdown watch flips (or its
+/// sender is dropped). Each allowed query runs in its own tracked task
+/// under a `semaphore` permit; with none left the client gets an immediate
+/// SERVFAIL instead of a silent drop.
+async fn udp_receive_loop(
+    socket: Arc<UdpSocket>,
+    guard: ShutdownGuard,
+    semaphore: Arc<Semaphore>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    // DNS over UDP is 512 bytes without EDNS; 4096 covers EDNS0 queries.
+    let mut buf = [0u8; 4096];
+    loop {
+        tokio::select! {
+            biased;
+
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    break;
+                }
+            }
+
+            result = socket.recv_from(&mut buf) => {
+                let (len, addr) = match result {
+                    Ok(received) => received,
+                    Err(e) => {
+                        eprintln!("Error receiving packet: {}", e);
+                        continue;
+                    }
+                };
+                if !is_client_allowed(addr.ip()) {
+                    continue;
+                }
+                let packet = buf[..len].to_vec();
+                let Ok(permit) = Arc::clone(&semaphore).try_acquire_owned() else {
+                    if let Some(resp) = build_minimal_servfail(&packet) {
+                        let _ = socket.send_to(&resp, addr).await;
+                    }
+                    continue;
+                };
+                let socket_inner = Arc::clone(&socket);
+                spawn_tracked(&guard, async move {
+                    let _permit = permit;
+                    if let Err(e) = handle_query(socket_inner, packet, addr).await {
+                        eprintln!("Error handling query from {}: {}", addr, e);
+                    }
+                });
+            }
+        }
+    }
 }
 
 /// Start the DNS-over-TCP listener next to UDP (RFC 7766), with the same
@@ -405,83 +392,6 @@ async fn wait_for_shutdown_signal() {
         Err(e) => {
             eprintln!("warn: failed to bind SIGTERM handler ({e}); using Ctrl-C only");
             let _ = tokio::signal::ctrl_c().await;
-        }
-    }
-}
-
-async fn worker_loop(
-    tokio_socket: Arc<UdpSocket>,
-    guard: &ShutdownGuard,
-    shutdown_tx: &Sender<bool>,
-    semaphore: Arc<Semaphore>,
-) {
-    // Buffer for incoming DNS packets (DNS over UDP is typically 512 bytes,
-    // but can be larger with EDNS0, so 4096 is a safe buffer size).
-    let mut sigterm = match signal(SignalKind::terminate()) {
-        Ok(s) => Some(s),
-        Err(e) => {
-            eprintln!("warn: failed to bind SIGTERM handler ({e}); using Ctrl-C only");
-            None
-        }
-    };
-    let mut buf = [0u8; 4096];
-    loop {
-        // Branch the select! based on whether we have a working SIGTERM
-        // handler so the unbound case doesn't spin on a dead future.
-        let sigterm_fut = async {
-            match sigterm.as_mut() {
-                Some(s) => {
-                    let _ = s.recv().await;
-                }
-                None => std::future::pending::<()>().await,
-            }
-        };
-        tokio::select! {
-            biased;
-
-            _ = tokio::signal::ctrl_c() => {
-                println!("\nShutdown signal received, waiting for {} active tasks...", guard.active_count());
-                let _ = shutdown_tx.send(true);
-                break;
-            }
-
-            _ = sigterm_fut => {
-                println!("\nShutdown signal received, waiting for {} active tasks...", guard.active_count());
-                let _ = shutdown_tx.send(true);
-                break;
-            }
-
-            result = tokio_socket.recv_from(&mut buf) => {
-                match result {
-                    Ok((len, addr)) => {
-                        if !is_client_allowed(addr.ip()) {
-                            continue;
-                        }
-                        let packet = buf[..len].to_vec();
-                        let socket_inner = Arc::clone(&tokio_socket);
-
-                        let permit = match Arc::clone(&semaphore).try_acquire_owned() {
-                            Ok(p) => p,
-                            Err(_) => {
-                                if let Some(resp) = build_minimal_servfail(&packet) {
-                                    let _ = tokio_socket.send_to(&resp, addr).await;
-                                }
-                                continue;
-                            }
-                        };
-
-                        spawn_tracked(guard, async move {
-                            let _permit = permit;
-                            if let Err(e) = handle_query(socket_inner, packet, addr).await {
-                                eprintln!("Error handling query from {}: {}", addr, e);
-                            }
-                        });
-                    }
-                    Err(e) => {
-                        eprintln!("Error receiving packet: {}", e);
-                    }
-                }
-            }
         }
     }
 }
@@ -752,6 +662,136 @@ pub(crate) fn init_global_seed() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // udp_receive_loop / drain — the receive path both modes share (F12)
+    // -----------------------------------------------------------------------
+
+    mod receive_loop {
+        use std::time::Duration;
+
+        use hickory_resolver::proto::op::{Message, Query, ResponseCode};
+        use hickory_resolver::proto::rr::{Name, RecordType};
+
+        use super::*;
+        use crate::resolve::tests::{create_test_engine, run_with_globals};
+
+        const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+        /// How long `ask` waits for a reply; also how long an ignored query
+        /// is given to (wrongly) produce one.
+        const ANSWER_WAIT: Duration = Duration::from_millis(300);
+
+        fn query_bytes(domain: &str, id: u16) -> Vec<u8> {
+            let mut msg = Message::query();
+            msg.metadata.id = id;
+            msg.metadata.recursion_desired = true;
+            msg.add_query(Query::query(
+                Name::from_ascii(domain).unwrap(),
+                RecordType::A,
+            ));
+            msg.to_vec().unwrap()
+        }
+
+        /// A running receive loop on an ephemeral port, plus a client.
+        struct Harness {
+            server_addr: std::net::SocketAddr,
+            client: UdpSocket,
+            shutdown_tx: Sender<bool>,
+            guard: ShutdownGuard,
+            handle: tokio::task::JoinHandle<()>,
+        }
+
+        async fn start(permits: usize) -> Harness {
+            crate::CURRENT_ENGINE.store(Arc::new(create_test_engine(&["blocked.com"], &[], &[])));
+            let server = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+            let (shutdown_tx, shutdown_rx) = watch::channel(false);
+            let guard = ShutdownGuard::new(shutdown_rx.clone());
+            let handle = tokio::spawn(udp_receive_loop(
+                Arc::clone(&server),
+                guard.clone(),
+                Arc::new(Semaphore::new(permits)),
+                shutdown_rx,
+            ));
+            Harness {
+                server_addr: server.local_addr().unwrap(),
+                client: UdpSocket::bind("127.0.0.1:0").await.unwrap(),
+                shutdown_tx,
+                guard,
+                handle,
+            }
+        }
+
+        impl Harness {
+            async fn ask(&self, domain: &str, id: u16) -> Option<Message> {
+                self.client
+                    .send_to(&query_bytes(domain, id), self.server_addr)
+                    .await
+                    .unwrap();
+                let mut buf = [0u8; 4096];
+                match tokio::time::timeout(ANSWER_WAIT, self.client.recv_from(&mut buf)).await {
+                    Ok(Ok((len, _))) => Some(Message::from_vec(&buf[..len]).unwrap()),
+                    _ => None,
+                }
+            }
+
+            async fn shut_down(self) {
+                let guard = self.guard.clone();
+                tokio::time::timeout(
+                    REPLY_TIMEOUT,
+                    drain(self.shutdown_tx, vec![self.handle], &self.guard),
+                )
+                .await
+                .expect("drain must finish once shutdown is signalled");
+                assert_eq!(guard.active_count(), 0, "query tasks left running");
+            }
+        }
+
+        #[test]
+        fn answers_queries_then_drains_on_shutdown() {
+            run_with_globals(async {
+                let harness = start(4).await;
+                let reply = harness.ask("blocked.com.", 0x1234).await.expect("reply");
+                assert_eq!(reply.metadata.id, 0x1234);
+                assert_eq!(reply.metadata.response_code, ResponseCode::NXDomain);
+                harness.shut_down().await;
+            });
+        }
+
+        #[test]
+        fn exhausted_semaphore_answers_servfail_at_once() {
+            run_with_globals(async {
+                let harness = start(0).await;
+                let reply = harness.ask("blocked.com.", 0x0042).await.expect("reply");
+                assert_eq!(reply.metadata.id, 0x0042);
+                assert_eq!(reply.metadata.response_code, ResponseCode::ServFail);
+                harness.shut_down().await;
+            });
+        }
+
+        #[test]
+        fn clients_outside_the_acl_get_no_answer() {
+            run_with_globals(async {
+                let mut config = Config::default();
+                config.server.allowed_networks = vec!["10.0.0.0/8".into()];
+                CONFIG.store(Arc::new(config));
+                let harness = start(4).await;
+                assert!(harness.ask("blocked.com.", 1).await.is_none());
+                harness.shut_down().await;
+            });
+        }
+
+        #[test]
+        fn loop_stops_when_the_shutdown_sender_is_dropped() {
+            run_with_globals(async {
+                let harness = start(4).await;
+                drop(harness.shutdown_tx);
+                tokio::time::timeout(REPLY_TIMEOUT, harness.handle)
+                    .await
+                    .expect("loop must exit on a closed channel")
+                    .unwrap();
+            });
+        }
+    }
 
     // -----------------------------------------------------------------------
     // build_minimal_servfail
