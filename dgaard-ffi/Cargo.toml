@@ -18,7 +18,7 @@ name = "dgaard"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
-dgaard-engine = { path = "../dgaard-engine", version = "0.2.0" }
+dgaard-engine = { path = "../dgaard-engine", version = "0.3.0" }
 
 # NOTE: no build-dependency on cbindgen. `include/dgaard.h` is committed and
 # regenerated out-of-band by `just ffi-header`, which drives the cbindgen CLI
