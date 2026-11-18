@@ -2,6 +2,8 @@
 //!
 //! All structures have sensible defaults for OpenWrt / embedded deployment.
 
+use crate::dga::ngram::NgramLanguage;
+
 // ---------------------------------------------------------------------------
 // [server.runtime]
 // ---------------------------------------------------------------------------
@@ -353,9 +355,10 @@ pub struct IntelligenceConfig {
 
     /// Languages to use for embedded N-gram scoring.
     /// Only used when [`ngram_use_embedded`] is `true`.
-    /// Supported values: "english", "french", "german", "spanish", "italian".
+    /// Supported values: "english"/"en", "french"/"fr", "german"/"de";
+    /// parsed once at load time, an unknown name is a config error.
     /// A domain passes if it scores above threshold in ANY of these languages.
-    pub ngram_embedded_languages: Vec<String>,
+    pub ngram_embedded_languages: Vec<NgramLanguage>,
 
     /// Paths to pre-computed binary N-gram model files.
     /// Only used when [`ngram_use_embedded`] is `false`.
@@ -389,7 +392,7 @@ impl Default for IntelligenceConfig {
             max_consonant_sequence: 5,
             use_ngram_model: false,
             ngram_use_embedded: true,
-            ngram_embedded_languages: vec![String::from("english"), String::from("french")],
+            ngram_embedded_languages: vec![NgramLanguage::English, NgramLanguage::French],
             ngram_models: vec![
                 String::from("/etc/dgaard/models/english.bin"),
                 String::from("/etc/dgaard/models/french.bin"),
@@ -1678,7 +1681,10 @@ mod tests {
         assert_eq!(i.max_consonant_sequence, 5);
         assert!(!i.use_ngram_model);
         assert!(i.ngram_use_embedded);
-        assert_eq!(i.ngram_embedded_languages, vec!["english", "french"]);
+        assert_eq!(
+            i.ngram_embedded_languages,
+            vec![NgramLanguage::English, NgramLanguage::French]
+        );
         assert_eq!(i.ngram_models.len(), 2);
         assert!((i.ngram_probability_threshold - (-4.0)).abs() < f32::EPSILON);
     }

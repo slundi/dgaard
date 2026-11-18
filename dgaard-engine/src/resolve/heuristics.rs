@@ -4,7 +4,7 @@ use crate::dga::{
         calculate_entropy, calculate_entropy_fast, is_consonant_suspicious,
         is_low_entropy_suspicious,
     },
-    ngram::{NgramLanguage, ngram_check_embedded},
+    ngram::ngram_check_embedded,
     structure::effective_sld,
 };
 use crate::filter::engine::FilterEngine;
@@ -96,18 +96,15 @@ pub fn check_dga_heuristics(domain: &str, config: &Config) -> Option<BlockReason
     }
 
     // 4. N-gram language model check
-    if intel.use_ngram_model && intel.ngram_use_embedded {
-        let languages: Vec<NgramLanguage> = intel
-            .ngram_embedded_languages
-            .iter()
-            .filter_map(|s| NgramLanguage::parse(s))
-            .collect();
-
-        if !languages.is_empty()
-            && !ngram_check_embedded(sld, &languages, intel.ngram_probability_threshold)
-        {
-            return Some(BlockReason::LexicalAnalysis);
-        }
+    if intel.use_ngram_model
+        && intel.ngram_use_embedded
+        && !ngram_check_embedded(
+            sld,
+            &intel.ngram_embedded_languages,
+            intel.ngram_probability_threshold,
+        )
+    {
+        return Some(BlockReason::LexicalAnalysis);
     }
 
     None
@@ -262,6 +259,49 @@ mod tests {
         let config = Config::default();
         assert!(check_dga_heuristics("news.bbc.co.uk", &config).is_none());
         assert!(check_dga_heuristics("www.toyota.co.jp", &config).is_none());
+    }
+
+    fn ngram_config() -> Config {
+        let mut config = Config::default();
+        config.security.intelligence.use_ngram_model = true;
+        config
+    }
+
+    #[test]
+    fn check_dga_heuristics_ngram_ignores_names_without_letter_transitions() {
+        // Review F4: these SLDs pass every other heuristic but have no
+        // letter-to-letter transition for the bigram model to score; they
+        // used to score -inf and be blocked.
+        let config = ngram_config();
+        for domain in ["a1e2i3o4.com", "a-e-i-o-u.com"] {
+            assert!(check_dga_heuristics(domain, &config).is_none(), "{domain}");
+        }
+    }
+
+    #[test]
+    fn check_dga_heuristics_ngram_still_flags_unpronounceable_slds() {
+        // Below the default consonant limits, so only the n-gram model can
+        // catch it.
+        let mut config = ngram_config();
+        config.security.intelligence.consonant_ratio_threshold = 1.1;
+        config.security.intelligence.max_consonant_sequence = 64;
+        assert!(matches!(
+            check_dga_heuristics("xvbrtzqk.com", &config),
+            Some(BlockReason::LexicalAnalysis)
+        ));
+    }
+
+    #[test]
+    fn check_dga_heuristics_ngram_with_no_languages_passes() {
+        let mut config = ngram_config();
+        config.security.intelligence.consonant_ratio_threshold = 1.1;
+        config.security.intelligence.max_consonant_sequence = 64;
+        config
+            .security
+            .intelligence
+            .ngram_embedded_languages
+            .clear();
+        assert!(check_dga_heuristics("xvbrtzqk.com", &config).is_none());
     }
 
     #[test]

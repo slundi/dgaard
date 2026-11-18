@@ -111,12 +111,16 @@ pub fn calculate_entropy(s: &str) -> f32 {
     }
 
     let mut frequencies = HashMap::with_capacity(36); // a-z + 0-9
-    let len = s.len() as f32;
+    // Probabilities are over characters, so divide by the character count:
+    // `s.len()` counts bytes and would deflate p_i for non-ASCII labels.
+    let mut char_count = 0u32;
 
     // Count occurrences of each character
     for c in s.chars() {
         *frequencies.entry(c).or_insert(0) += 1;
+        char_count += 1;
     }
+    let len = char_count as f32;
 
     // Shannon Formula: H = -sum(p_i * log2(p_i))
     let mut entropy = 0.0;
@@ -296,6 +300,16 @@ mod tests {
     fn entropy_two_chars_equal_distribution() {
         let e = calculate_entropy("ab");
         assert!((e - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn entropy_counts_characters_not_bytes() {
+        // Review F4: multi-byte characters used to be divided by the byte
+        // length, so "éé" scored 0.5 instead of 0.
+        assert_eq!(calculate_entropy("éé"), 0.0);
+        assert!((calculate_entropy("éèêë") - calculate_entropy("abcd")).abs() < f32::EPSILON);
+        assert!((calculate_entropy("日本語") - 3f32.log2()).abs() < 1e-6);
+        assert!((calculate_entropy("aé") - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]

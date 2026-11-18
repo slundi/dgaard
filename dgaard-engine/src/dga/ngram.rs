@@ -240,9 +240,10 @@ impl NgramLanguage {
 /// * `language` - The language model to use
 ///
 /// # Returns
-/// Average log2 probability of bigram transitions, or `f32::NEG_INFINITY` if
-/// the domain has fewer than 2 analyzable characters.
-pub fn ngram_score_embedded(domain: &str, language: NgramLanguage) -> f32 {
+/// Average log2 probability of bigram transitions, or `None` when the domain
+/// has no letter-to-letter transition to score (e.g. `x-y-z`, `12345678`):
+/// such a name carries no evidence either way.
+pub fn ngram_score_embedded(domain: &str, language: NgramLanguage) -> Option<f32> {
     let matrix = language.bigram_matrix();
     let bytes = domain.as_bytes();
 
@@ -265,10 +266,10 @@ pub fn ngram_score_embedded(domain: &str, language: NgramLanguage) -> f32 {
     }
 
     if transition_count == 0 {
-        return f32::NEG_INFINITY;
+        return None;
     }
 
-    total_log_prob / transition_count as f32
+    Some(total_log_prob / transition_count as f32)
 }
 
 /// Check if a domain passes N-gram analysis using embedded models (OR logic).
@@ -282,7 +283,8 @@ pub fn ngram_score_embedded(domain: &str, language: NgramLanguage) -> f32 {
 /// * `threshold` - Minimum acceptable average log-probability (e.g., -4.0)
 ///
 /// # Returns
-/// `true` if the domain passes (scores above threshold in at least one language)
+/// `true` if the domain passes (scores above threshold in at least one
+/// language, or has no letter transitions to score at all)
 pub fn ngram_check_embedded(domain: &str, languages: &[NgramLanguage], threshold: f32) -> bool {
     if languages.is_empty() {
         return true; // No models = pass by default
@@ -290,9 +292,12 @@ pub fn ngram_check_embedded(domain: &str, languages: &[NgramLanguage], threshold
 
     // OR logic: pass if ANY language model accepts the domain
     for &lang in languages {
-        let score = ngram_score_embedded(domain, lang);
-        if score >= threshold {
-            return true;
+        match ngram_score_embedded(domain, lang) {
+            // Nothing to score is the same for every language: no evidence
+            // of a DGA, so the n-gram check must not block.
+            None => return true,
+            Some(score) if score >= threshold => return true,
+            Some(_) => {}
         }
     }
 
@@ -476,14 +481,42 @@ mod tests {
 
     #[test]
     fn ngram_score_empty_string() {
-        let score = ngram_score_embedded("", NgramLanguage::English);
-        assert!(score.is_infinite() && score < 0.0);
+        assert_eq!(ngram_score_embedded("", NgramLanguage::English), None);
     }
 
     #[test]
     fn ngram_score_single_char() {
-        let score = ngram_score_embedded("a", NgramLanguage::English);
-        assert!(score.is_infinite() && score < 0.0);
+        assert_eq!(ngram_score_embedded("a", NgramLanguage::English), None);
+    }
+
+    #[test]
+    fn ngram_score_without_letter_transitions_is_none() {
+        // Review F4: these used to score -inf and be blocked.
+        for domain in ["x-y-z-w-v", "12345678", "a1b2c3d4", "---"] {
+            for lang in [
+                NgramLanguage::English,
+                NgramLanguage::French,
+                NgramLanguage::German,
+            ] {
+                assert_eq!(ngram_score_embedded(domain, lang), None, "{domain}");
+            }
+        }
+    }
+
+    #[test]
+    fn ngram_check_passes_names_without_letter_transitions() {
+        let languages = [NgramLanguage::English, NgramLanguage::French];
+        for domain in ["x-y-z-w-v", "12345678", "a1b2c3d4", ""] {
+            assert!(ngram_check_embedded(domain, &languages, -4.0), "{domain}");
+        }
+    }
+
+    #[test]
+    fn ngram_check_still_scores_letter_runs_between_separators() {
+        // One scorable run is enough evidence; a random one still fails.
+        let languages = [NgramLanguage::English];
+        assert!(!ngram_check_embedded("1-xvbrtzq-2", &languages, -4.0));
+        assert!(ngram_check_embedded("1-google-2", &languages, -4.0));
     }
 
     #[test]
@@ -492,7 +525,7 @@ mod tests {
         let words = ["the", "and", "that", "have", "with", "this", "from"];
 
         for word in words {
-            let score = ngram_score_embedded(word, NgramLanguage::English);
+            let score = ngram_score_embedded(word, NgramLanguage::English).unwrap();
             assert!(
                 score > -5.0,
                 "{} should have score > -5.0, got {}",
@@ -508,7 +541,7 @@ mod tests {
         let domains = ["google", "facebook", "amazon", "microsoft", "cloudflare"];
 
         for domain in domains {
-            let score = ngram_score_embedded(domain, NgramLanguage::English);
+            let score = ngram_score_embedded(domain, NgramLanguage::English).unwrap();
             assert!(
                 score > -5.0,
                 "{} should have score > -5.0, got {}",
@@ -524,7 +557,7 @@ mod tests {
         let dga_domains = ["xvbrtzq", "qwrtplkm", "zxcvbnm", "jkqxzw"];
 
         for domain in dga_domains {
-            let score = ngram_score_embedded(domain, NgramLanguage::English);
+            let score = ngram_score_embedded(domain, NgramLanguage::English).unwrap();
             assert!(
                 score < -5.0,
                 "{} should have score < -5.0, got {}",
@@ -540,7 +573,7 @@ mod tests {
         let french_words = ["bonjour", "merci", "comment", "france"];
 
         for word in french_words {
-            let score = ngram_score_embedded(word, NgramLanguage::French);
+            let score = ngram_score_embedded(word, NgramLanguage::French).unwrap();
             assert!(
                 score > -5.0,
                 "French '{}' should have score > -5.0, got {}",
@@ -556,7 +589,7 @@ mod tests {
         let german_words = ["danke", "guten", "morgen", "deutsch"];
 
         for word in german_words {
-            let score = ngram_score_embedded(word, NgramLanguage::German);
+            let score = ngram_score_embedded(word, NgramLanguage::German).unwrap();
             assert!(
                 score > -5.0,
                 "German '{}' should have score > -5.0, got {}",
@@ -569,7 +602,7 @@ mod tests {
     #[test]
     fn ngram_score_handles_digits() {
         // Digits should break the chain but not crash
-        let score = ngram_score_embedded("test123domain", NgramLanguage::English);
+        let score = ngram_score_embedded("test123domain", NgramLanguage::English).unwrap();
         assert!(!score.is_nan());
         // "test" and "domain" are both scored separately
     }
@@ -577,7 +610,7 @@ mod tests {
     #[test]
     fn ngram_score_handles_hyphens() {
         // Hyphens should break the chain
-        let score = ngram_score_embedded("my-domain-name", NgramLanguage::English);
+        let score = ngram_score_embedded("my-domain-name", NgramLanguage::English).unwrap();
         assert!(!score.is_nan());
     }
 

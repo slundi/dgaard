@@ -8,6 +8,7 @@ use thiserror::Error;
 use toml_span::{Span, value::ValueInner};
 
 use super::model::*;
+use crate::dga::ngram::NgramLanguage;
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -493,7 +494,20 @@ fn parse_intelligence(
         cfg.ngram_use_embedded = b;
     }
     if let Some(arr) = get_string_array(table, "ngram_embedded_languages")? {
-        cfg.ngram_embedded_languages = arr;
+        // Parsed here once rather than on every query.
+        cfg.ngram_embedded_languages = arr
+            .iter()
+            .map(|name| {
+                NgramLanguage::parse(name).ok_or_else(|| ConfigError::InvalidValue {
+                    key: "ngram_embedded_languages".to_string(),
+                    message: format!(
+                        "expected english/en, french/fr or german/de, got \"{}\"",
+                        name
+                    ),
+                    span: table.get("ngram_embedded_languages").unwrap().span,
+                })
+            })
+            .collect::<Result<_, _>>()?;
     }
     if let Some(arr) = get_string_array(table, "ngram_models")? {
         cfg.ngram_models = arr;
@@ -1899,7 +1913,7 @@ mod tests {
         assert!(!cfg.security.intelligence.ngram_use_embedded);
         assert_eq!(
             cfg.security.intelligence.ngram_embedded_languages,
-            vec!["english", "german"]
+            vec![NgramLanguage::English, NgramLanguage::German]
         );
         assert_eq!(
             cfg.security.intelligence.ngram_models,
@@ -1907,6 +1921,54 @@ mod tests {
         );
         assert!(
             (cfg.security.intelligence.ngram_probability_threshold - (-5.0)).abs() < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn parse_ngram_languages_accepts_names_and_short_codes() {
+        let toml = r#"
+            [security.intelligence]
+            ngram_embedded_languages = ["EN", "fr", "German"]
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert_eq!(
+            cfg.security.intelligence.ngram_embedded_languages,
+            vec![
+                NgramLanguage::English,
+                NgramLanguage::French,
+                NgramLanguage::German
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_ngram_languages_rejects_unknown_language() {
+        // Used to be dropped silently, leaving fewer models than configured.
+        let toml = r#"
+            [security.intelligence]
+            ngram_embedded_languages = ["english", "spanish"]
+        "#;
+        match Config::parse(toml) {
+            Err(ConfigError::InvalidValue { key, message, .. }) => {
+                assert_eq!(key, "ngram_embedded_languages");
+                assert!(message.contains("spanish"), "{message}");
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_ngram_languages_accepts_empty_list() {
+        let toml = r#"
+            [security.intelligence]
+            ngram_embedded_languages = []
+        "#;
+        let cfg = Config::parse(toml).unwrap();
+        assert!(
+            cfg.security
+                .intelligence
+                .ngram_embedded_languages
+                .is_empty()
         );
     }
 

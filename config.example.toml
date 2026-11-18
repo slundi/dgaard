@@ -166,7 +166,8 @@ use_ngram_model = false
 ngram_use_embedded = true
 
 # Languages for embedded mode (used when ngram_use_embedded = true)
-# Supported: "english", "french", "german", "spanish", "italian"
+# Supported: "english" ("en"), "french" ("fr"), "german" ("de").
+# Any other name is rejected when the configuration is loaded.
 # Add the language(s) spoken by your users to avoid false positives.
 ngram_embedded_languages = ["english"]
 
