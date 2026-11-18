@@ -44,6 +44,7 @@ pub mod tests {
     use super::*;
     use crate::{CONFIG, CURRENT_ENGINE, GLOBAL_SEED};
     use dgaard_engine::filter::engine::FilterEngine;
+    use dgaard_engine::filter::rules::GlobRules;
     use dgaard_engine::model::{Action, DomainEntry, DomainEntryFlags};
     use std::collections::{HashMap, HashSet};
     use std::sync::atomic::Ordering;
@@ -107,8 +108,8 @@ pub mod tests {
         FilterEngine {
             fast_map,
             hierarchical_list,
-            regex_pool: Vec::new(),
-            wildcard_patterns: Vec::new(),
+            regex_rules: Default::default(),
+            glob_rules: Default::default(),
             keyword_automaton: None,
             keyword_patterns: Vec::new(),
             suspicious_tld_hashes: HashSet::new(),
@@ -141,8 +142,8 @@ pub mod tests {
         FilterEngine {
             fast_map: HashMap::new(),
             hierarchical_list,
-            regex_pool: Vec::new(),
-            wildcard_patterns: Vec::new(),
+            regex_rules: Default::default(),
+            glob_rules: Default::default(),
             keyword_automaton: None,
             keyword_patterns: Vec::new(),
             suspicious_tld_hashes: HashSet::new(),
@@ -162,8 +163,8 @@ pub mod tests {
         FilterEngine {
             fast_map: HashMap::new(),
             hierarchical_list: Vec::new(),
-            regex_pool: Vec::new(),
-            wildcard_patterns: patterns.iter().map(|s| s.to_string()).collect(),
+            regex_rules: Default::default(),
+            glob_rules: GlobRules::new(patterns.iter().copied()),
             keyword_automaton: None,
             keyword_patterns: Vec::new(),
             suspicious_tld_hashes: HashSet::new(),
@@ -204,8 +205,8 @@ pub mod tests {
         FilterEngine {
             fast_map: HashMap::new(),
             hierarchical_list: Vec::new(),
-            regex_pool: Vec::new(),
-            wildcard_patterns: Vec::new(),
+            regex_rules: Default::default(),
+            glob_rules: Default::default(),
             keyword_automaton,
             keyword_patterns,
             suspicious_tld_hashes,

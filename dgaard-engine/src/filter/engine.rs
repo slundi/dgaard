@@ -2,12 +2,14 @@
 use std::net::IpAddr;
 
 use aho_corasick::AhoCorasick;
-use regex::Regex;
 use std::collections::{HashMap, HashSet};
 
 use crate::{
     config::Config,
-    filter::{FilterEngineBuilder, list_sources},
+    filter::{
+        FilterEngineBuilder, list_sources,
+        rules::{GlobRules, RegexRules},
+    },
     model::{DomainEntry, DomainEntryFlags},
 };
 
@@ -33,9 +35,9 @@ pub struct FilterEngine {
     // For TLD & Wildcards (sorted by depth then hash)
     pub hierarchical_list: Vec<DomainEntry>,
 
-    // Heavy data
-    pub regex_pool: Vec<Regex>,
-    pub wildcard_patterns: Vec<String>,
+    // Heavy data, indexed for per-query matching
+    pub regex_rules: RegexRules,
+    pub glob_rules: GlobRules,
 
     // Lexical analysis (parental control)
     pub keyword_automaton: Option<AhoCorasick>,
@@ -118,8 +120,8 @@ impl FilterEngine {
         Self {
             fast_map: HashMap::with_capacity(0),
             hierarchical_list: Vec::with_capacity(0),
-            regex_pool: Vec::with_capacity(0),
-            wildcard_patterns: Vec::with_capacity(0),
+            regex_rules: RegexRules::default(),
+            glob_rules: GlobRules::default(),
             keyword_automaton: None,
             keyword_patterns: Vec::with_capacity(0),
             suspicious_tld_hashes: HashSet::with_capacity(0),

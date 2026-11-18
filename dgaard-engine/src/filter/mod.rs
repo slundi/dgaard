@@ -6,6 +6,7 @@ mod fst;
 pub mod host_index;
 mod io;
 mod parser;
+pub mod rules;
 pub mod types;
 
 pub use builder::{BuiltFilter, FilterEngineBuilder, ListKind, list_sources};

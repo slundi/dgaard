@@ -116,6 +116,12 @@ pub struct ResolveResult {
 }
 
 /// Resolution function that returns the computed suspicion score.
+///
+/// The score is left empty for overrides and for names blocked by a list
+/// rule (exact blocklist, suffix, glob or regex): the rule alone decides
+/// those, so the heuristics behind the score would only cost time. Every
+/// other outcome carries it — whitelisted names included, since the daemon
+/// still gates them on it before contacting upstream.
 pub fn resolve_with_score(domain: &str, filter: &FilterEngine, config: &Config) -> ResolveResult {
     let domain = normalize_domain(domain);
     let domain = domain.as_ref();
@@ -127,46 +133,49 @@ pub fn resolve_with_score(domain: &str, filter: &FilterEngine, config: &Config) 
         };
     }
 
-    let score = compute_score(domain, filter, config);
+    let action = pipeline_action(domain, filter, config);
+    let score = if is_list_block(&action) {
+        SuspicionScore::default()
+    } else {
+        compute_score(domain, filter, config)
+    };
+    ResolveResult { action, score }
+}
 
+/// `true` for the blocks only list rules produce.
+fn is_list_block(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Block(BlockReason::StaticBlacklist(_) | BlockReason::AbpRule(_))
+    )
+}
+
+/// Run the structural checks then the configured pipeline on a normalized
+/// `domain`.
+fn pipeline_action(domain: &str, filter: &FilterEngine, config: &Config) -> Action {
     // PTR leak check runs before structure validation: a valid full IPv6 PTR
     // name has 33+ dots and would trip the subdomain-depth limit otherwise.
     if is_ptr_leak_domain(domain, config) {
-        return ResolveResult {
-            action: Action::Block(BlockReason::PtrLeak),
-            score,
-        };
+        return Action::Block(BlockReason::PtrLeak);
     }
 
     if is_structure_invalid(domain, config) {
-        return ResolveResult {
-            action: Action::Block(BlockReason::InvalidStructure),
-            score,
-        };
+        return Action::Block(BlockReason::InvalidStructure);
     }
 
     if is_illegal_idn(domain, config) {
-        return ResolveResult {
-            action: Action::Block(BlockReason::SuspiciousIdn),
-            score,
-        };
+        return Action::Block(BlockReason::SuspiciousIdn);
     }
 
     if is_special_use_domain(domain, config) {
-        return ResolveResult {
-            action: Action::Block(BlockReason::SpecialUseDomain),
-            score,
-        };
+        return Action::Block(BlockReason::SpecialUseDomain);
     }
 
     for step in &config.server.pipeline {
         match step {
             PipelineStep::Whitelist => {
                 if is_whitelisted(domain, filter) {
-                    return ResolveResult {
-                        action: Action::Allow,
-                        score,
-                    };
+                    return Action::Allow;
                 }
             }
             PipelineStep::HotCache => {
@@ -178,67 +187,40 @@ pub fn resolve_with_score(domain: &str, filter: &FilterEngine, config: &Config) 
             }
             PipelineStep::StaticBlock => {
                 if is_blocked(domain, filter) {
-                    return ResolveResult {
-                        action: Action::Block(BlockReason::StaticBlacklist(String::from(
-                            "blocklist",
-                        ))),
-                        score,
-                    };
+                    return Action::Block(BlockReason::StaticBlacklist(String::from("blocklist")));
                 }
             }
             PipelineStep::SuffixMatch => {
                 if is_suffix_blocked(domain, filter) {
-                    return ResolveResult {
-                        action: Action::Block(BlockReason::AbpRule(String::from("wildcard"))),
-                        score,
-                    };
+                    return Action::Block(BlockReason::AbpRule(String::from("wildcard")));
                 }
                 if is_wildcard_pattern_blocked(domain, filter) {
-                    return ResolveResult {
-                        action: Action::Block(BlockReason::AbpRule(String::from("glob"))),
-                        score,
-                    };
+                    return Action::Block(BlockReason::AbpRule(String::from("glob")));
                 }
                 if is_regex_blocked(domain, filter) {
-                    return ResolveResult {
-                        action: Action::Block(BlockReason::AbpRule(String::from("regex"))),
-                        score,
-                    };
+                    return Action::Block(BlockReason::AbpRule(String::from("regex")));
                 }
             }
             PipelineStep::Heuristics => {
                 if let Some(reason) = check_lexical(domain, filter) {
-                    return ResolveResult {
-                        action: Action::Block(reason),
-                        score,
-                    };
+                    return Action::Block(reason);
                 }
                 if let Some(reason) = check_dga_heuristics(domain, config) {
-                    return ResolveResult {
-                        action: Action::Block(reason),
-                        score,
-                    };
+                    return Action::Block(reason);
                 }
             }
-            PipelineStep::Upstream => {
-                return ResolveResult {
-                    action: Action::ProxyToUpstream,
-                    score,
-                };
-            }
+            PipelineStep::Upstream => return Action::ProxyToUpstream,
         }
     }
 
-    ResolveResult {
-        action: Action::ProxyToUpstream,
-        score,
-    }
+    Action::ProxyToUpstream
 }
 
 #[cfg(test)]
 pub mod tests {
     use super::*;
     use crate::filter::engine::FilterEngine;
+    use crate::filter::rules::GlobRules;
     use crate::model::DomainEntryFlags;
     use std::collections::{HashMap, HashSet};
 
@@ -280,8 +262,8 @@ pub mod tests {
         FilterEngine {
             fast_map,
             hierarchical_list,
-            regex_pool: Vec::new(),
-            wildcard_patterns: Vec::new(),
+            regex_rules: Default::default(),
+            glob_rules: Default::default(),
             keyword_automaton: None,
             keyword_patterns: Vec::new(),
             suspicious_tld_hashes: HashSet::new(),
@@ -314,8 +296,8 @@ pub mod tests {
         FilterEngine {
             fast_map: HashMap::new(),
             hierarchical_list,
-            regex_pool: Vec::new(),
-            wildcard_patterns: Vec::new(),
+            regex_rules: Default::default(),
+            glob_rules: Default::default(),
             keyword_automaton: None,
             keyword_patterns: Vec::new(),
             suspicious_tld_hashes: HashSet::new(),
@@ -335,8 +317,8 @@ pub mod tests {
         FilterEngine {
             fast_map: HashMap::new(),
             hierarchical_list: Vec::new(),
-            regex_pool: Vec::new(),
-            wildcard_patterns: patterns.iter().map(|s| s.to_string()).collect(),
+            regex_rules: Default::default(),
+            glob_rules: GlobRules::new(patterns.iter().copied()),
             keyword_automaton: None,
             keyword_patterns: Vec::new(),
             suspicious_tld_hashes: HashSet::new(),
@@ -377,8 +359,8 @@ pub mod tests {
         FilterEngine {
             fast_map: HashMap::new(),
             hierarchical_list: Vec::new(),
-            regex_pool: Vec::new(),
-            wildcard_patterns: Vec::new(),
+            regex_rules: Default::default(),
+            glob_rules: Default::default(),
             keyword_automaton,
             keyword_patterns,
             suspicious_tld_hashes,
@@ -676,6 +658,71 @@ pub mod tests {
         let result = resolve_with_score("trusted.example.com", &engine, &config);
         assert!(matches!(result.action, Action::Allow));
         assert_eq!(result.score.total, 0);
+    }
+
+    // ── lazy scoring ──────────────────────────────────────────────
+
+    /// SLD that scores on entropy whatever list it sits on.
+    const HIGH_ENTROPY: &str = "a1b2c3d4e5f6g7h8i9j0.com";
+
+    #[test]
+    fn list_blocks_skip_the_score() {
+        let config = Config::default();
+        assert!(compute_score(HIGH_ENTROPY, &init_test_engine(), &config).total > 0);
+
+        let exact = create_test_engine(&[HIGH_ENTROPY], &[], &[]);
+        let suffix = create_test_engine(&[], &[], &["j0.com"]);
+        let suffix_name = "a1b2c3d4e5f6g7h8i9.j0.com";
+        let glob = create_engine_with_wildcard_patterns(&["a1b2*.com"]);
+        let mut regex = init_test_engine();
+        regex.regex_rules =
+            crate::filter::rules::RegexRules::new(vec![regex::Regex::new("^a1b2").unwrap()]);
+
+        for (label, engine, name) in [
+            ("exact", &exact, HIGH_ENTROPY),
+            ("suffix", &suffix, suffix_name),
+            ("glob", &glob, HIGH_ENTROPY),
+            ("regex", &regex, HIGH_ENTROPY),
+        ] {
+            let result = resolve_with_score(name, engine, &config);
+            assert!(
+                is_list_block(&result.action),
+                "{label}: {:?}",
+                result.action
+            );
+            assert_eq!(result.score.total, 0, "{label}");
+            assert!(result.score.reasons.is_empty(), "{label}");
+        }
+    }
+
+    #[test]
+    fn whitelisted_names_keep_their_score() {
+        // The daemon gates Allow on the score before forwarding.
+        let engine = create_test_engine(&[], &[HIGH_ENTROPY], &[]);
+        let result = resolve_with_score(HIGH_ENTROPY, &engine, &Config::default());
+        assert!(matches!(result.action, Action::Allow));
+        assert!(result.score.total > 0);
+    }
+
+    #[test]
+    fn heuristic_and_structural_blocks_keep_their_score() {
+        let engine = init_test_engine();
+        let result = resolve_with_score(HIGH_ENTROPY, &engine, &Config::default());
+        assert!(matches!(
+            result.action,
+            Action::Block(BlockReason::HighEntropy(_))
+        ));
+        assert!(result.score.total > 0);
+
+        let mut tight = Config::default();
+        tight.security.structure.max_subdomain_depth = 1;
+        let deep = format!("x.{HIGH_ENTROPY}");
+        let result = resolve_with_score(&deep, &engine, &tight);
+        assert!(matches!(
+            result.action,
+            Action::Block(BlockReason::InvalidStructure)
+        ));
+        assert!(result.score.total > 0);
     }
 
     // ── find_override ─────────────────────────────────────────────────────────

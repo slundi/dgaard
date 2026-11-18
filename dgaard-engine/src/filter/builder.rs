@@ -16,6 +16,7 @@ use crate::{
         LoadFilter,
         engine::{FilterEngine, GeoipFileMeta},
         load_list_content, load_list_file,
+        rules::{GlobRules, RegexRules},
     },
     model::{DomainEntry, DomainEntryFlags},
 };
@@ -163,15 +164,12 @@ impl<'a> FilterEngineBuilder<'a> {
     /// Assemble the engine and apply every config-driven filter.
     pub fn build(self) -> BuiltFilter {
         let hierarchical_list = self.hierarchical_list;
-        let mut wildcard_patterns = self.wildcard_patterns;
-        wildcard_patterns.sort();
-        wildcard_patterns.dedup();
 
         let mut engine = FilterEngine {
             fast_map: self.fast_map,
             hierarchical_list,
-            regex_pool: self.regex_pool,
-            wildcard_patterns,
+            regex_rules: RegexRules::new(self.regex_pool),
+            glob_rules: GlobRules::new(self.wildcard_patterns),
             keyword_automaton: None,
             keyword_patterns: Vec::new(),
             suspicious_tld_hashes: HashSet::new(),
