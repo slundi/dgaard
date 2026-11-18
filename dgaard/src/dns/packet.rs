@@ -1,7 +1,8 @@
 use std::net::IpAddr;
+use std::sync::LazyLock;
 
-use hickory_resolver::proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
-use hickory_resolver::proto::rr::rdata::{A, AAAA};
+use hickory_resolver::proto::op::{Edns, Message, MessageType, OpCode, Query, ResponseCode};
+use hickory_resolver::proto::rr::rdata::{A, AAAA, SOA};
 use hickory_resolver::proto::rr::{DNSClass, Name, RData, Record, RecordType};
 
 /// Payload size every DNS server must handle without EDNS (RFC 1035 §4.2.1).
@@ -129,8 +130,8 @@ impl DnsPacket {
         message.metadata.recursion_desired = true;
         message.metadata.checking_disabled = flags.checking_disabled;
         if flags.dnssec_ok {
-            let mut edns = hickory_resolver::proto::op::Edns::new();
-            edns.set_max_payload(1232);
+            let mut edns = Edns::new();
+            edns.set_max_payload(EDNS_PAYLOAD);
             edns.set_dnssec_ok(true);
             message.set_edns(edns);
         }
@@ -205,27 +206,19 @@ impl DnsPacket {
     /// Error response to a request dgaard does not serve: same ID, opcode
     /// and question section, `rcode`, and none of the request's records.
     fn build_error_response(request: &Message, rcode: ResponseCode) -> Vec<u8> {
-        let mut response = request.clone();
-        response.metadata.message_type = MessageType::Response;
-        response.metadata.response_code = rcode;
-        response.metadata.authoritative = false;
-        response.metadata.recursion_available = true;
-        response.answers.clear();
-        response.authorities.clear();
-        response.additionals.clear();
-        encode_response(response)
+        encode_response(response_to(request, rcode))
     }
 
     /// Generates a standard NXDOMAIN (Non-Existent Domain) response
     /// to effectively "block" the request.
+    ///
+    /// The authority section carries a SOA so clients and downstream
+    /// resolvers can cache the negative answer (RFC 2308 §3); without it
+    /// many of them re-ask on every lookup.
     pub fn build_nxdomain_response(query_msg: &Message) -> Vec<u8> {
-        let mut response = query_msg.clone();
-
-        response.metadata.message_type = MessageType::Response;
-        response.metadata.response_code = ResponseCode::NXDomain;
-        response.metadata.recursion_available = true;
+        let mut response = response_to(query_msg, ResponseCode::NXDomain);
         response.metadata.authoritative = true;
-
+        add_negative_soa(&mut response);
         encode_response(response)
     }
 
@@ -234,11 +227,7 @@ impl DnsPacket {
     /// Used for CHAOS class blocking: the server is refusing to process the
     /// request, not asserting that a domain is non-existent.
     pub fn build_refused_response(query_msg: &Message) -> Vec<u8> {
-        let mut response = query_msg.clone();
-        response.metadata.message_type = MessageType::Response;
-        response.metadata.response_code = ResponseCode::Refused;
-        response.metadata.recursion_available = true;
-        encode_response(response)
+        encode_response(response_to(query_msg, ResponseCode::Refused))
     }
 
     /// Build a NOERROR response containing a synthetic A or AAAA answer for `ip`.
@@ -246,16 +235,13 @@ impl DnsPacket {
     /// The record type is chosen to match the IP address family. When the query
     /// asked for a type that doesn't match (e.g. AAAA for an IPv4 address), the
     /// answer section is left empty — correct DNS behaviour for "name exists,
-    /// record type absent".
+    /// record type absent" — and a SOA is added so that NODATA answer can be
+    /// cached (RFC 2308 §2.2).
     pub fn build_ip_response(query_msg: &Message, ip: IpAddr) -> Vec<u8> {
-        const SYNTHETIC_TTL: u32 = 300;
         const QTYPE_A: u16 = 1;
         const QTYPE_AAAA: u16 = 28;
 
-        let mut response = query_msg.clone();
-        response.metadata.message_type = MessageType::Response;
-        response.metadata.response_code = ResponseCode::NoError;
-        response.metadata.recursion_available = true;
+        let mut response = response_to(query_msg, ResponseCode::NoError);
         response.metadata.authoritative = true;
 
         if let Some(q) = query_msg.queries.first() {
@@ -269,25 +255,88 @@ impl DnsPacket {
                 response.add_answer(Record::from_rdata(q.name().clone(), SYNTHETIC_TTL, rdata));
             }
         }
+        if response.answers.is_empty() {
+            add_negative_soa(&mut response);
+        }
 
         encode_response(response)
     }
 
     /// Generates a SERVFAIL response for upstream errors.
     pub fn build_servfail_response(query_msg: &Message) -> Vec<u8> {
-        let mut response = query_msg.clone();
-
-        response.metadata.message_type = MessageType::Response;
-        response.metadata.response_code = ResponseCode::ServFail;
-        response.metadata.recursion_available = true;
-
-        encode_response(response)
+        encode_response(response_to(query_msg, ResponseCode::ServFail))
     }
+}
+
+/// TTL of the records dgaard synthesises, and the negative-caching TTL
+/// (SOA MINIMUM, RFC 2308 §5) of its synthetic NXDOMAIN and NODATA answers.
+const SYNTHETIC_TTL: u32 = 300;
+
+/// UDP payload size dgaard advertises in its own EDNS OPT records: the
+/// DNS Flag Day 2020 value, which avoids IP fragmentation.
+const EDNS_PAYLOAD: u16 = 1232;
+
+/// SOA RDATA of every synthetic negative answer. `dgaard.invalid.` can
+/// never collide with a real zone (RFC 6761 §6.4).
+static NEGATIVE_SOA: LazyLock<SOA> = LazyLock::new(|| {
+    SOA::new(
+        Name::from_ascii("dgaard.invalid.").expect("static name"),
+        Name::from_ascii("hostmaster.dgaard.invalid.").expect("static name"),
+        1,
+        1800,
+        900,
+        604_800,
+        SYNTHETIC_TTL,
+    )
+});
+
+/// Header and question of the response to `query_msg`, with no records.
+///
+/// Nothing from the query's answer, authority or additional sections (nor
+/// its TSIG) is echoed back, and AD is cleared since synthetic data is
+/// never DNSSEC-validated. A query with EDNS gets an OPT record of our own
+/// (RFC 6891 §7) that copies only the DO bit (RFC 3225 §3), not the
+/// client's options.
+fn response_to(query_msg: &Message, rcode: ResponseCode) -> Message {
+    let mut response = Message::new(
+        query_msg.metadata.id,
+        MessageType::Response,
+        query_msg.metadata.op_code,
+    );
+    response.metadata.response_code = rcode;
+    response.metadata.recursion_desired = query_msg.metadata.recursion_desired;
+    response.metadata.checking_disabled = query_msg.metadata.checking_disabled;
+    response.metadata.recursion_available = true;
+    response.queries = query_msg.queries.clone();
+    response.edns = query_msg.edns.as_ref().map(|query_edns| {
+        let mut edns = Edns::new();
+        edns.set_max_payload(EDNS_PAYLOAD);
+        edns.set_dnssec_ok(query_edns.flags().dnssec_ok);
+        edns
+    });
+    response
+}
+
+/// Add the SOA of a synthetic negative answer to the authority section.
+/// It is owned by the queried name, which is always in bailiwick, and
+/// its TTL equals MINIMUM, so the answer is cached for `SYNTHETIC_TTL`.
+fn add_negative_soa(response: &mut Message) {
+    let Some(query) = response.queries.first() else {
+        return;
+    };
+    let mut soa = Record::from_rdata(
+        query.name().clone(),
+        SYNTHETIC_TTL,
+        RData::SOA(NEGATIVE_SOA.clone()),
+    );
+    soa.dns_class = query.query_class();
+    response.add_authority(soa);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hickory_resolver::proto::rr::rdata::opt::EdnsOption;
 
     // ---- new_query carries the whole cache key (review M4) ----
 
@@ -575,6 +624,148 @@ mod tests {
         assert_eq!(response_msg.metadata.message_type, MessageType::Response);
         assert_eq!(response_msg.metadata.response_code, ResponseCode::NoError);
         assert_eq!(response_msg.answers.len(), 1);
+    }
+
+    // --- synthetic responses: negative-caching SOA, no echoed records ---
+
+    fn parsed(bytes: &[u8]) -> Message {
+        Message::from_vec(bytes).unwrap()
+    }
+
+    fn assert_negative_soa(resp: &Message) {
+        assert_eq!(resp.authorities.len(), 1, "exactly one SOA expected");
+        let soa_record = &resp.authorities[0];
+        assert_eq!(soa_record.name, Name::from_ascii("example.com.").unwrap());
+        assert_eq!(soa_record.ttl, SYNTHETIC_TTL);
+        assert_eq!(soa_record.dns_class, DNSClass::IN);
+        match &soa_record.data {
+            RData::SOA(soa) => {
+                assert_eq!(soa.minimum, SYNTHETIC_TTL);
+                assert_eq!(soa.mname, Name::from_ascii("dgaard.invalid.").unwrap());
+            }
+            other => panic!("expected SOA, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nxdomain_carries_soa_for_negative_caching() {
+        let query = DnsPacket::from_bytes(&make_query("A")).unwrap();
+        let resp = parsed(&DnsPacket::build_nxdomain_response(&query.message));
+        assert!(resp.metadata.authoritative);
+        assert!(resp.answers.is_empty());
+        assert_negative_soa(&resp);
+    }
+
+    #[test]
+    fn nodata_ip_response_carries_soa() {
+        use std::net::Ipv4Addr;
+        let query = DnsPacket::from_bytes(&make_query("AAAA")).unwrap();
+        let resp = parsed(&DnsPacket::build_ip_response(
+            &query.message,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        ));
+        assert!(resp.answers.is_empty());
+        assert_negative_soa(&resp);
+    }
+
+    #[test]
+    fn positive_ip_response_has_no_soa() {
+        use std::net::Ipv4Addr;
+        let query = DnsPacket::from_bytes(&make_query("A")).unwrap();
+        let resp = parsed(&DnsPacket::build_ip_response(
+            &query.message,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        ));
+        assert_eq!(resp.answers.len(), 1);
+        assert_eq!(resp.answers[0].ttl, SYNTHETIC_TTL);
+        assert!(resp.authorities.is_empty());
+    }
+
+    /// Every synthetic builder, as `(label, response bytes)`.
+    fn all_synthetic_responses(query: &Message) -> Vec<(&'static str, Vec<u8>)> {
+        use std::net::Ipv4Addr;
+        vec![
+            ("nxdomain", DnsPacket::build_nxdomain_response(query)),
+            ("refused", DnsPacket::build_refused_response(query)),
+            ("servfail", DnsPacket::build_servfail_response(query)),
+            (
+                "ip",
+                DnsPacket::build_ip_response(query, IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            ),
+        ]
+    }
+
+    #[test]
+    fn synthetic_responses_do_not_echo_query_records() {
+        let query = parsed(&message_bytes(|msg| {
+            msg.add_answer(a_record());
+            msg.add_authority(a_record());
+            msg.add_additional(a_record());
+        }));
+        for (label, bytes) in all_synthetic_responses(&query) {
+            let resp = parsed(&bytes);
+            assert!(resp.additionals.is_empty(), "{label}: additional echoed");
+            assert!(
+                resp.authorities
+                    .iter()
+                    .all(|record| matches!(record.data, RData::SOA(_))),
+                "{label}: authority echoed"
+            );
+            assert!(
+                resp.answers
+                    .iter()
+                    .all(|record| record.ttl == SYNTHETIC_TTL),
+                "{label}: answer echoed"
+            );
+        }
+    }
+
+    #[test]
+    fn synthetic_responses_answer_edns_with_own_opt() {
+        let query = parsed(&message_bytes(|msg| {
+            let mut edns = Edns::new();
+            edns.set_max_payload(4096);
+            edns.set_dnssec_ok(true);
+            edns.options_mut()
+                .insert(EdnsOption::Unknown(65001, vec![1, 2, 3]));
+            msg.set_edns(edns);
+        }));
+        for (label, bytes) in all_synthetic_responses(&query) {
+            let edns = parsed(&bytes).edns.expect("OPT record missing");
+            assert_eq!(edns.max_payload(), EDNS_PAYLOAD, "{label}");
+            assert!(edns.flags().dnssec_ok, "{label}: DO bit not copied");
+            assert!(
+                edns.options().options.is_empty(),
+                "{label}: client options reflected"
+            );
+        }
+    }
+
+    #[test]
+    fn synthetic_responses_omit_opt_without_client_edns() {
+        let query = parsed(&message_bytes(|_| {}));
+        for (label, bytes) in all_synthetic_responses(&query) {
+            assert!(parsed(&bytes).edns.is_none(), "{label}");
+        }
+    }
+
+    #[test]
+    fn synthetic_responses_copy_header_bits_and_clear_ad() {
+        let query = parsed(&message_bytes(|msg| {
+            msg.metadata.recursion_desired = true;
+            msg.metadata.checking_disabled = true;
+            msg.metadata.authentic_data = true;
+        }));
+        for (label, bytes) in all_synthetic_responses(&query) {
+            let resp = parsed(&bytes);
+            assert_eq!(resp.metadata.id, 0x4242, "{label}");
+            assert_eq!(resp.metadata.message_type, MessageType::Response, "{label}");
+            assert!(resp.metadata.recursion_desired, "{label}: RD");
+            assert!(resp.metadata.recursion_available, "{label}: RA");
+            assert!(resp.metadata.checking_disabled, "{label}: CD");
+            assert!(!resp.metadata.authentic_data, "{label}: AD must be clear");
+            assert_eq!(resp.queries, query.queries, "{label}: question");
+        }
     }
 
     // --- screen: only standard queries reach the pipeline (review E3) ---
