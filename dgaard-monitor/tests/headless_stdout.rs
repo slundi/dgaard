@@ -129,6 +129,8 @@ filter = []
     let record: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
     assert_eq!(record["domain"], "one.test");
     assert_eq!(record["action"], "Blocked");
+    // dgaard sends IPv4 clients as `::ffff:a.b.c.d`; outputs show `a.b.c.d`.
+    assert_eq!(record["client_ip"], "10.0.0.1");
 
     assert!(
         stderr_text.contains("Connected to"),

@@ -48,6 +48,7 @@ impl Database {
             aggregates_retention_days,
         };
         db.create_schema()?;
+        db.migrate()?;
         Ok(db)
     }
 
@@ -81,6 +82,33 @@ impl Database {
                 PRIMARY KEY (hour, domain_hash, client_ip, action)
              );",
         )
+    }
+
+    /// Upgrade data written by older monitors, tracked with `user_version`.
+    ///
+    /// v1: IPv4 clients used to be stored as `::ffff:a.b.c.d`; rewrite them
+    /// as `a.b.c.d` so history and aggregates match new rows. Hourly counts
+    /// that now share a key with a newer row are summed.
+    fn migrate(&self) -> rusqlite::Result<()> {
+        let mut conn = lock_conn(&self.conn);
+        let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if version >= 1 {
+            return Ok(());
+        }
+        let tx = conn.transaction()?;
+        tx.execute_batch(
+            "UPDATE dns_events SET client_ip = substr(client_ip, 8)
+              WHERE client_ip GLOB '::ffff:*.*.*.*';
+             INSERT INTO dns_stats_hourly (hour, domain_hash, client_ip, action, count)
+             SELECT hour, domain_hash, substr(client_ip, 8), action, count
+               FROM dns_stats_hourly
+              WHERE client_ip GLOB '::ffff:*.*.*.*'
+             ON CONFLICT(hour, domain_hash, client_ip, action)
+             DO UPDATE SET count = count + excluded.count;
+             DELETE FROM dns_stats_hourly WHERE client_ip GLOB '::ffff:*.*.*.*';
+             PRAGMA user_version = 1;",
+        )?;
+        tx.commit()
     }
 
     pub fn insert_events(&self, events: &[EventRecord]) -> rusqlite::Result<()> {
@@ -555,6 +583,91 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 8);
+    }
+
+    #[test]
+    fn migration_rewrites_ipv4_mapped_clients() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats.sqlite");
+        let path = path.to_str().unwrap();
+
+        // Simulate a database written by an older monitor.
+        {
+            let db = Database::open(path, 72, 90).unwrap();
+            let conn = db.conn.lock().unwrap();
+            conn.execute_batch(
+                "PRAGMA user_version = 0;
+                 INSERT INTO dns_events (timestamp, domain_hash, domain, client_ip, action)
+                 VALUES (1, 'a', NULL, '::ffff:10.0.0.1', 'Allowed'),
+                        (2, 'b', NULL, '2001:db8::1', 'Allowed'),
+                        (3, 'c', NULL, '::ffff:abcd', 'Allowed');
+                 INSERT INTO dns_stats_hourly (hour, domain_hash, client_ip, action, count)
+                 VALUES (3600, 'a', '::ffff:10.0.0.1', 'Allowed', 5),
+                        (3600, 'a', '10.0.0.1', 'Allowed', 3),
+                        (7200, 'a', '::ffff:10.0.0.2', 'Blocked', 4);",
+            )
+            .unwrap();
+        }
+
+        let db = Database::open(path, 72, 90).unwrap();
+        let conn = db.conn.lock().unwrap();
+        let clients: Vec<String> = conn
+            .prepare("SELECT client_ip FROM dns_events ORDER BY timestamp")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        // Only dotted IPv4-mapped text is rewritten.
+        assert_eq!(clients, ["10.0.0.1", "2001:db8::1", "::ffff:abcd"]);
+
+        let hourly: Vec<(i64, String, i64)> = conn
+            .prepare("SELECT hour, client_ip, count FROM dns_stats_hourly ORDER BY hour")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            hourly,
+            [
+                (3600, "10.0.0.1".to_string(), 8),
+                (7200, "10.0.0.2".to_string(), 4),
+            ]
+        );
+
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 1);
+    }
+
+    #[test]
+    fn migration_runs_only_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats.sqlite");
+        let path = path.to_str().unwrap();
+        {
+            let db = Database::open(path, 72, 90).unwrap();
+            // Already at v1: a legacy-looking row written now must be left alone.
+            db.conn
+                .lock()
+                .unwrap()
+                .execute(
+                    "INSERT INTO dns_events (timestamp, domain_hash, client_ip, action)
+                     VALUES (1, 'a', '::ffff:10.0.0.1', 'Allowed')",
+                    [],
+                )
+                .unwrap();
+        }
+        let db = Database::open(path, 72, 90).unwrap();
+        let client: String = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT client_ip FROM dns_events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(client, "::ffff:10.0.0.1");
     }
 
     #[test]

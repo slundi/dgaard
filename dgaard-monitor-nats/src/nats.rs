@@ -25,7 +25,6 @@
 //! re-published. The connection also sets `no_echo` so that, when both
 //! subjects are equal (shared bus), the server does not hand a monitor
 //! back its own events, which would otherwise be counted twice.
-use std::net::{IpAddr, Ipv6Addr};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
@@ -35,6 +34,7 @@ use tokio::sync::watch;
 use crate::config::NatsConfig;
 use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
 use dgaard_monitor_core::state::AppState;
+use dgaard_monitor_core::util::{format_client_ip, parse_client_ip};
 
 /// On-wire representation of a monitor event.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -82,7 +82,7 @@ impl WireEvent {
             ts: event.timestamp,
             domain_hash: event.domain_hash,
             domain,
-            client_ip: format_ip(event.client_ip),
+            client_ip: format_client_ip(&event.client_ip),
             action,
             reasons,
         }
@@ -103,7 +103,8 @@ impl WireEvent {
         Ok(StatEvent {
             timestamp: self.ts,
             domain_hash: self.domain_hash,
-            client_ip: parse_ip(&self.client_ip)?,
+            client_ip: parse_client_ip(&self.client_ip)
+                .ok_or_else(|| ParseError::InvalidClientIp(self.client_ip.clone()))?,
             action,
         })
     }
@@ -123,24 +124,6 @@ impl std::fmt::Display for ParseError {
 }
 
 impl std::error::Error for ParseError {}
-
-fn format_ip(bytes: [u8; 16]) -> String {
-    let v6 = Ipv6Addr::from(bytes);
-    match v6.to_ipv4_mapped() {
-        Some(v4) => v4.to_string(),
-        None => v6.to_string(),
-    }
-}
-
-fn parse_ip(s: &str) -> Result<[u8; 16], ParseError> {
-    let addr: IpAddr = s
-        .parse()
-        .map_err(|_| ParseError::InvalidClientIp(s.into()))?;
-    Ok(match addr {
-        IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
-        IpAddr::V6(v6) => v6.octets(),
-    })
-}
 
 /// Spawn the NATS publisher + subscriber tasks. Returns immediately if
 /// `enabled` is false or both subjects are blank.
@@ -297,28 +280,6 @@ mod tests {
         std::net::Ipv4Addr::new(a, b, c, d)
             .to_ipv6_mapped()
             .octets()
-    }
-
-    #[test]
-    fn format_ipv4_mapped_renders_as_v4() {
-        assert_eq!(format_ip(ipv4_bytes(192, 168, 1, 1)), "192.168.1.1");
-    }
-
-    #[test]
-    fn format_pure_ipv6_renders_as_v6() {
-        let v6: Ipv6Addr = "2001:db8::1".parse().unwrap();
-        assert_eq!(format_ip(v6.octets()), "2001:db8::1");
-    }
-
-    #[test]
-    fn parse_ipv4_returns_mapped_octets() {
-        let octets = parse_ip("10.0.0.1").unwrap();
-        assert_eq!(octets, ipv4_bytes(10, 0, 0, 1));
-    }
-
-    #[test]
-    fn parse_invalid_ip_returns_error() {
-        assert!(parse_ip("not-an-ip").is_err());
     }
 
     #[test]

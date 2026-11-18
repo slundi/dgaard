@@ -167,8 +167,11 @@ mod tests {
         Arc::new(AppState::new(Duration::from_secs(3600)))
     }
 
+    /// IPv4 client as dgaard sends it: IPv4-mapped IPv6.
     fn ipv4(a: u8, b: u8, c: u8, d: u8) -> [u8; 16] {
-        [a, b, c, d, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        std::net::Ipv4Addr::new(a, b, c, d)
+            .to_ipv6_mapped()
+            .octets()
     }
 
     /// Bind a real TCP listener, spawn axum serving it, return the bound address.

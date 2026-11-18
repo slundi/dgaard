@@ -43,6 +43,7 @@ use std::collections::VecDeque;
 
 use crate::tui::util::DomainColor;
 use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
+use dgaard_monitor_core::util::format_client_ip;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -113,24 +114,6 @@ impl ActionKind {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Format a 16-byte client IP for display.
-///
-/// * IPv4-mapped IPv6 (`::ffff:a.b.c.d`) → `"a.b.c.d"`
-/// * IPv4 in first 4 bytes, rest zero    → `"a.b.c.d"`
-/// * Anything else                        → compact IPv6 hex groups
-pub fn format_ip(ip: [u8; 16]) -> String {
-    if ip[..10] == [0u8; 10] && ip[10] == 0xff && ip[11] == 0xff {
-        return format!("{}.{}.{}.{}", ip[12], ip[13], ip[14], ip[15]);
-    }
-    if ip[4..] == [0u8; 12] {
-        return format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
-    }
-    ip.chunks(2)
-        .map(|c| format!("{:04x}", u16::from_be_bytes([c[0], c[1]])))
-        .collect::<Vec<_>>()
-        .join(":")
-}
 
 /// Format a Unix timestamp (seconds) as `HH:MM:SS`.
 pub fn format_timestamp(ts: u64) -> String {
@@ -255,7 +238,7 @@ impl QueryRow {
             } else {
                 domain.to_string()
             },
-            client_ip: format_ip(event.client_ip),
+            client_ip: format_client_ip(&event.client_ip),
             flags: flags_label(&event.action),
             action_kind: ActionKind::from_action(&event.action),
             reasons,
@@ -397,35 +380,11 @@ mod tests {
         }
     }
 
+    /// IPv4 client as dgaard sends it: IPv4-mapped IPv6.
     fn ipv4(a: u8, b: u8, c: u8, d: u8) -> [u8; 16] {
-        [a, b, c, d, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-    }
-
-    fn ipv4_mapped(a: u8, b: u8, c: u8, d: u8) -> [u8; 16] {
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, a, b, c, d]
-    }
-
-    // --- format_ip ---
-
-    #[test]
-    fn test_format_ip_ipv4() {
-        assert_eq!(format_ip(ipv4(192, 168, 1, 5)), "192.168.1.5");
-    }
-
-    #[test]
-    fn test_format_ip_ipv4_mapped() {
-        assert_eq!(format_ip(ipv4_mapped(10, 0, 0, 1)), "10.0.0.1");
-    }
-
-    #[test]
-    fn test_format_ip_full_ipv6() {
-        let ip = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
-        assert_eq!(format_ip(ip), "2001:0db8:0000:0000:0000:0000:0000:0001");
-    }
-
-    #[test]
-    fn test_format_ip_loopback_ipv4() {
-        assert_eq!(format_ip(ipv4(127, 0, 0, 1)), "127.0.0.1");
+        std::net::Ipv4Addr::new(a, b, c, d)
+            .to_ipv6_mapped()
+            .octets()
     }
 
     // --- format_timestamp ---

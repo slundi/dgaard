@@ -2,7 +2,6 @@ mod rdns;
 mod routes;
 pub mod state;
 
-use std::net::IpAddr;
 use std::sync::Arc;
 
 use axum::{
@@ -20,7 +19,7 @@ use constant_time_eq::constant_time_eq;
 
 use crate::config::{ServerConfig, WebConfig};
 use dgaard_monitor_core::state::AppState;
-use dgaard_monitor_core::util::{event_to_record, flags_of};
+use dgaard_monitor_core::util::{client_ip_addr, event_to_record, flags_of};
 pub use state::{ClientStats, WebState};
 
 // ── Static asset embedding ─────────────────────────────────────────────────
@@ -164,16 +163,6 @@ fn build_router(web: Arc<WebState>, token: String) -> Router {
 
 // ── Ingestor task ──────────────────────────────────────────────────────────
 
-fn bytes_to_ip(bytes: &[u8; 16]) -> IpAddr {
-    if bytes[4..].iter().all(|&b| b == 0) {
-        IpAddr::V4(std::net::Ipv4Addr::new(
-            bytes[0], bytes[1], bytes[2], bytes[3],
-        ))
-    } else {
-        IpAddr::V6(std::net::Ipv6Addr::from(*bytes))
-    }
-}
-
 async fn run_ingestor(app: Arc<AppState>, web: Arc<WebState>) {
     let mut rx = app.subscribe();
     loop {
@@ -183,7 +172,7 @@ async fn run_ingestor(app: Arc<AppState>, web: Arc<WebState>) {
                 let record = event_to_record(&event, &domain_map);
                 drop(domain_map);
 
-                let ip = bytes_to_ip(&event.client_ip);
+                let ip = client_ip_addr(&event.client_ip);
                 let is_blocked = flags_of(&event.action).is_some();
                 let ts = event.timestamp;
                 let is_new_ip = !web.client_stats.contains_key(&ip);
@@ -269,6 +258,7 @@ mod tests {
     use super::*;
     use axum::{body::Body, http::Request};
     use http_body_util::BodyExt;
+    use std::net::IpAddr;
     use std::time::Duration;
     use tower::ServiceExt;
 
@@ -284,6 +274,42 @@ mod tests {
     async fn body_string(body: Body) -> String {
         let bytes = body.collect().await.unwrap().to_bytes();
         String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    // ── Ingestor ───────────────────────────────────────────────────────────
+
+    /// dgaard sends IPv4 clients as `::ffff:a.b.c.d`; the client table (and
+    /// the PTR lookup keyed on it) must see a plain IPv4 address.
+    #[tokio::test]
+    async fn ingestor_keys_ipv4_mapped_clients_as_ipv4() {
+        use dgaard_monitor_core::protocol::{StatAction, StatEvent};
+
+        let app = Arc::new(AppState::new(Duration::from_secs(3600)));
+        let web = Arc::new(WebState::new(Arc::clone(&app), 100));
+        let ingestor = tokio::spawn(run_ingestor(Arc::clone(&app), Arc::clone(&web)));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        app.record_event(StatEvent {
+            timestamp: 1,
+            domain_hash: 1,
+            client_ip: std::net::Ipv4Addr::new(10, 0, 0, 1)
+                .to_ipv6_mapped()
+                .octets(),
+            action: StatAction::Allowed,
+        })
+        .await;
+
+        let expected: IpAddr = "10.0.0.1".parse().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !web.client_stats.contains_key(&expected) {
+            let keys: Vec<IpAddr> = web.client_stats.iter().map(|e| *e.key()).collect();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "client not keyed as {expected}: {keys:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        ingestor.abort();
     }
 
     // ── Static assets ──────────────────────────────────────────────────────
@@ -771,31 +797,5 @@ mod tests {
         assert!(arr[0].get("suspicious").is_some());
         assert_eq!(arr[0]["total"], 1);
         assert_eq!(arr[0]["blocked"], 1);
-    }
-
-    // ── IP helpers ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn bytes_to_ip_ipv4() {
-        let bytes = [192, 168, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        assert_eq!(
-            bytes_to_ip(&bytes),
-            IpAddr::V4("192.168.1.1".parse().unwrap())
-        );
-    }
-
-    #[test]
-    fn bytes_to_ip_zero_is_ipv4() {
-        let bytes = [0u8; 16];
-        assert!(bytes_to_ip(&bytes).is_ipv4());
-    }
-
-    #[test]
-    fn bytes_to_ip_ipv6_when_upper_bytes_nonzero() {
-        let mut bytes = [0u8; 16];
-        bytes[0] = 0x20;
-        bytes[1] = 0x01;
-        bytes[15] = 1;
-        assert!(bytes_to_ip(&bytes).is_ipv6());
     }
 }

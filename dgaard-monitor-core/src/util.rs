@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 
 use serde::{Deserialize, Serialize};
 
@@ -7,26 +7,26 @@ use crate::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
 
 // ── IP helpers ─────────────────────────────────────────────────────────────────
 
-/// Convert internal 16-byte IP to a display string.
+/// Decode dgaard's 16-byte client address.
 ///
-/// The proxy stores IPv4 addresses in the first 4 bytes with the remaining 12
-/// bytes zeroed, so we detect that pattern and format as dotted-decimal.
-pub fn ip_to_string(ip: &[u8; 16]) -> String {
-    if ip[4..].iter().all(|&b| b == 0) {
-        format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
-    } else {
-        std::net::Ipv6Addr::from(*ip).to_string()
-    }
+/// dgaard sends IPv4 clients as IPv4-mapped IPv6 (`::ffff:a.b.c.d`), which
+/// becomes `IpAddr::V4`; anything else stays `IpAddr::V6`.
+pub fn client_ip_addr(ip: &[u8; 16]) -> IpAddr {
+    Ipv6Addr::from(*ip).to_canonical()
 }
 
-/// Parse a user-supplied IP string into the internal 16-byte format.
-pub fn parse_filter_ip(s: &str) -> Option<[u8; 16]> {
+/// Render dgaard's 16-byte client address for every output (JSON, SQLite,
+/// forwarding, TUI, NATS): `a.b.c.d` for IPv4, compressed IPv6 otherwise.
+pub fn format_client_ip(ip: &[u8; 16]) -> String {
+    client_ip_addr(ip).to_string()
+}
+
+/// Parse an IP string into dgaard's 16-byte layout (inverse of
+/// [`format_client_ip`]): IPv4 becomes IPv4-mapped IPv6.
+pub fn parse_client_ip(s: &str) -> Option<[u8; 16]> {
     let addr: IpAddr = s.parse().ok()?;
     Some(match addr {
-        IpAddr::V4(v4) => {
-            let [a, b, c, d] = v4.octets();
-            [a, b, c, d, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-        }
+        IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
         IpAddr::V6(v6) => v6.octets(),
     })
 }
@@ -152,7 +152,7 @@ pub fn event_to_record(event: &StatEvent, domain_map: &HashMap<u64, String>) -> 
         timestamp: event.timestamp,
         domain: resolved,
         domain_hash: format!("{:016x}", event.domain_hash),
-        client_ip: ip_to_string(&event.client_ip),
+        client_ip: format_client_ip(&event.client_ip),
         action: action_name(&event.action).to_string(),
         flags: reason.map(|r| r.bits()),
         flags_labels: reason.map_or_else(Vec::new, reason_labels),
@@ -166,37 +166,61 @@ mod tests {
     use super::*;
     use crate::protocol::StatAction;
 
+    /// IPv4 client as dgaard sends it: IPv4-mapped IPv6.
     fn ipv4(a: u8, b: u8, c: u8, d: u8) -> [u8; 16] {
-        [a, b, c, d, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        std::net::Ipv4Addr::new(a, b, c, d)
+            .to_ipv6_mapped()
+            .octets()
     }
 
-    // ── ip_to_string ─────────────────────────────────────────────────────────
+    // ── format_client_ip ─────────────────────────────────────────────────────
 
     #[test]
-    fn ipv4_displayed_as_dotted_decimal() {
-        let ip = ipv4(192, 168, 1, 10);
-        assert_eq!(ip_to_string(&ip), "192.168.1.10");
+    fn ipv4_mapped_displayed_as_dotted_decimal() {
+        assert_eq!(format_client_ip(&ipv4(192, 168, 1, 10)), "192.168.1.10");
     }
 
     #[test]
-    fn non_ipv4_displayed_as_ipv6() {
+    fn non_ipv4_displayed_as_compressed_ipv6() {
         let ip: [u8; 16] = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
-        let s = ip_to_string(&ip);
-        assert!(s.parse::<std::net::Ipv6Addr>().is_ok(), "got: {s}");
+        assert_eq!(format_client_ip(&ip), "2001:db8::1");
     }
 
-    // ── parse_filter_ip ───────────────────────────────────────────────────────
+    #[test]
+    fn client_ip_addr_decodes_mapped_as_v4() {
+        assert_eq!(
+            client_ip_addr(&ipv4(10, 0, 0, 1)),
+            "10.0.0.1".parse::<IpAddr>().unwrap()
+        );
+        let v6: Ipv6Addr = "2001:db8::1".parse().unwrap();
+        assert_eq!(client_ip_addr(&v6.octets()), IpAddr::V6(v6));
+    }
 
     #[test]
-    fn parse_ipv4_roundtrip() {
-        let parsed = parse_filter_ip("10.0.0.1").unwrap();
-        assert_eq!(parsed, ipv4(10, 0, 0, 1));
+    fn ipv6_loopback_and_unspecified_are_not_ipv4() {
+        assert_eq!(format_client_ip(&Ipv6Addr::LOCALHOST.octets()), "::1");
+        assert_eq!(format_client_ip(&[0; 16]), "::");
+    }
+
+    // ── parse_client_ip ──────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_ipv4_gives_mapped_layout() {
+        assert_eq!(parse_client_ip("10.0.0.1").unwrap(), ipv4(10, 0, 0, 1));
+    }
+
+    #[test]
+    fn parse_and_format_round_trip() {
+        for text in ["10.0.0.1", "192.168.1.254", "2001:db8::1", "fe80::1"] {
+            let bytes = parse_client_ip(text).unwrap();
+            assert_eq!(format_client_ip(&bytes), text);
+        }
     }
 
     #[test]
     fn parse_invalid_ip_returns_none() {
-        assert!(parse_filter_ip("not-an-ip").is_none());
-        assert!(parse_filter_ip("999.0.0.1").is_none());
+        assert!(parse_client_ip("not-an-ip").is_none());
+        assert!(parse_client_ip("999.0.0.1").is_none());
     }
 
     // ── reason_labels ─────────────────────────────────────────────────────────

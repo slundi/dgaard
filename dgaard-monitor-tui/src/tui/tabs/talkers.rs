@@ -29,8 +29,9 @@
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
-use crate::tui::tabs::queries::{format_ip, format_timestamp};
+use crate::tui::tabs::queries::format_timestamp;
 use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
+use dgaard_monitor_core::util::{client_ip_addr, format_client_ip};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -125,14 +126,14 @@ impl TalkerFilter {
         match self {
             TalkerFilter::None => true,
             TalkerFilter::ByText(text) => {
-                if format_ip(entry.client_ip).starts_with(text.as_str()) {
+                if format_client_ip(&entry.client_ip).starts_with(text.as_str()) {
                     return true;
                 }
                 cached_hostname(entry.client_ip)
                     .map(|h| h.contains(text.as_str()))
                     .unwrap_or(false)
             }
-            TalkerFilter::ByClient(client) => format_ip(entry.client_ip) == client.as_str(),
+            TalkerFilter::ByClient(client) => format_client_ip(&entry.client_ip) == client.as_str(),
             TalkerFilter::ByHostname(hostname) => cached_hostname(entry.client_ip)
                 .map(|h| h == *hostname)
                 .unwrap_or(false),
@@ -272,7 +273,7 @@ impl TalkerRow {
     pub fn from_entry(entry: &TalkerEntry, hostname: Option<&str>) -> Self {
         let display_name = match hostname {
             Some(h) if !h.is_empty() => h.to_string(),
-            _ => format_ip(entry.client_ip),
+            _ => format_client_ip(&entry.client_ip),
         };
         let top_flag = entry
             .top_flag_idx()
@@ -330,23 +331,13 @@ pub fn store_hostname(ip: [u8; 16], hostname: String) {
 /// records are only served by the local nameserver.
 pub async fn resolve_and_cache(ip: [u8; 16]) {
     use hickory_resolver::TokioResolver;
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     // Skip if already cached.
     if cached_hostname(ip).is_some() {
         return;
     }
 
-    // Convert the 16-byte representation to a `std::net::IpAddr`.
-    let addr: IpAddr = if ip[..10] == [0u8; 10] && ip[10] == 0xff && ip[11] == 0xff {
-        // IPv4-mapped IPv6: ::ffff:a.b.c.d
-        IpAddr::V4(Ipv4Addr::new(ip[12], ip[13], ip[14], ip[15]))
-    } else if ip[4..] == [0u8; 12] {
-        // IPv4 stored in first four bytes
-        IpAddr::V4(Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]))
-    } else {
-        IpAddr::V6(Ipv6Addr::from(ip))
-    };
+    let addr = client_ip_addr(&ip);
 
     // Build the resolver; prefer system config so local PTR records resolve.
     let Ok(resolver) = TokioResolver::builder_tokio().map(|b| b.build()) else {
@@ -511,8 +502,11 @@ mod tests {
         }
     }
 
+    /// IPv4 client as dgaard sends it: IPv4-mapped IPv6.
     fn ipv4(a: u8, b: u8, c: u8, d: u8) -> [u8; 16] {
-        [a, b, c, d, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        std::net::Ipv4Addr::new(a, b, c, d)
+            .to_ipv6_mapped()
+            .octets()
     }
 
     fn blocked(bits: u32) -> StatAction {

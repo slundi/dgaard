@@ -84,7 +84,7 @@ pub async fn run(
                         }
 
                         let domain = resolve_domain(&state, event.domain_hash).await;
-                        let ip = format_ip(&event.client_ip);
+                        let ip = format_client_ip(&event.client_ip);
 
                         let body = format_event(
                             &format,
@@ -425,7 +425,7 @@ async fn open_output(path: &str) -> std::io::Result<Output> {
 
 // --- Helpers ---
 
-use crate::util::action_name;
+use crate::util::{action_name, format_client_ip};
 
 /// Returns `true` if `action` should be forwarded given the filter set.
 /// An empty filter means forward all.
@@ -459,16 +459,6 @@ fn apply_template(
         .replace("{domain}", domain)
 }
 
-/// Format a 16-byte IP array.
-/// If the last 12 bytes are zero, treat the first 4 as IPv4.
-fn format_ip(ip: &[u8; 16]) -> String {
-    if ip[4..].iter().all(|&b| b == 0) {
-        format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
-    } else {
-        std::net::Ipv6Addr::from(*ip).to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -479,7 +469,10 @@ mod tests {
         StatEvent {
             timestamp: 1_700_000_000,
             domain_hash: 0xdeadbeef,
-            client_ip: [192, 168, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            // IPv4-mapped, as dgaard sends it.
+            client_ip: std::net::Ipv4Addr::new(192, 168, 1, 1)
+                .to_ipv6_mapped()
+                .octets(),
             action,
         }
     }
@@ -506,26 +499,6 @@ mod tests {
             action_name(&StatAction::HighlySuspicious(StatBlockReason::empty())),
             "HighlySuspicious"
         );
-    }
-
-    // --- format_ip ---
-
-    #[test]
-    fn test_format_ip_v4() {
-        assert_eq!(
-            format_ip(&[192, 168, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-            "192.168.1.1"
-        );
-        assert_eq!(
-            format_ip(&[10, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-            "10.0.0.1"
-        );
-    }
-
-    #[test]
-    fn test_format_ip_v6() {
-        let ip = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
-        assert_eq!(format_ip(&ip), "2001:db8::1");
     }
 
     // --- passes_filter ---
@@ -667,7 +640,7 @@ mod tests {
         let mut output = open_output(&path_str).await.unwrap();
         let event = make_event(StatAction::Allowed);
         let domain = resolve_domain(&state, event.domain_hash).await;
-        let ip = format_ip(&event.client_ip);
+        let ip = format_client_ip(&event.client_ip);
         let line = apply_template(
             "{timestamp} {client_ip} {action} {domain}",
             event.timestamp,

@@ -31,10 +31,11 @@
 use std::collections::{HashSet, VecDeque};
 use std::time::Instant;
 
-use crate::tui::tabs::queries::{flags_label, format_ip, format_timestamp};
+use crate::tui::tabs::queries::{flags_label, format_timestamp};
 use crate::tui::tabs::talkers::flag_name;
 use crate::tui::util::DomainColor;
 use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
+use dgaard_monitor_core::util::format_client_ip;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -182,7 +183,7 @@ impl DashboardState {
         }
         self.live_feed.push_back(LiveFeedEntry {
             timestamp: format_timestamp(event.timestamp),
-            client: format_ip(event.client_ip),
+            client: format_client_ip(&event.client_ip),
             domain: display_domain,
             action: flags_label(&event.action),
             color,
@@ -430,8 +431,11 @@ mod tests {
         }
     }
 
+    /// IPv4 client as dgaard sends it: IPv4-mapped IPv6.
     fn ipv4(a: u8, b: u8, c: u8, d: u8) -> [u8; 16] {
-        [a, b, c, d, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        std::net::Ipv4Addr::new(a, b, c, d)
+            .to_ipv6_mapped()
+            .octets()
     }
 
     fn blocked(bits: u32) -> StatAction {

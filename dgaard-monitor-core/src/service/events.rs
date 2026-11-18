@@ -8,7 +8,7 @@ use super::ServiceError;
 use crate::db::Database;
 use crate::protocol::StatBlockReason;
 use crate::state::AppState;
-use crate::util::{EventRecord, action_name, event_to_record, flags_of, parse_filter_ip};
+use crate::util::{EventRecord, action_name, event_to_record, flags_of, parse_client_ip};
 
 const DEFAULT_WINDOW_LIMIT: u64 = 200;
 const DEFAULT_HISTORY_LIMIT: usize = 100;
@@ -64,7 +64,7 @@ pub async fn query_window(
     let ip_filter: Option<[u8; 16]> = filter
         .client_ip
         .as_deref()
-        .map(|s| parse_filter_ip(s).ok_or_else(|| ServiceError::InvalidIp(s.to_string())))
+        .map(|s| parse_client_ip(s).ok_or_else(|| ServiceError::InvalidIp(s.to_string())))
         .transpose()?;
 
     // from_bits_retain (not _truncate) so user-defined bits 16–31 are
@@ -210,8 +210,11 @@ mod tests {
         AppState::new(Duration::from_secs(3600))
     }
 
+    /// IPv4 client as dgaard sends it: IPv4-mapped IPv6.
     fn ipv4(a: u8, b: u8, c: u8, d: u8) -> [u8; 16] {
-        [a, b, c, d, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        std::net::Ipv4Addr::new(a, b, c, d)
+            .to_ipv6_mapped()
+            .octets()
     }
 
     fn allowed_event(ts: u64, hash: u64, ip: [u8; 16]) -> StatEvent {
