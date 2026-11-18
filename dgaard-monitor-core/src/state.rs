@@ -8,6 +8,10 @@ use crate::protocol::{StatAction, StatError, StatEvent};
 #[allow(dead_code)]
 pub const DEFAULT_WINDOW: Duration = Duration::from_secs(3600); // 1 hour
 
+/// Cap on mappings accepted from federation peers. Past it, new remote
+/// mappings are refused so an untrusted publisher cannot exhaust memory.
+pub const MAX_REMOTE_DOMAINS: usize = 100_000;
+
 pub struct RollingStats {
     pub total: u64,
     pub blocked: u64,
@@ -96,11 +100,15 @@ impl RollingStats {
 }
 
 pub struct AppState {
-    /// Host-index entries merged with `live_domains`. Readers use this one.
+    /// Host-index entries merged with `live_domains` and `remote_domains`.
+    /// Readers use this one.
     pub domain_map: Arc<RwLock<HashMap<u64, String>>>,
-    /// Mappings learned at runtime (socket `DomainMapping`, NATS). Kept apart
-    /// so an index reload can replace `domain_map` without dropping them.
+    /// Mappings from the local dgaard socket (`DomainMapping`). Kept apart so
+    /// an index reload can replace `domain_map` without dropping them.
     live_domains: RwLock<HashMap<u64, String>>,
+    /// Mappings from federation peers (NATS). Untrusted: they never replace
+    /// an index or live entry, and the table is capped at `MAX_REMOTE_DOMAINS`.
+    remote_domains: RwLock<HashMap<u64, String>>,
     pub stats: Arc<RwLock<RollingStats>>,
     /// Every event, whatever its origin (Unix socket or federation).
     events_tx: broadcast::Sender<StatEvent>,
@@ -116,6 +124,7 @@ impl AppState {
         Self {
             domain_map: Arc::new(RwLock::new(HashMap::new())),
             live_domains: RwLock::new(HashMap::new()),
+            remote_domains: RwLock::new(HashMap::new()),
             stats: Arc::new(RwLock::new(RollingStats::new(window))),
             events_tx,
             local_tx,
@@ -152,22 +161,42 @@ impl AppState {
         self.local_tx.subscribe()
     }
 
-    /// Record a mapping learned at runtime. It survives index reloads.
+    /// Record a mapping from the local daemon. It survives index reloads.
     pub async fn insert_domain(&self, hash: u64, domain: String) {
-        // Lock order: live_domains, then domain_map (same as replace_index).
+        // Lock order everywhere: live_domains, remote_domains, domain_map.
         let mut live = self.live_domains.write().await;
         live.insert(hash, domain.clone());
         self.domain_map.write().await.insert(hash, domain);
     }
 
+    /// Record a mapping received from a federation peer. It is ignored when
+    /// the hash is already mapped (a peer must not rename a known domain) or
+    /// when the remote table is full. Returns whether it was stored.
+    pub async fn insert_remote_domain(&self, hash: u64, domain: String) -> bool {
+        let mut remote = self.remote_domains.write().await;
+        let mut map = self.domain_map.write().await;
+        if map.contains_key(&hash) || remote.len() >= MAX_REMOTE_DOMAINS {
+            return false;
+        }
+        remote.insert(hash, domain.clone());
+        map.insert(hash, domain);
+        true
+    }
+
     /// Replace the host-index part of `domain_map` under a single write lock.
-    /// Entries missing from `index` disappear; runtime mappings are kept.
+    /// Entries missing from `index` disappear; runtime mappings are kept,
+    /// with local ones taking precedence over remote ones.
     pub async fn replace_index(&self, mut index: HashMap<u64, String>) {
-        // Hold the read lock across the swap so a concurrent `insert_domain`
-        // cannot land in the old map and be lost.
+        // Hold the read locks across the swap so a concurrent insert cannot
+        // land in the old map and be lost.
         let live = self.live_domains.read().await;
+        let remote = self.remote_domains.read().await;
+        for (hash, domain) in remote.iter() {
+            index.entry(*hash).or_insert_with(|| domain.clone());
+        }
         index.extend(live.iter().map(|(hash, domain)| (*hash, domain.clone())));
         let old = std::mem::replace(&mut *self.domain_map.write().await, index);
+        drop(remote);
         drop(live);
         // Free a potentially multi-million-entry map outside the locks.
         drop(old);
@@ -366,6 +395,85 @@ mod tests {
             state.domain_map.read().await.get(&1).map(String::as_str),
             Some("from-socket.test")
         );
+    }
+
+    #[tokio::test]
+    async fn test_remote_domain_never_renames_a_known_hash() {
+        let state = AppState::new(DEFAULT_WINDOW);
+        state
+            .replace_index(HashMap::from([(1, "evil.test".to_string())]))
+            .await;
+        state.insert_domain(2, "live.test".to_string()).await;
+
+        assert!(
+            !state
+                .insert_remote_domain(1, "google.com".to_string())
+                .await
+        );
+        assert!(
+            !state
+                .insert_remote_domain(2, "google.com".to_string())
+                .await
+        );
+        assert!(state.insert_remote_domain(3, "peer.test".to_string()).await);
+        // First remote mapping wins over later ones too.
+        assert!(
+            !state
+                .insert_remote_domain(3, "other.test".to_string())
+                .await
+        );
+
+        let map = state.domain_map.read().await;
+        assert_eq!(map.get(&1).map(String::as_str), Some("evil.test"));
+        assert_eq!(map.get(&2).map(String::as_str), Some("live.test"));
+        assert_eq!(map.get(&3).map(String::as_str), Some("peer.test"));
+    }
+
+    #[tokio::test]
+    async fn test_local_mapping_overrides_remote_one() {
+        let state = AppState::new(DEFAULT_WINDOW);
+        assert!(state.insert_remote_domain(1, "peer.test".to_string()).await);
+        state.insert_domain(1, "local.test".to_string()).await;
+        assert_eq!(
+            state.domain_map.read().await.get(&1).map(String::as_str),
+            Some("local.test")
+        );
+
+        // An index entry also wins over a remote one across reloads, and
+        // remote-only entries survive the reload.
+        assert!(
+            state
+                .insert_remote_domain(2, "peer2.test".to_string())
+                .await
+        );
+        state
+            .replace_index(HashMap::from([(1, "index.test".to_string())]))
+            .await;
+        let map = state.domain_map.read().await;
+        assert_eq!(map.get(&1).map(String::as_str), Some("local.test"));
+        assert_eq!(map.get(&2).map(String::as_str), Some("peer2.test"));
+    }
+
+    #[tokio::test]
+    async fn test_remote_domains_are_capped() {
+        let state = AppState::new(DEFAULT_WINDOW);
+        for hash in 0..MAX_REMOTE_DOMAINS as u64 {
+            assert!(
+                state
+                    .insert_remote_domain(hash, "peer.test".to_string())
+                    .await
+            );
+        }
+        let extra = MAX_REMOTE_DOMAINS as u64;
+        assert!(
+            !state
+                .insert_remote_domain(extra, "more.test".to_string())
+                .await
+        );
+        assert!(state.domain_map.read().await.get(&extra).is_none());
+        // Local mappings are not subject to the cap.
+        state.insert_domain(extra, "local.test".to_string()).await;
+        assert!(state.domain_map.read().await.contains_key(&extra));
     }
 
     #[tokio::test]

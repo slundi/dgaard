@@ -25,7 +25,14 @@
 //! re-published. The connection also sets `no_echo` so that, when both
 //! subjects are equal (shared bus), the server does not hand a monitor
 //! back its own events, which would otherwise be counted twice.
+//!
+//! Inbound events are untrusted. Each one is fully validated (syntax of the
+//! domain, client address, timestamp within `MAX_CLOCK_SKEW_SECS` of the
+//! local clock) before it touches the state; a peer's domain only fills a
+//! hash this monitor does not know yet, in a capped table; and rejections
+//! are logged at most once per `REJECT_LOG_INTERVAL`.
 use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -35,6 +42,18 @@ use crate::config::NatsConfig;
 use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
 use dgaard_monitor_core::state::AppState;
 use dgaard_monitor_core::util::{format_client_ip, parse_client_ip};
+
+/// Longest domain name accepted from a peer (RFC 1035, presentation form).
+const MAX_DOMAIN_LEN: usize = 253;
+/// Longest DNS label.
+const MAX_LABEL_LEN: usize = 63;
+/// Inbound events further than this from the local clock are dropped, so a
+/// peer cannot make the persistence writer flush on every event.
+const MAX_CLOCK_SKEW_SECS: u64 = 3600;
+/// Minimum interval between two log lines about dropped inbound events.
+const REJECT_LOG_INTERVAL: Duration = Duration::from_secs(10);
+/// How much of an invalid `client_ip` is echoed back in logs.
+const MAX_ECHOED_LEN: usize = 64;
 
 /// On-wire representation of a monitor event.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -103,8 +122,9 @@ impl WireEvent {
         Ok(StatEvent {
             timestamp: self.ts,
             domain_hash: self.domain_hash,
-            client_ip: parse_client_ip(&self.client_ip)
-                .ok_or_else(|| ParseError::InvalidClientIp(self.client_ip.clone()))?,
+            client_ip: parse_client_ip(&self.client_ip).ok_or_else(|| {
+                ParseError::InvalidClientIp(self.client_ip.chars().take(MAX_ECHOED_LEN).collect())
+            })?,
             action,
         })
     }
@@ -112,18 +132,103 @@ impl WireEvent {
 
 #[derive(Debug)]
 pub enum ParseError {
+    Malformed(serde_json::Error),
     InvalidClientIp(String),
+    /// Not echoed: the content is untrusted and may hold escape sequences.
+    InvalidDomain,
+    TimestampOutOfRange(u64),
 }
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ParseError::Malformed(e) => write!(f, "malformed event: {e}"),
+            // Debug formatting escapes control characters.
             ParseError::InvalidClientIp(s) => write!(f, "invalid client_ip {s:?}"),
+            ParseError::InvalidDomain => write!(f, "invalid domain"),
+            ParseError::TimestampOutOfRange(ts) => {
+                write!(
+                    f,
+                    "timestamp {ts} more than {MAX_CLOCK_SKEW_SECS}s from local clock"
+                )
+            }
         }
     }
 }
 
 impl std::error::Error for ParseError {}
+
+/// Normalize a peer-supplied domain: LDH labels (underscore allowed, for
+/// names like `_dmarc`), 1–63 bytes each, 253 bytes overall, lowercased.
+/// Anything else — control characters, spaces, escape sequences — is refused.
+fn normalize_domain(domain: &str) -> Option<String> {
+    let domain = domain.strip_suffix('.').unwrap_or(domain);
+    if domain.is_empty() || domain.len() > MAX_DOMAIN_LEN {
+        return None;
+    }
+    let valid = domain.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= MAX_LABEL_LEN
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    });
+    valid.then(|| domain.to_ascii_lowercase())
+}
+
+/// Check every field of an inbound event before anything touches the state.
+/// Returns the event and its normalized domain, if one was sent.
+fn validate_inbound(
+    mut wire: WireEvent,
+    now: u64,
+) -> Result<(StatEvent, Option<String>), ParseError> {
+    if wire.ts.abs_diff(now) > MAX_CLOCK_SKEW_SECS {
+        return Err(ParseError::TimestampOutOfRange(wire.ts));
+    }
+    let domain = match wire.domain.take() {
+        Some(domain) => Some(normalize_domain(&domain).ok_or(ParseError::InvalidDomain)?),
+        None => None,
+    };
+    Ok((wire.into_event()?, domain))
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
+/// Rate-limited reporting of dropped inbound events: the first one is logged
+/// at once, later ones are counted and summarized at most once per
+/// `REJECT_LOG_INTERVAL`, so a hostile publisher cannot flood stderr.
+#[derive(Debug, Default)]
+struct RejectLog {
+    total: u64,
+    pending: u64,
+    last_report: Option<Instant>,
+}
+
+impl RejectLog {
+    /// Count one rejection; returns the line to log, if one is due.
+    fn record(&mut self, reason: &ParseError, now: Instant) -> Option<String> {
+        self.total += 1;
+        self.pending += 1;
+        if self
+            .last_report
+            .is_some_and(|at| now.duration_since(at) < REJECT_LOG_INTERVAL)
+        {
+            return None;
+        }
+        let line = format!(
+            "nats: dropped {} inbound event(s) ({} total), latest: {reason}",
+            self.pending, self.total
+        );
+        self.pending = 0;
+        self.last_report = Some(now);
+        Some(line)
+    }
+}
 
 /// Spawn the NATS publisher + subscriber tasks. Returns immediately if
 /// `enabled` is false or both subjects are blank.
@@ -202,13 +307,20 @@ async fn run_subscriber(
     state: Arc<AppState>,
     shutdown: &mut watch::Receiver<bool>,
 ) {
+    let mut rejects = RejectLog::default();
     loop {
         tokio::select! {
             biased;
             _ = shutdown.changed() => return,
             msg = sub.next() => {
                 match msg {
-                    Some(msg) => handle_inbound(&msg.payload, &state).await,
+                    Some(msg) => {
+                        if let Err(e) = handle_inbound(&msg.payload, &state, unix_now()).await
+                            && let Some(line) = rejects.record(&e, Instant::now())
+                        {
+                            eprintln!("{line}");
+                        }
+                    }
                     None => return, // subscription closed
                 }
             }
@@ -216,21 +328,17 @@ async fn run_subscriber(
     }
 }
 
-async fn handle_inbound(payload: &[u8], state: &AppState) {
-    let wire: WireEvent = match serde_json::from_slice(payload) {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("nats: drop malformed event: {e}");
-            return;
-        }
-    };
-    if let Some(d) = wire.domain.clone() {
-        state.insert_domain(wire.domain_hash, d).await;
+/// Validate one inbound payload, then record it. Nothing reaches the state
+/// unless the whole event is valid. Peers are untrusted: their mapping only
+/// fills a hash this monitor does not know yet (see `insert_remote_domain`).
+async fn handle_inbound(payload: &[u8], state: &AppState, now: u64) -> Result<(), ParseError> {
+    let wire: WireEvent = serde_json::from_slice(payload).map_err(ParseError::Malformed)?;
+    let (event, domain) = validate_inbound(wire, now)?;
+    if let Some(domain) = domain {
+        state.insert_remote_domain(event.domain_hash, domain).await;
     }
-    match wire.into_event() {
-        Ok(ev) => state.record_remote_event(ev).await,
-        Err(e) => eprintln!("nats: drop event with bad fields: {e}"),
-    }
+    state.record_remote_event(event).await;
+    Ok(())
 }
 
 async fn run_publisher(
@@ -356,20 +464,29 @@ mod tests {
         assert!(matches!(err, ParseError::InvalidClientIp(_)));
     }
 
-    #[tokio::test]
-    async fn handle_inbound_records_event_and_domain() {
-        use std::time::Duration;
-        let state = Arc::new(AppState::new(Duration::from_secs(3600)));
-        let wire = WireEvent {
-            ts: 0,
+    const NOW: u64 = 1_700_000_000;
+
+    fn make_state() -> Arc<AppState> {
+        Arc::new(AppState::new(Duration::from_secs(3600)))
+    }
+
+    fn inbound(domain: Option<&str>, client_ip: &str, ts: u64) -> Vec<u8> {
+        serde_json::to_vec(&WireEvent {
+            ts,
             domain_hash: 0x42,
-            domain: Some("mapped.test".into()),
-            client_ip: "10.0.0.1".into(),
+            domain: domain.map(str::to_string),
+            client_ip: client_ip.to_string(),
             action: WireAction::Blocked,
             reasons: StatBlockReason::ABP_RULE.bits(),
-        };
-        let payload = serde_json::to_vec(&wire).unwrap();
-        handle_inbound(&payload, &state).await;
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn handle_inbound_records_event_and_domain() {
+        let state = make_state();
+        let payload = inbound(Some("Mapped.Test"), "10.0.0.1", NOW);
+        handle_inbound(&payload, &state, NOW).await.unwrap();
 
         assert_eq!(
             state.domain_map.read().await.get(&0x42).map(String::as_str),
@@ -381,11 +498,159 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_inbound_silently_drops_garbage() {
-        use std::time::Duration;
-        let state = Arc::new(AppState::new(Duration::from_secs(3600)));
-        handle_inbound(b"not json", &state).await;
+    async fn handle_inbound_drops_garbage() {
+        let state = make_state();
+        let err = handle_inbound(b"not json", &state, NOW).await.unwrap_err();
+        assert!(matches!(err, ParseError::Malformed(_)));
         assert_eq!(state.stats.read().await.total, 0);
+    }
+
+    /// Regression: the mapping used to be stored before the event was
+    /// validated, so a rejected event could still rename a hash.
+    #[tokio::test]
+    async fn rejected_event_leaves_domain_map_untouched() {
+        let state = make_state();
+        let payload = inbound(Some("google.com"), "not-an-ip", NOW);
+        let err = handle_inbound(&payload, &state, NOW).await.unwrap_err();
+        assert!(matches!(err, ParseError::InvalidClientIp(_)));
+        assert!(state.domain_map.read().await.is_empty());
+        assert_eq!(state.stats.read().await.total, 0);
+    }
+
+    #[tokio::test]
+    async fn peer_cannot_rename_a_known_hash() {
+        let state = make_state();
+        state.insert_domain(0x42, "evil.test".to_string()).await;
+        let payload = inbound(Some("google.com"), "10.0.0.1", NOW);
+        handle_inbound(&payload, &state, NOW).await.unwrap();
+
+        assert_eq!(
+            state.domain_map.read().await.get(&0x42).map(String::as_str),
+            Some("evil.test")
+        );
+        // The event itself is still counted.
+        assert_eq!(state.stats.read().await.total, 1);
+    }
+
+    #[tokio::test]
+    async fn control_characters_in_domain_are_rejected() {
+        let state = make_state();
+        for domain in ["evil.test\nFAKE LOG LINE", "\u{1b}[31mred.test", "a b.test"] {
+            let payload = inbound(Some(domain), "10.0.0.1", NOW);
+            let err = handle_inbound(&payload, &state, NOW).await.unwrap_err();
+            assert!(matches!(err, ParseError::InvalidDomain), "{domain:?}");
+        }
+        assert!(state.domain_map.read().await.is_empty());
+        assert_eq!(state.stats.read().await.total, 0);
+    }
+
+    #[tokio::test]
+    async fn timestamps_far_from_local_clock_are_rejected() {
+        let state = make_state();
+        for ts in [
+            0,
+            NOW - MAX_CLOCK_SKEW_SECS - 1,
+            NOW + MAX_CLOCK_SKEW_SECS + 1,
+        ] {
+            let payload = inbound(None, "10.0.0.1", ts);
+            let err = handle_inbound(&payload, &state, NOW).await.unwrap_err();
+            assert!(matches!(err, ParseError::TimestampOutOfRange(_)), "{ts}");
+        }
+        for ts in [NOW - MAX_CLOCK_SKEW_SECS, NOW + MAX_CLOCK_SKEW_SECS] {
+            let payload = inbound(None, "10.0.0.1", ts);
+            handle_inbound(&payload, &state, NOW).await.unwrap();
+        }
+        assert_eq!(state.stats.read().await.total, 2);
+    }
+
+    #[test]
+    fn invalid_client_ip_is_truncated_in_errors() {
+        let huge = "x".repeat(10_000);
+        let wire: WireEvent = serde_json::from_slice(&inbound(None, &huge, NOW)).unwrap();
+        match wire.into_event() {
+            Err(ParseError::InvalidClientIp(echoed)) => assert_eq!(echoed.len(), MAX_ECHOED_LEN),
+            other => panic!("expected InvalidClientIp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn normalize_domain_accepts_dns_names() {
+        assert_eq!(
+            normalize_domain("Example.COM").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            normalize_domain("example.com.").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            normalize_domain("_dmarc.xn--bcher-kva.example").as_deref(),
+            Some("_dmarc.xn--bcher-kva.example")
+        );
+        let longest = format!(
+            "{}.{}.{}.{}",
+            "a".repeat(63),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(61)
+        );
+        assert_eq!(longest.len(), MAX_DOMAIN_LEN);
+        assert!(normalize_domain(&longest).is_some());
+    }
+
+    #[test]
+    fn normalize_domain_rejects_everything_else() {
+        let too_long = format!(
+            "{}.{}.{}.{}",
+            "a".repeat(63),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(62)
+        );
+        let long_label = format!("{}.test", "a".repeat(MAX_LABEL_LEN + 1));
+        for domain in [
+            "",
+            ".",
+            "a..b",
+            ".lead.test",
+            too_long.as_str(),
+            long_label.as_str(),
+            "evil.test\n",
+            "\u{1b}[31m.test",
+            "a b.test",
+            "slash/.test",
+            "\u{e9}t\u{e9}.test",
+        ] {
+            assert!(normalize_domain(domain).is_none(), "{domain:?}");
+        }
+    }
+
+    #[test]
+    fn reject_log_is_rate_limited() {
+        let mut log = RejectLog::default();
+        let start = Instant::now();
+        let reason = ParseError::InvalidDomain;
+
+        let first = log
+            .record(&reason, start)
+            .expect("first rejection is logged");
+        assert!(
+            first.contains("dropped 1 inbound event(s) (1 total)"),
+            "{first}"
+        );
+        for offset in 1..100 {
+            assert!(
+                log.record(&reason, start + Duration::from_millis(offset))
+                    .is_none()
+            );
+        }
+        let summary = log
+            .record(&reason, start + REJECT_LOG_INTERVAL)
+            .expect("summary after the interval");
+        assert!(
+            summary.contains("dropped 100 inbound event(s) (101 total)"),
+            "{summary}"
+        );
     }
 }
 
@@ -478,7 +743,11 @@ mod integration {
         // Spin until the subscriber registers with the mock. `push` returns
         // false until the SUB frame has been processed server-side.
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        let probe = b"{\"ts\":0,\"domain_hash\":0,\"client_ip\":\"0.0.0.0\",\"action\":\"Allowed\",\"reasons\":0}";
+        let probe = format!(
+            "{{\"ts\":{},\"domain_hash\":0,\"client_ip\":\"0.0.0.0\",\"action\":\"Allowed\",\"reasons\":0}}",
+            unix_now()
+        );
+        let probe = probe.as_bytes();
         while !mock.push("dgaard.events", probe).await {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -488,7 +757,7 @@ mod integration {
         }
 
         let wire = WireEvent {
-            ts: 5,
+            ts: unix_now(),
             domain_hash: 0xdeadbeef,
             domain: Some("remote.test".to_string()),
             client_ip: "192.0.2.10".to_string(),
@@ -545,7 +814,7 @@ mod integration {
         });
 
         let wire = WireEvent {
-            ts: 1,
+            ts: unix_now(),
             domain_hash: 7,
             domain: Some("remote.test".to_string()),
             client_ip: "10.0.0.9".to_string(),

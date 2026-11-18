@@ -1,4 +1,6 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -387,14 +389,38 @@ fn format_event(
     domain: &str,
 ) -> String {
     match format {
-        ForwardFormat::Template => {
-            apply_template(template, timestamp, ip, action_name(action), domain)
-        }
+        // Line-oriented text formats: a raw newline or escape sequence in the
+        // domain would forge log lines or drive the reader's terminal.
+        ForwardFormat::Template => apply_template(
+            template,
+            timestamp,
+            ip,
+            action_name(action),
+            &escape_control(domain),
+        ),
+        ForwardFormat::Syslog => format_syslog(timestamp, ip, action, &escape_control(domain)),
+        ForwardFormat::Cef => format_cef(timestamp, ip, action, &escape_control(domain)),
+        // JSON formats escape control characters themselves.
         ForwardFormat::Json => format_json(timestamp, ip, action_name(action), domain),
-        ForwardFormat::Syslog => format_syslog(timestamp, ip, action, domain),
-        ForwardFormat::Cef => format_cef(timestamp, ip, action, domain),
         ForwardFormat::Elasticsearch => format_elasticsearch(timestamp, ip, action, domain),
     }
+}
+
+/// Replace control characters (newline, ESC, DEL, C1…) with a visible `\xNN`
+/// escape. Clean input, the common case, is returned without allocating.
+fn escape_control(text: &str) -> Cow<'_, str> {
+    if !text.chars().any(char::is_control) {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len() + 8);
+    for ch in text.chars() {
+        if ch.is_control() {
+            let _ = write!(out, "\\x{:02x}", u32::from(ch));
+        } else {
+            out.push(ch);
+        }
+    }
+    Cow::Owned(out)
 }
 
 // --- Output sink ---
@@ -499,6 +525,49 @@ mod tests {
             action_name(&StatAction::HighlySuspicious(StatBlockReason::empty())),
             "HighlySuspicious"
         );
+    }
+
+    // --- escape_control ---
+
+    #[test]
+    fn test_escape_control_leaves_clean_text_borrowed() {
+        assert!(matches!(
+            escape_control("example.com"),
+            Cow::Borrowed("example.com")
+        ));
+    }
+
+    #[test]
+    fn test_escape_control_neutralizes_newlines_and_escapes() {
+        assert_eq!(
+            escape_control("evil.test\nFAKE\r\t\u{1b}[31m\u{7f}\u{85}"),
+            "evil.test\\x0aFAKE\\x0d\\x09\\x1b[31m\\x7f\\x85"
+        );
+    }
+
+    /// Regression: a newline in the domain forged a second log line in the
+    /// template, syslog and CEF outputs.
+    #[test]
+    fn test_text_formats_stay_on_one_line() {
+        let domain = "evil.test\n1700000000 10.6.6.6 Allowed forged.test\u{1b}[2J";
+        for format in [
+            ForwardFormat::Template,
+            ForwardFormat::Syslog,
+            ForwardFormat::Cef,
+        ] {
+            let line = format_event(
+                &format,
+                "{timestamp} {client_ip} {action} {domain}",
+                1_700_000_000,
+                "10.0.0.1",
+                &StatAction::Blocked(StatBlockReason::ABP_RULE),
+                domain,
+            );
+            assert!(
+                !line.chars().any(char::is_control),
+                "{format:?} output carries control characters: {line:?}"
+            );
+        }
     }
 
     // --- passes_filter ---
