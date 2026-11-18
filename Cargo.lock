@@ -888,7 +888,7 @@ dependencies = [
 
 [[package]]
 name = "dgaard"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "aho-corasick",
  "arc-swap",
@@ -925,7 +925,7 @@ dependencies = [
 
 [[package]]
 name = "dgaard-daemon"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "arc-swap",
  "argh",
@@ -1053,7 +1053,7 @@ dependencies = [
 
 [[package]]
 name = "dgaard-rest"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "arc-swap",
  "argh",
@@ -2109,7 +2109,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "list-stats"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argh",
  "dgaard-engine",
