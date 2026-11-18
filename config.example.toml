@@ -254,7 +254,10 @@ forbidden_qtypes = ["NULL"]
 # Servers used when [server] mode = "forwarder".
 # (Renamed from [upstream] in the Phase 1 recursive-DNS work — the parser
 # now rejects [upstream] outright with a pointer back here.)
-# Using DNS-over-HTTPS (DoH) or standard UDP
+# Plain DNS: UDP, retried over TCP when an answer is truncated. There is no
+# DNS-over-TLS / HTTPS / QUIC client, so queried names cross the network
+# unencrypted. To encrypt them, run a local stub such as stubby (DoT) or
+# dnscrypt-proxy (DoH) and list it here instead, e.g. ["127.0.0.1:5453"].
 servers = ["1.1.1.1:53", "9.9.9.9:53"]
 
 # -----------------------------------------------------------------------------

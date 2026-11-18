@@ -112,7 +112,7 @@ flowchart LR
     end
 
     subgraph up["Upstream DNS"]
-        DOT["DNS-over-TLS<br/>1.1.1.1 · 8.8.8.8<br/><i>forwarder mode</i>"]
+        FWD["Forwarder servers<br/>1.1.1.1 · 9.9.9.9<br/><i>forwarder mode — plain DNS,<br/>UDP + TCP on truncation</i>"]
         ROOT["IANA Root Servers<br/>a–m.root-servers.net<br/><i>recursive mode — iterative walk</i>"]
     end
 
@@ -120,9 +120,25 @@ flowchart LR
     C2 -->|":53 direct"| DG
     C3 -->|":53 via dnsmasq"| GW
     GW  -->|":5353"| DG
-    DG  -->|"[server] mode = forwarder"| DOT
+    DG  -->|"[server] mode = forwarder"| FWD
     DG  -->|"[server] mode = recursive"| ROOT
 ```
+
+> **Privacy: upstream traffic is not encrypted.** In both modes dgaard
+> speaks classic DNS (RFC 1035): UDP, retried over TCP when an answer is
+> truncated. It has no DNS-over-TLS, DNS-over-HTTPS or DNS-over-QUIC client,
+> so the ISP and every network hop between dgaard and the upstream see each
+> queried name. In forwarder mode the chosen resolver sees them all as
+> well; in recursive mode they are spread over the root, TLD and
+> authoritative servers (QNAME minimisation, RFC 9156, limits what each
+> one learns).
+>
+> To encrypt the forwarder leg today, run a local encrypting stub
+> (e.g. `stubby` for DoT or `dnscrypt-proxy` for DoH/DNSCrypt, both packaged
+> for OpenWrt) and point `[forwarder] servers` at it, for example
+> `["127.0.0.1:5453"]`. Encrypted upstreams are only planned for the Android
+> app so far ([Roadmap-Android.md](Roadmap-Android.md)), reusing the DoT /
+> DoH / DoQ client of `digaard`.
 
 ---
 
