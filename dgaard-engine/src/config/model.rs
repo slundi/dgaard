@@ -141,7 +141,8 @@ pub struct ServerConfig {
 
     /// Optional `ip:port` on which to expose a Prometheus `/metrics` scrape
     /// endpoint.  Leave unset (the default) to disable the endpoint entirely.
-    /// Example: `"127.0.0.1:9153"`.
+    /// Example: `"127.0.0.1:9153"`. The endpoint is unauthenticated: keep it
+    /// on a loopback address unless a firewall restricts access.
     pub metrics_listen: Option<String>,
 }
 

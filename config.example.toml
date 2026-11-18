@@ -35,11 +35,20 @@ block_idn = true
 # /metrics in OpenMetrics text format (Content-Type: text/plain; version=0.0.4).
 # Leave commented out (the default) to disable the endpoint entirely.
 #
-# Exposed counters:
-#   dgaard_queries_total   — every DNS query received
-#   dgaard_queries_blocked — queries blocked by any filter
-#   dgaard_queries_allowed — queries explicitly allowed (whitelist / hot-cache)
-#   dgaard_queries_proxied — queries forwarded to the upstream resolver
+# Exposed counters (all of type counter):
+#   dgaard_queries_total            — every DNS query received
+#   dgaard_queries_blocked          — queries blocked by any filter
+#   dgaard_queries_allowed          — queries explicitly allowed (whitelist)
+#   dgaard_queries_proxied          — queries forwarded to the upstream resolver
+#   dgaard_queries_cached           — queries served from the response cache
+#   dgaard_queries_upstream_errors  — forwards that failed (SERVFAIL)
+#   dgaard_stats_events_dropped     — telemetry events lost to backpressure
+#   dgaard_recursive_*_total        — recursive resolver: queries, referrals,
+#                                     glue_hit/glue_miss, tcp_fallback,
+#                                     cycle_detected, depth_cap_hit,
+#                                     query_cap_hit, bailiwick_reject,
+#                                     dnssec_chain_built/dnssec_chain_broken
+#   dgaard_prefetch_*_total         — prefetch: dropped, completed, failed
 #
 # Typical Prometheus scrape config:
 #   - job_name: dgaard
@@ -47,7 +56,12 @@ block_idn = true
 #       - targets: ['127.0.0.1:9153']
 #
 # Port 9153 is the conventional port for DNS-related exporters (used by CoreDNS).
-# Use 0.0.0.0:9153 to allow scraping from a remote Prometheus server on the LAN.
+#
+# SECURITY: the endpoint has no authentication and its counters reveal
+# traffic volume and filtering policy. Keep it on 127.0.0.1 (dgaard logs a
+# warning otherwise). To scrape from another host, bind a LAN address only
+# behind a firewall rule that admits the Prometheus server alone, or put an
+# authenticating reverse proxy in front.
 # metrics_listen = "127.0.0.1:9153"
 
 # The default order optimized for OpenWrt

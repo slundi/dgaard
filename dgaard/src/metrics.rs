@@ -1,4 +1,5 @@
-use std::sync::atomic::Ordering;
+use std::fmt::Write;
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use tokio::{
@@ -9,6 +10,7 @@ use tokio::{
 };
 
 use crate::STATS_COUNTERS;
+use crate::stats::StatsCounters;
 
 /// Cap on how long a single metrics request line read may take. A slow-read
 /// scanner that holds the connection open indefinitely is otherwise free
@@ -29,6 +31,9 @@ pub async fn serve(addr: String, mut shutdown_rx: watch::Receiver<bool>) {
         }
     };
     println!("Metrics endpoint listening on http://{addr}/metrics");
+    if let Some(warning) = listener.local_addr().ok().and_then(exposure_warning) {
+        eprintln!("{warning}");
+    }
 
     loop {
         tokio::select! {
@@ -105,40 +110,151 @@ fn build_response(request: &[u8]) -> String {
     }
 }
 
-fn render() -> String {
-    let total = STATS_COUNTERS.queries_total.load(Ordering::Relaxed);
-    let blocked = STATS_COUNTERS.queries_blocked.load(Ordering::Relaxed);
-    let allowed = STATS_COUNTERS.queries_allowed.load(Ordering::Relaxed);
-    let proxied = STATS_COUNTERS.queries_proxied.load(Ordering::Relaxed);
-    let cached = STATS_COUNTERS.queries_cached.load(Ordering::Relaxed);
-    let upstream_errors = STATS_COUNTERS
-        .queries_upstream_errors
-        .load(Ordering::Relaxed);
-    let dropped = STATS_COUNTERS.stats_events_dropped.load(Ordering::Relaxed);
+/// Startup warning for an endpoint reachable from other hosts: it has no
+/// authentication, and its counters reveal traffic volume and policy.
+fn exposure_warning(local: SocketAddr) -> Option<String> {
+    (!local.ip().is_loopback()).then(|| {
+        format!(
+            "warn: metrics endpoint on {local} is unauthenticated and reachable from other \
+             hosts; bind it to 127.0.0.1 unless a firewall restricts access"
+        )
+    })
+}
 
-    format!(
-        "# HELP dgaard_queries_total Total DNS queries received\n\
-         # TYPE dgaard_queries_total counter\n\
-         dgaard_queries_total {total}\n\
-         # HELP dgaard_queries_blocked DNS queries blocked by filters\n\
-         # TYPE dgaard_queries_blocked counter\n\
-         dgaard_queries_blocked {blocked}\n\
-         # HELP dgaard_queries_allowed DNS queries allowed through\n\
-         # TYPE dgaard_queries_allowed counter\n\
-         dgaard_queries_allowed {allowed}\n\
-         # HELP dgaard_queries_proxied DNS queries proxied to upstream\n\
-         # TYPE dgaard_queries_proxied counter\n\
-         dgaard_queries_proxied {proxied}\n\
-         # HELP dgaard_queries_cached DNS queries served from the response cache\n\
-         # TYPE dgaard_queries_cached counter\n\
-         dgaard_queries_cached {cached}\n\
-         # HELP dgaard_queries_upstream_errors Queries that failed to forward to any upstream (returned SERVFAIL)\n\
-         # TYPE dgaard_queries_upstream_errors counter\n\
-         dgaard_queries_upstream_errors {upstream_errors}\n\
-         # HELP dgaard_stats_events_dropped Telemetry events dropped due to stats channel backpressure\n\
-         # TYPE dgaard_stats_events_dropped counter\n\
-         dgaard_stats_events_dropped {dropped}\n"
-    )
+/// One exported counter: metric name, help text, and how to read it.
+struct Counter {
+    name: &'static str,
+    help: &'static str,
+    read: fn(&StatsCounters) -> u64,
+}
+
+/// Every counter in [`StatsCounters`]. The first seven keep their original
+/// names for existing dashboards; later ones follow the Prometheus
+/// `_total` convention, as named in `docs/Roadmap-recursive-DNS.md`.
+const COUNTERS: &[Counter] = &[
+    Counter {
+        name: "dgaard_queries_total",
+        help: "Total DNS queries received",
+        read: StatsCounters::get_total,
+    },
+    Counter {
+        name: "dgaard_queries_blocked",
+        help: "DNS queries blocked by filters",
+        read: StatsCounters::get_blocked,
+    },
+    Counter {
+        name: "dgaard_queries_allowed",
+        help: "DNS queries allowed through",
+        read: StatsCounters::get_allowed,
+    },
+    Counter {
+        name: "dgaard_queries_proxied",
+        help: "DNS queries proxied to upstream",
+        read: StatsCounters::get_proxied,
+    },
+    Counter {
+        name: "dgaard_queries_cached",
+        help: "DNS queries served from the response cache",
+        read: StatsCounters::get_cached,
+    },
+    Counter {
+        name: "dgaard_queries_upstream_errors",
+        help: "Queries that failed to forward to any upstream (returned SERVFAIL)",
+        read: StatsCounters::get_upstream_errors,
+    },
+    Counter {
+        name: "dgaard_stats_events_dropped",
+        help: "Telemetry events dropped due to stats channel backpressure",
+        read: StatsCounters::get_stats_dropped,
+    },
+    Counter {
+        name: "dgaard_recursive_queries_total",
+        help: "Queries sent to authoritative servers by the recursive resolver",
+        read: StatsCounters::get_recursive_queries,
+    },
+    Counter {
+        name: "dgaard_recursive_referrals_total",
+        help: "Referrals followed by the recursive resolver",
+        read: StatsCounters::get_recursive_referrals,
+    },
+    Counter {
+        name: "dgaard_recursive_glue_hit_total",
+        help: "Referrals whose name server addresses came from in-bailiwick glue",
+        read: StatsCounters::get_recursive_glue_hit,
+    },
+    Counter {
+        name: "dgaard_recursive_glue_miss_total",
+        help: "Referrals that needed a separate lookup of name server addresses",
+        read: StatsCounters::get_recursive_glue_miss,
+    },
+    Counter {
+        name: "dgaard_recursive_tcp_fallback_total",
+        help: "Truncated UDP answers retried over TCP",
+        read: StatsCounters::get_recursive_tcp_fallback,
+    },
+    Counter {
+        name: "dgaard_recursive_cycle_detected_total",
+        help: "Resolutions stopped on a delegation or CNAME cycle",
+        read: StatsCounters::get_recursive_cycle_detected,
+    },
+    Counter {
+        name: "dgaard_recursive_depth_cap_hit_total",
+        help: "Resolutions stopped at the maximum delegation depth",
+        read: StatsCounters::get_recursive_depth_cap_hit,
+    },
+    Counter {
+        name: "dgaard_recursive_query_cap_hit_total",
+        help: "Resolutions stopped at max_queries_per_resolution",
+        read: StatsCounters::get_recursive_query_cap_hit,
+    },
+    Counter {
+        name: "dgaard_recursive_bailiwick_reject_total",
+        help: "Out-of-bailiwick referrals rejected",
+        read: StatsCounters::get_recursive_bailiwick_reject,
+    },
+    Counter {
+        name: "dgaard_recursive_dnssec_chain_built_total",
+        help: "DNSSEC chains of trust verified up to the root",
+        read: StatsCounters::get_recursive_dnssec_chain_built,
+    },
+    Counter {
+        name: "dgaard_recursive_dnssec_chain_broken_total",
+        help: "DNSSEC chain-of-trust checks that ended Bogus",
+        read: StatsCounters::get_recursive_dnssec_chain_broken,
+    },
+    Counter {
+        name: "dgaard_prefetch_dropped_total",
+        help: "Prefetch requests dropped because the queue was full",
+        read: StatsCounters::get_prefetch_dropped,
+    },
+    Counter {
+        name: "dgaard_prefetch_completed_total",
+        help: "Prefetch refreshes that succeeded",
+        read: StatsCounters::get_prefetch_completed,
+    },
+    Counter {
+        name: "dgaard_prefetch_failed_total",
+        help: "Prefetch refreshes that failed",
+        read: StatsCounters::get_prefetch_failed,
+    },
+];
+
+fn render() -> String {
+    render_counters(&STATS_COUNTERS)
+}
+
+fn render_counters(stats: &StatsCounters) -> String {
+    let mut out = String::with_capacity(COUNTERS.len() * 160);
+    for counter in COUNTERS {
+        let _ = write!(
+            out,
+            "# HELP {name} {help}\n# TYPE {name} counter\n{name} {value}\n",
+            name = counter.name,
+            help = counter.help,
+            value = (counter.read)(stats),
+        );
+    }
+    out
 }
 
 #[cfg(test)]
@@ -181,6 +297,107 @@ mod tests {
         assert!(out.contains("# TYPE dgaard_queries_cached counter"));
         assert!(out.contains("# HELP dgaard_stats_events_dropped"));
         assert!(out.contains("# TYPE dgaard_stats_events_dropped counter"));
+    }
+
+    /// Every `AtomicU64` field of `StatsCounters`.
+    fn every_field(stats: &StatsCounters) -> Vec<&std::sync::atomic::AtomicU64> {
+        vec![
+            &stats.queries_total,
+            &stats.queries_blocked,
+            &stats.queries_allowed,
+            &stats.queries_proxied,
+            &stats.queries_cached,
+            &stats.queries_upstream_errors,
+            &stats.stats_events_dropped,
+            &stats.recursive_queries,
+            &stats.recursive_referrals,
+            &stats.recursive_glue_hit,
+            &stats.recursive_glue_miss,
+            &stats.recursive_tcp_fallback,
+            &stats.recursive_cycle_detected,
+            &stats.recursive_depth_cap_hit,
+            &stats.recursive_query_cap_hit,
+            &stats.recursive_bailiwick_reject,
+            &stats.recursive_dnssec_chain_built,
+            &stats.recursive_dnssec_chain_broken,
+            &stats.prefetch_dropped,
+            &stats.prefetch_completed,
+            &stats.prefetch_failed,
+        ]
+    }
+
+    #[test]
+    fn render_exports_every_stats_counter() {
+        // Review F8: recursive, prefetch and DNSSEC counters were never
+        // exported. A distinct value per field proves each metric reads
+        // its own counter.
+        // StatsCounters holds only AtomicU64 fields: a counter added
+        // without a metric changes its size and fails here.
+        let field_count = std::mem::size_of::<StatsCounters>()
+            / std::mem::size_of::<std::sync::atomic::AtomicU64>();
+        assert_eq!(field_count, COUNTERS.len(), "a counter is not exported");
+
+        let stats = StatsCounters::new();
+        let fields = every_field(&stats);
+        assert_eq!(fields.len(), field_count);
+        for (index, field) in fields.iter().enumerate() {
+            field.store(1000 + index as u64, Ordering::Relaxed);
+        }
+
+        let out = render_counters(&stats);
+        let mut seen: Vec<u64> = out
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .map(|line| line.rsplit(' ').next().unwrap().parse().unwrap())
+            .collect();
+        seen.sort_unstable();
+        let expected: Vec<u64> = (0..COUNTERS.len() as u64).map(|i| 1000 + i).collect();
+        assert_eq!(seen, expected);
+    }
+
+    #[test]
+    fn render_exports_recursive_prefetch_and_dnssec_counters() {
+        let stats = StatsCounters::new();
+        stats.increment_recursive_queries();
+        stats.increment_recursive_dnssec_chain_broken();
+        stats.increment_prefetch_completed();
+        stats.increment_prefetch_completed();
+        let out = render_counters(&stats);
+        assert!(out.contains("\ndgaard_recursive_queries_total 1\n"));
+        assert!(out.contains("\ndgaard_recursive_dnssec_chain_broken_total 1\n"));
+        assert!(out.contains("\ndgaard_prefetch_completed_total 2\n"));
+        assert!(out.contains("\ndgaard_prefetch_failed_total 0\n"));
+    }
+
+    #[test]
+    fn every_metric_is_unique_and_documented() {
+        let mut names: Vec<&str> = COUNTERS.iter().map(|counter| counter.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), COUNTERS.len(), "duplicate metric name");
+
+        let out = render_counters(&StatsCounters::new());
+        for counter in COUNTERS {
+            assert!(counter.name.starts_with("dgaard_"), "{}", counter.name);
+            assert!(!counter.help.is_empty(), "{}", counter.name);
+            assert!(out.contains(&format!("# HELP {} ", counter.name)));
+            assert!(out.contains(&format!("# TYPE {} counter\n", counter.name)));
+        }
+    }
+
+    #[test]
+    fn exposure_warning_only_for_non_loopback_addresses() {
+        for local in ["127.0.0.1:9153", "[::1]:9153"] {
+            assert!(
+                exposure_warning(local.parse().unwrap()).is_none(),
+                "{local}"
+            );
+        }
+        for local in ["0.0.0.0:9153", "[::]:9153", "192.168.1.1:9153"] {
+            let warning = exposure_warning(local.parse().unwrap()).expect(local);
+            assert!(warning.contains("unauthenticated"), "{warning}");
+            assert!(warning.contains("127.0.0.1"), "{warning}");
+        }
     }
 
     #[test]
