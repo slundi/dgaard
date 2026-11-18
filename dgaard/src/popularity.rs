@@ -384,12 +384,15 @@ impl From<io::Error> for SnapshotError {
     }
 }
 
-/// Atomically write a snapshot to `path`.
+/// Atomically write a snapshot to `path` with
+/// [`dgaard_engine::utils::write_atomic`].
 ///
-/// Writes go to `<path>.tmp` first, are flushed to disk, then renamed
-/// over the destination. A power loss between `write_all` and `rename`
-/// leaves the previous snapshot intact — the next boot still has a
-/// valid (slightly stale) copy.
+/// Writes go to a fresh, uniquely named file next to `path` (created with
+/// `O_EXCL`, so a symlink planted there is never followed — the daemon
+/// often runs as root), are synced to disk, then renamed over the
+/// destination. A power loss before the rename leaves the previous
+/// snapshot intact — the next boot still has a valid (slightly stale)
+/// copy.
 ///
 /// The on-disk layout is:
 ///
@@ -403,24 +406,13 @@ pub fn write_snapshot(path: &Path, pairs: &[(u64, u8)]) -> Result<(), SnapshotEr
     let body: AlignedVec = rkyv::to_bytes::<RkyvError>(&pairs.to_vec())
         .map_err(|e| SnapshotError::Corrupt(e.to_string()))?;
 
-    // Best-effort: ensure the parent directory exists so the very first
-    // save on a fresh install doesn't fail because `/var/dgaard/` is
-    // missing. `create_dir_all` is a no-op when the dir already exists.
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let tmp = path.with_extension("tmp");
-    {
-        let mut f = std::fs::File::create(&tmp)?;
+    // write_atomic also creates a missing parent directory, so the very
+    // first save on a fresh install works without `/var/dgaard/`.
+    dgaard_engine::utils::write_atomic(path, |f| {
         f.write_all(&SNAPSHOT_MAGIC)?;
         f.write_all(&[SNAPSHOT_VERSION, 0, 0, 0])?;
-        f.write_all(body.as_slice())?;
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)?;
+        f.write_all(body.as_slice())
+    })?;
     Ok(())
 }
 
@@ -889,6 +881,38 @@ mod tests {
         assert_eq!(m1, m2, "snapshot rewritten despite stable state");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_snapshot_does_not_follow_a_planted_temp_symlink() {
+        // Review F15: the writer used `File::create("<path>.tmp")`, so a
+        // symlink planted under that predictable name made a root daemon
+        // truncate whatever it pointed to.
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"precious").unwrap();
+        let path = dir.path().join("top-domains.bin");
+        std::os::unix::fs::symlink(&victim, path.with_extension("tmp")).unwrap();
+
+        let pairs = vec![(1u64, 9u8)];
+        write_snapshot(&path, &pairs).unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
+        assert_eq!(read_snapshot(&path).unwrap(), pairs);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_snapshot_replaces_a_symlink_at_the_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"precious").unwrap();
+        let path = dir.path().join("top-domains.bin");
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+
+        write_snapshot(&path, &[(2u64, 3u8)]).unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
+        assert!(!std::fs::symlink_metadata(&path).unwrap().is_symlink());
     }
 
     #[test]

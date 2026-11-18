@@ -455,29 +455,53 @@ pub fn load_list_content(
     }
 }
 
-/// Write browser-only ABP rules to a plain text file.
+/// Write browser-only ABP rules to a plain text file, replaced atomically
+/// and without following a symlink planted at `path` (see
+/// [`crate::utils::write_atomic`]).
 pub fn write_browser_rules(path: &str, rules: &[String]) -> std::io::Result<()> {
     use std::io::Write as _;
     if path.is_empty() || rules.is_empty() {
         return Ok(());
     }
-    if let Some(parent) = std::path::Path::new(path).parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-    let file = std::fs::File::create(path)?;
-    let mut w = std::io::BufWriter::new(file);
-    for rule in rules {
-        writeln!(w, "{}", rule)?;
-    }
-    w.flush()?;
-    Ok(())
+    crate::utils::write_atomic(std::path::Path::new(path), |w| {
+        for rule in rules {
+            writeln!(w, "{}", rule)?;
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- write_browser_rules (review F15) ----
+
+    #[test]
+    fn write_browser_rules_writes_one_rule_per_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("browser.txt");
+        let rules = vec!["example.com##.ad".to_string(), "##.banner".to_string()];
+        write_browser_rules(path.to_str().unwrap(), &rules).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "example.com##.ad\n##.banner\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_browser_rules_does_not_follow_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"precious").unwrap();
+        let path = dir.path().join("browser.txt");
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+
+        write_browser_rules(path.to_str().unwrap(), &["##.ad".to_string()]).unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "##.ad\n");
+    }
 
     // ---- canonical hierarchical list (review M12) ----
 

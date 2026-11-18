@@ -19,12 +19,9 @@
 //!   [*] Domain  : UTF-8 bytes (Len bytes)
 //! ```
 
-use std::{
-    collections::HashMap,
-    fs::File,
-    io::{BufWriter, Write},
-    path::Path,
-};
+use std::{collections::HashMap, io::Write, path::Path};
+
+use crate::utils::write_atomic;
 
 const MAGIC: &[u8; 4] = b"DGHI";
 const VERSION: u8 = 1;
@@ -32,6 +29,8 @@ const VERSION: u8 = 1;
 /// Write the host index to `path`.
 ///
 /// Records are sorted by hash to allow binary-search lookups by consumers.
+/// The file is replaced atomically ([`write_atomic`]): a reader never sees
+/// a half-written index, and a symlink planted at `path` is not followed.
 /// The parent directory is created if it does not exist.
 ///
 /// Returns immediately (no-op) when `path` is empty.
@@ -40,32 +39,24 @@ pub fn write_host_index(path: &str, index: &HashMap<u64, String>) -> std::io::Re
         return Ok(());
     }
 
-    if let Some(parent) = Path::new(path).parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
+    write_atomic(Path::new(path), |w| {
+        // Header
+        w.write_all(MAGIC)?;
+        w.write_all(&[VERSION])?;
+        w.write_all(&(index.len() as u32).to_le_bytes())?;
 
-    let file = File::create(path)?;
-    let mut w = BufWriter::new(file);
+        // Collect and sort by hash for deterministic, binary-searchable output
+        let mut entries: Vec<(u64, &str)> = index.iter().map(|(&h, s)| (h, s.as_str())).collect();
+        entries.sort_unstable_by_key(|&(h, _)| h);
 
-    // Header
-    w.write_all(MAGIC)?;
-    w.write_all(&[VERSION])?;
-    w.write_all(&(index.len() as u32).to_le_bytes())?;
-
-    // Collect and sort by hash for deterministic, binary-searchable output
-    let mut entries: Vec<(u64, &str)> = index.iter().map(|(&h, s)| (h, s.as_str())).collect();
-    entries.sort_unstable_by_key(|&(h, _)| h);
-
-    for (hash, domain) in &entries {
-        let len = domain.len().min(u16::MAX as usize) as u16;
-        w.write_all(&hash.to_le_bytes())?;
-        w.write_all(&len.to_le_bytes())?;
-        w.write_all(&domain.as_bytes()[..len as usize])?;
-    }
-
-    w.flush()?;
+        for (hash, domain) in &entries {
+            let len = domain.len().min(u16::MAX as usize) as u16;
+            w.write_all(&hash.to_le_bytes())?;
+            w.write_all(&len.to_le_bytes())?;
+            w.write_all(&domain.as_bytes()[..len as usize])?;
+        }
+        Ok(())
+    })?;
     println!("Host index written to {} ({} entries)", path, index.len());
     Ok(())
 }
@@ -77,6 +68,7 @@ pub fn write_host_index(path: &str, index: &HashMap<u64, String>) -> std::io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
     use std::io::{BufReader, Read};
 
     fn read_index(path: &str) -> Vec<(u64, String)> {
@@ -114,6 +106,41 @@ mod tests {
 
     fn temp_path(suffix: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("dgaard_idx_{}_{}.bin", suffix, std::process::id()))
+    }
+
+    #[test]
+    fn rewrite_replaces_the_whole_index_and_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hosts.bin");
+        let path_str = path.to_str().unwrap();
+        let first: HashMap<u64, String> =
+            [(1, "a.com".to_string()), (2, "b.com".to_string())].into();
+        write_host_index(path_str, &first).unwrap();
+        let second: HashMap<u64, String> = [(3, "c.com".to_string())].into();
+        write_host_index(path_str, &second).unwrap();
+
+        assert_eq!(read_index(path_str), [(3, "c.com".to_string())]);
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(names.len(), 1, "only hosts.bin remains");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_does_not_follow_a_symlink_at_the_destination() {
+        // Review F15: `File::create(path)` wrote through a planted symlink.
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"precious").unwrap();
+        let path = dir.path().join("hosts.bin");
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+
+        let index: HashMap<u64, String> = [(7, "x.com".to_string())].into();
+        write_host_index(path.to_str().unwrap(), &index).unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
+        assert_eq!(
+            read_index(path.to_str().unwrap()),
+            [(7, "x.com".to_string())]
+        );
     }
 
     #[test]
