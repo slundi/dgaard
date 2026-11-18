@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
-use dgaard_monitor_core::{db, error, forwarding, io, protocol, state::AppState};
+use dgaard_monitor_core::{db, error, forwarding, io, state::AppState};
 
 #[cfg(feature = "nats")]
 use dgaard_monitor_nats as nats;
@@ -124,57 +124,12 @@ async fn main() {
         }));
     }
 
-    // Unix socket listener (always running).
-    {
-        let s = Arc::clone(&state);
-        let mut rx = shutdown_rx.clone();
-        handles.push(tokio::spawn(async move {
-            loop {
-                // Check for shutdown before attempting a (re)connection.
-                if *rx.borrow() {
-                    break;
-                }
-                match io::socket::connect(&socket_path).await {
-                    Ok(mut stream) => {
-                        eprintln!("Connected to {socket_path}");
-                        loop {
-                            tokio::select! {
-                                biased;
-                                // Shutdown takes priority over reading.
-                                _ = rx.changed() => return,
-                                result = io::socket::read_frame(&mut stream) => {
-                                    match result {
-                                        Ok(protocol::StatMessage::DomainMapping { hash, domain }) => {
-                                            s.insert_domain(hash, domain).await;
-                                        }
-                                        Ok(protocol::StatMessage::Event(event)) => {
-                                            s.record_event(event).await;
-                                        }
-                                        // Newer dgaard, unknown message: skip
-                                        // it rather than reconnect in a loop.
-                                        Err(error::MonitorError::UnsupportedFrame(_)) => continue,
-                                        Err(e) => {
-                                            eprintln!("Stream error: {e}");
-                                            break; // reconnect
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Connection failed: {e}, retrying in 5s...");
-                        // Sleep interruptibly so shutdown is not delayed.
-                        tokio::select! {
-                            biased;
-                            _ = rx.changed() => break,
-                            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
-                        }
-                    }
-                }
-            }
-        }));
-    }
+    // Unix socket reader (always running), reconnects with backoff.
+    handles.push(tokio::spawn(io::socket::run_reader(
+        socket_path,
+        Arc::clone(&state),
+        shutdown_rx.clone(),
+    )));
 
     // TUI or headless JSON logger — mutually exclusive.
     if opts.headless {

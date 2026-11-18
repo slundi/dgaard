@@ -1,8 +1,14 @@
+use std::hash::BuildHasher;
+use std::sync::Arc;
+use std::time::Duration;
+
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixStream;
+use tokio::sync::watch;
 
 use crate::error::MonitorError;
 use crate::protocol::StatMessage;
+use crate::state::AppState;
 
 /// Hard cap on the size of an inbound frame's `type + payload` segment.
 ///
@@ -47,6 +53,102 @@ pub async fn read_frame(stream: &mut UnixStream) -> Result<StatMessage, MonitorE
             payload_buf.first().copied().unwrap_or(0)
         ))
     })
+}
+
+/// Exponential reconnection backoff with "equal jitter": each delay is drawn
+/// from `[base / 2, base]`, and `base` doubles from `INITIAL` up to `MAX`.
+#[derive(Debug)]
+pub struct Backoff {
+    base: Duration,
+}
+
+impl Backoff {
+    pub const INITIAL: Duration = Duration::from_millis(100);
+    pub const MAX: Duration = Duration::from_secs(30);
+
+    pub fn new() -> Self {
+        Self {
+            base: Self::INITIAL,
+        }
+    }
+
+    /// Delay to wait before the next attempt. Grows the base for the one after.
+    pub fn next_delay(&mut self) -> Duration {
+        let base = self.base;
+        self.base = (self.base * 2).min(Self::MAX);
+        let half = base / 2;
+        half + half.mul_f64(random_unit())
+    }
+
+    /// Back to `INITIAL`, once the connection has proven healthy.
+    pub fn reset(&mut self) {
+        self.base = Self::INITIAL;
+    }
+}
+
+impl Default for Backoff {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Uniform value in `[0, 1)`. `RandomState` is seeded randomly per instance,
+/// which is plenty for jitter and avoids a `rand` dependency.
+fn random_unit() -> f64 {
+    let bits = std::collections::hash_map::RandomState::new().hash_one(0u8);
+    (bits >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// Connect to dgaard's stats socket and feed every frame into `state`,
+/// reconnecting with [`Backoff`] after connect failures and stream errors.
+///
+/// dgaard accepts then closes clients beyond its limit, so a connection that
+/// ends before any valid frame keeps growing the delay; the first valid frame
+/// resets it. Returns when `shutdown` is signalled.
+pub async fn run_reader(path: String, state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) {
+    let mut backoff = Backoff::new();
+    loop {
+        // Check for shutdown before attempting a (re)connection.
+        if *shutdown.borrow() {
+            return;
+        }
+        let failure = match connect(&path).await {
+            Ok(mut stream) => {
+                eprintln!("Connected to {path}");
+                loop {
+                    tokio::select! {
+                        biased;
+                        // Shutdown takes priority over reading.
+                        _ = shutdown.changed() => return,
+                        result = read_frame(&mut stream) => match result {
+                            Ok(StatMessage::DomainMapping { hash, domain }) => {
+                                backoff.reset();
+                                state.insert_domain(hash, domain).await;
+                            }
+                            Ok(StatMessage::Event(event)) => {
+                                backoff.reset();
+                                state.record_event(event).await;
+                            }
+                            // Newer dgaard, unknown message: skip it rather
+                            // than reconnect in a loop.
+                            Err(MonitorError::UnsupportedFrame(_)) => continue,
+                            Err(e) => break format!("Stream error: {e}"),
+                        },
+                    }
+                }
+            }
+            Err(e) => format!("Connection failed: {e}"),
+        };
+
+        let delay = backoff.next_delay();
+        eprintln!("{failure}, retrying in {delay:.1?}");
+        // Sleep interruptibly so shutdown is not delayed.
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => return,
+            _ = tokio::time::sleep(delay) => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -185,5 +287,157 @@ mod tests {
         let mut stream = client;
         let result = read_frame(&mut stream).await;
         assert!(result.is_err());
+    }
+
+    // --- Backoff ---
+
+    #[test]
+    fn backoff_doubles_with_jitter_and_caps() {
+        let mut backoff = Backoff::new();
+        let mut base = Backoff::INITIAL;
+        for _ in 0..20 {
+            let delay = backoff.next_delay();
+            assert!(
+                delay >= base / 2 && delay <= base,
+                "delay {delay:?} outside [{:?}, {base:?}]",
+                base / 2
+            );
+            base = (base * 2).min(Backoff::MAX);
+        }
+        assert_eq!(base, Backoff::MAX);
+    }
+
+    #[test]
+    fn backoff_reset_returns_to_initial() {
+        let mut backoff = Backoff::new();
+        for _ in 0..10 {
+            backoff.next_delay();
+        }
+        backoff.reset();
+        assert!(backoff.next_delay() <= Backoff::INITIAL);
+    }
+
+    #[test]
+    fn random_unit_stays_in_range() {
+        for _ in 0..1000 {
+            let value = random_unit();
+            assert!((0.0..1.0).contains(&value), "{value}");
+        }
+    }
+
+    // --- run_reader ---
+
+    use std::time::Instant;
+
+    fn socket_path(dir: &tempfile::TempDir) -> String {
+        dir.path().join("stats.sock").to_str().unwrap().to_string()
+    }
+
+    fn start_reader(
+        path: &str,
+    ) -> (
+        Arc<AppState>,
+        watch::Sender<bool>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let state = Arc::new(AppState::new(Duration::from_secs(3600)));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = tokio::spawn(run_reader(
+            path.to_string(),
+            Arc::clone(&state),
+            shutdown_rx,
+        ));
+        (state, shutdown_tx, handle)
+    }
+
+    /// Regression: dgaard over `MAX_CLIENTS` accepts then closes, and the
+    /// reader used to reconnect without any pause (~20 000 times per second).
+    #[tokio::test]
+    async fn refused_connections_are_spaced_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = socket_path(&dir);
+        let listener = UnixListener::bind(&path).unwrap();
+        let (_state, shutdown_tx, handle) = start_reader(&path);
+
+        let mut accepted = 0u32;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        while let Ok(Ok((stream, _))) = tokio::time::timeout_at(deadline, listener.accept()).await {
+            drop(stream);
+            accepted += 1;
+        }
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+
+        // Delays are at least 50 + 100 + 200 + 400 ms, so at most 5 attempts
+        // fit in one second; leave headroom for scheduling.
+        assert!(
+            (2..=8).contains(&accepted),
+            "unexpected number of connections in 1s: {accepted}"
+        );
+    }
+
+    #[tokio::test]
+    async fn valid_frame_resets_backoff_and_reaches_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = socket_path(&dir);
+        let listener = UnixListener::bind(&path).unwrap();
+        let (state, shutdown_tx, handle) = start_reader(&path);
+
+        // Four refused connections grow the base delay to 1.6 s.
+        for _ in 0..4 {
+            let (stream, _) = listener.accept().await.unwrap();
+            drop(stream);
+        }
+        // The fifth one delivers frames, then closes.
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mapping = StatMessage::DomainMapping {
+            hash: 7,
+            domain: "one.test".to_string(),
+        };
+        let event = StatMessage::Event(StatEvent {
+            timestamp: 1,
+            domain_hash: 7,
+            client_ip: [0; 16],
+            action: StatAction::Allowed,
+        });
+        stream.write_all(&mapping.serialize()).await.unwrap();
+        stream.write_all(&event.serialize()).await.unwrap();
+        drop(stream);
+        let closed_at = Instant::now();
+
+        let (stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .expect("reader never reconnected")
+            .unwrap();
+        let gap = closed_at.elapsed();
+        drop(stream);
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+
+        // Reset: at most INITIAL (100 ms). Without it: at least 800 ms.
+        assert!(gap < Duration::from_millis(400), "reconnect took {gap:?}");
+        assert_eq!(state.stats.read().await.total, 1);
+        assert_eq!(
+            state.domain_map.read().await.get(&7).map(String::as_str),
+            Some("one.test")
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_interrupts_backoff_sleep() {
+        let dir = tempfile::tempdir().unwrap();
+        // Nothing listens here: every attempt fails and the reader sleeps.
+        let path = socket_path(&dir);
+        let (_state, shutdown_tx, handle) = start_reader(&path);
+
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let _ = shutdown_tx.send(true);
+        // Well under the pending delay (up to 400 ms at this point).
+        tokio::time::timeout(Duration::from_millis(200), handle)
+            .await
+            .expect("run_reader must stop promptly on shutdown")
+            .unwrap();
     }
 }
