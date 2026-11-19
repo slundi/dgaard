@@ -147,7 +147,7 @@ pub fn key_bindings(keymap: &KeyMap) -> Vec<KeyBinding> {
             key: "f".to_string(),
         },
         KeyBinding {
-            action: "Sort newest/oldest",
+            action: "Cycle sort (Talkers)",
             key: "s".to_string(),
         },
     ]
@@ -333,7 +333,7 @@ mod tests {
             .unwrap();
         let sort = bindings
             .iter()
-            .find(|b| b.action == "Sort newest/oldest")
+            .find(|b| b.action == "Cycle sort (Talkers)")
             .unwrap();
         assert_eq!(filter.key, "f");
         assert_eq!(sort.key, "s");

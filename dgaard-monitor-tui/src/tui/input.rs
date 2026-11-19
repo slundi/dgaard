@@ -9,7 +9,7 @@ use crossterm::event::KeyEvent;
 
 use crate::tui::app::TuiApp;
 use crate::tui::keys::Action;
-use crate::tui::tabs::queries::QueriesState;
+use crate::tui::scroll::Scrollable;
 use crate::tui::tabs::{Tab, TabStates};
 
 /// What the main loop does after a key press.
@@ -21,8 +21,9 @@ pub enum Flow {
 
 /// Apply one key press to the TUI state.
 ///
-/// Unbound keys and key releases are ignored.  Scrolling goes to the Queries
-/// tab's own state when it is active, `TuiApp::scroll` otherwise.
+/// Unbound keys and key releases are ignored.  Scrolling goes to the active
+/// tab's own state when it has one (Queries, Talkers), `TuiApp::scroll`
+/// otherwise.  On the Talkers tab, `s` cycles the sort order.
 pub fn handle_key(key: &KeyEvent, app: &mut TuiApp, tabs: &mut TabStates) -> Flow {
     let Some(action) = app.keymap.resolve_event(key) else {
         return Flow::Continue;
@@ -30,25 +31,40 @@ pub fn handle_key(key: &KeyEvent, app: &mut TuiApp, tabs: &mut TabStates) -> Flo
     match action {
         Action::Quit => return Flow::Quit,
         Action::ClearStats => tabs.clear(),
+        Action::Sort if app.active_tab == Tab::Talkers => {
+            tabs.talkers.sort = tabs.talkers.sort.next();
+            return Flow::Continue;
+        }
         _ => {}
     }
-    if app.active_tab == Tab::Queries && scroll_queries(action, &mut tabs.queries) {
+    if let Some(view) = scrollable_tab(app.active_tab, tabs)
+        && apply_scroll(action, view)
+    {
         return Flow::Continue;
     }
     app.apply(action);
     Flow::Continue
 }
 
-/// Apply a scroll action to the Queries tab; `false` for any other action.
-fn scroll_queries(action: Action, queries: &mut QueriesState) -> bool {
-    let page = isize::try_from(queries.page_size()).unwrap_or(isize::MAX);
+/// The state of `tab` when it scrolls on its own.
+fn scrollable_tab(tab: Tab, tabs: &mut TabStates) -> Option<&mut dyn Scrollable> {
+    match tab {
+        Tab::Queries => Some(&mut tabs.queries),
+        Tab::Talkers => Some(&mut tabs.talkers),
+        Tab::Dashboard | Tab::Timelines | Tab::About => None,
+    }
+}
+
+/// Apply a scroll action to `view`; `false` for any other action.
+fn apply_scroll(action: Action, view: &mut dyn Scrollable) -> bool {
+    let page = isize::try_from(view.page_size()).unwrap_or(isize::MAX);
     match action {
-        Action::ScrollUp => queries.scroll_by(-1),
-        Action::ScrollDown => queries.scroll_by(1),
-        Action::PageUp => queries.scroll_by(-page),
-        Action::PageDown => queries.scroll_by(page),
-        Action::ScrollTop => queries.scroll_to_top(),
-        Action::ScrollBottom => queries.scroll_to_bottom(),
+        Action::ScrollUp => view.scroll_by(-1),
+        Action::ScrollDown => view.scroll_by(1),
+        Action::PageUp => view.scroll_by(-page),
+        Action::PageDown => view.scroll_by(page),
+        Action::ScrollTop => view.scroll_to_top(),
+        Action::ScrollBottom => view.scroll_to_bottom(),
         _ => return false,
     }
     true
@@ -208,5 +224,60 @@ mod tests {
         let (mut app, mut tabs) = queries_setup(5);
         handle_key(&key(KeyCode::Char('z')), &mut app, &mut tabs);
         assert!(app.frozen);
+    }
+
+    // --- Talkers ---
+
+    /// Talkers tab active, `clients` distinct clients, a 10-row table.
+    fn talkers_setup(clients: u8) -> (TuiApp, TabStates) {
+        let mut app = TuiApp::new(&TuiConfig::default());
+        app.active_tab = Tab::Talkers;
+        let mut tabs = TabStates::default();
+        for index in 0..clients {
+            let mut event = allowed(u64::from(index));
+            event.client_ip[15] = index;
+            tabs.push_event(&event, "example.com");
+        }
+        tabs.talkers.set_viewport(10);
+        (app, tabs)
+    }
+
+    #[test]
+    fn test_talkers_tab_scrolls_its_own_state() {
+        let (mut app, mut tabs) = talkers_setup(30);
+        handle_key(&key(KeyCode::PageDown), &mut app, &mut tabs);
+        assert_eq!(tabs.talkers.scroll(), 10);
+        handle_key(&key(KeyCode::End), &mut app, &mut tabs);
+        assert_eq!(tabs.talkers.scroll(), 20);
+        assert_eq!(tabs.queries.scroll(), 0);
+        assert_eq!(app.scroll, 0);
+    }
+
+    #[test]
+    fn test_s_cycles_talkers_sort() {
+        use crate::tui::tabs::talkers::TalkerSortBy;
+        let (mut app, mut tabs) = talkers_setup(3);
+        handle_key(&key(KeyCode::Char('s')), &mut app, &mut tabs);
+        assert_eq!(tabs.talkers.sort, TalkerSortBy::LastSeen);
+        for _ in 0..3 {
+            handle_key(&key(KeyCode::Char('s')), &mut app, &mut tabs);
+        }
+        assert_eq!(tabs.talkers.sort, TalkerSortBy::Requests);
+    }
+
+    #[test]
+    fn test_s_elsewhere_leaves_talkers_sort() {
+        use crate::tui::tabs::talkers::TalkerSortBy;
+        let (mut app, mut tabs) = talkers_setup(3);
+        app.active_tab = Tab::Queries;
+        handle_key(&key(KeyCode::Char('s')), &mut app, &mut tabs);
+        assert_eq!(tabs.talkers.sort, TalkerSortBy::Requests);
+    }
+
+    #[test]
+    fn test_c_clears_talkers() {
+        let (mut app, mut tabs) = talkers_setup(3);
+        handle_key(&key(KeyCode::Char('c')), &mut app, &mut tabs);
+        assert_eq!(tabs.talkers.client_count(), 0);
     }
 }

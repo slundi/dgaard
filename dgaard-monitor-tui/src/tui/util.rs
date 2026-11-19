@@ -1,6 +1,42 @@
-// ── Indicator symbols ─────────────────────────────────────────────────────────
-
 use dgaard_monitor_core::protocol::{StatAction, StatError};
+use dgaard_monitor_core::util::custom_bit_label;
+
+// ── Flag labels ───────────────────────────────────────────────────────────────
+
+/// Number of `StatBlockReason` bits: 0–15 built in, 16–31 custom.
+pub const REASON_BITS: usize = 32;
+
+/// Short display names of the built-in `StatBlockReason` bits, by bit position.
+const BUILT_IN_FLAGS: [&str; 16] = [
+    "Blacklist",
+    "AbpRule",
+    "HighEntropy",
+    "Lexical",
+    "BannedKw",
+    "InvalidStruct",
+    "SuspIDN",
+    "NRD",
+    "TLD",
+    "Suspicious",
+    "CnameCloaking",
+    "ForbidQtype",
+    "DnsRebinding",
+    "LowTTL",
+    "AsnBlocked",
+    "SuspGeoIP",
+];
+
+/// Short display name of one `StatBlockReason` bit, for every TUI table and
+/// chart; custom bits (16–31) use the code configured in dgaard's
+/// `[[security.custom_flags]]`.
+pub fn flag_label(bit: usize) -> String {
+    match BUILT_IN_FLAGS.get(bit) {
+        Some(name) => name.to_string(),
+        None => custom_bit_label(bit as u8),
+    }
+}
+
+// ── Indicator symbols ─────────────────────────────────────────────────────────
 
 pub const INDICATOR_ALLOWED: &str = "✔";
 pub const INDICATOR_BLOCKED: &str = "✘";
@@ -58,6 +94,29 @@ mod tests {
     use dgaard_monitor_core::protocol::{StatAction, StatBlockReason};
 
     use super::*;
+
+    // --- flag_label ---
+
+    #[test]
+    fn test_flag_label_built_in_bits() {
+        assert_eq!(flag_label(0), "Blacklist");
+        assert_eq!(flag_label(14), "AsnBlocked");
+        assert_eq!(flag_label(15), "SuspGeoIP");
+    }
+
+    #[test]
+    fn test_flag_label_custom_bits_use_engine_codes() {
+        // No custom labels registered in unit tests: generic fallback.
+        assert_eq!(flag_label(16), custom_bit_label(16));
+        assert_eq!(flag_label(31), custom_bit_label(31));
+    }
+
+    #[test]
+    fn test_flag_label_every_bit_non_empty() {
+        for bit in 0..REASON_BITS {
+            assert!(!flag_label(bit).is_empty(), "flag_label({bit}) is empty");
+        }
+    }
 
     // --- DomainColor / indicator ---
 

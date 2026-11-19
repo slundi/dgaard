@@ -73,19 +73,23 @@ impl Tab {
 pub struct TabStates {
     pub dashboard: dashboard::DashboardState,
     pub queries: queries::QueriesState,
+    pub talkers: talkers::TalkersState,
 }
 
 impl TabStates {
     /// Record one event in every tab; `domain` is `""` when unresolved.
-    pub fn push_event(&mut self, event: &StatEvent, domain: &str) {
+    /// Returns `true` when the event came from a client not tracked yet.
+    pub fn push_event(&mut self, event: &StatEvent, domain: &str) -> bool {
         self.dashboard.push_event(event, domain);
         self.queries.push_event(event, domain);
+        self.talkers.push_event(event)
     }
 
-    /// Forget the session: counters, feeds and the query log.
+    /// Forget the session: counters, feeds, the query log and the clients.
     pub fn clear(&mut self) {
         self.dashboard.clear();
         self.queries.clear();
+        self.talkers.clear();
     }
 }
 
@@ -109,6 +113,14 @@ mod tests {
         states.push_event(&allowed(1), "example.com");
         assert_eq!(states.dashboard.global_stats().total_queries, 1);
         assert_eq!(states.queries.row_count(), 1);
+        assert_eq!(states.talkers.client_count(), 1);
+    }
+
+    #[test]
+    fn test_tab_states_push_reports_new_clients_only() {
+        let mut states = TabStates::default();
+        assert!(states.push_event(&allowed(1), "example.com"));
+        assert!(!states.push_event(&allowed(2), "example.com"));
     }
 
     #[test]
@@ -118,6 +130,7 @@ mod tests {
         states.clear();
         assert_eq!(states.dashboard.global_stats().total_queries, 0);
         assert_eq!(states.queries.row_count(), 0);
+        assert_eq!(states.talkers.client_count(), 0);
     }
 
     #[test]

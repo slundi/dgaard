@@ -25,10 +25,9 @@ use std::collections::{HashSet, VecDeque};
 use std::time::Instant;
 
 use crate::tui::tabs::queries::{flags_label, format_timestamp};
-use crate::tui::tabs::talkers::flag_name;
-use crate::tui::util::DomainColor;
+use crate::tui::util::{DomainColor, REASON_BITS, flag_label};
 use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
-use dgaard_monitor_core::util::{custom_bit_label, format_client_ip};
+use dgaard_monitor_core::util::format_client_ip;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -37,19 +36,6 @@ pub const MAX_RECENT_DOMAINS: usize = 50;
 
 /// Maximum entries kept in the live-feed panel of the top bar.
 pub const MAX_LIVE_FEED: usize = 50;
-
-/// Number of `StatBlockReason` bits: 0–15 built in, 16–31 custom.
-const REASON_BITS: usize = 32;
-
-/// Short display name of one `StatBlockReason` bit; custom bits (16–31) use
-/// the code configured in dgaard's `[[security.custom_flags]]`.
-pub fn flag_label(bit: usize) -> String {
-    match bit {
-        0..=14 => flag_name(bit).to_string(),
-        15 => "SuspGeoIP".to_string(),
-        _ => custom_bit_label(bit as u8),
-    }
-}
 
 // ── GlobalStats ───────────────────────────────────────────────────────────────
 
@@ -801,17 +787,7 @@ mod tests {
         assert_eq!(tf.count, 2);
     }
 
-    // ── flag_label / flag_distribution ────────────────────────────────────────
-
-    #[test]
-    fn test_flag_label_built_in_and_custom_bits() {
-        assert_eq!(flag_label(0), "Blacklist");
-        assert_eq!(flag_label(14), "AsnBlocked");
-        assert_eq!(flag_label(15), "SuspGeoIP");
-        // No custom labels registered in unit tests: generic fallback.
-        assert_eq!(flag_label(20), custom_bit_label(20));
-        assert!(!flag_label(31).is_empty());
-    }
+    // ── flag_distribution ─────────────────────────────────────────────────────
 
     #[test]
     fn test_flag_distribution_empty_without_blocking() {
@@ -849,7 +825,7 @@ mod tests {
         assert_eq!(
             state.flag_distribution(),
             [FlagCount {
-                name: custom_bit_label(16),
+                name: flag_label(16),
                 count: 1
             }]
         );

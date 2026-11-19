@@ -7,27 +7,29 @@
 //!   desktop.local           1 234  80.0%    12.0%    5.0%   2.0%    1.0%     Blacklist 15  12:00:00    14:23:01
 //!   192.168.1.3               456  40.0%    55.0%    4.0%   1.0%    0.0%     AbpRule 48   12:05:00    14:22:58
 //!
-//! Hostname resolution is performed asynchronously via `hickory-resolver`.
-//! When a PTR record is found for a client IP it is stored in a process-wide
-//! `HOSTNAME_CACHE` (a `std::sync::RwLock<HashMap>`) and picked up on the
-//! next render cycle by `cached_hostname()`.  All other tabs can read the
-//! same cache.
+//! Hostnames come from background reverse-DNS lookups (`ReverseDns`), started
+//! once per new client and only for local addresses (`is_local_address`).  A
+//! PTR answer is stored in the process-wide `HOSTNAME_CACHE` and picked up on
+//! the next render by `cached_hostname()`; every tab can read it.
 //!
 //! Interactive controls (all global fixed bindings dispatched by the event loop):
-//!   `f`  — filter popup: enter an IP prefix or hostname substring.
-//!   `s`  — sort popup: cycle through ByRequests / ByLastSeen / ByFirstSeen / ByBlockedPct.
+//!   `s`  — cycle the sort: most requests / last active / first seen / most blocked %.
 //!   `z`  — toggle frozen; new events keep arriving but aggregates stop updating.
-//!   `↑/↓` — virtual scroll: `visible_rows(height, scroll)` returns at most
-//!            `height` rows starting at `scroll`.
+//!   `↑/↓`, `PgUp/PgDn`, `Home/End` — scroll; only the rows that fit are drawn.
 //!
 //! The data layer is pure Rust with no ratatui dependency.
 //!
-//! TODO: implement `render()` and `render_popup()` with ratatui `Table` + `Block`.
+//! TODO: filter popup (`f`) and per-client detail popup.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::{LazyLock, RwLock};
 
+use hickory_resolver::TokioResolver;
+
+use crate::tui::scroll::{ScrollState, Scrollable, render_scrollbar};
 use crate::tui::tabs::queries::format_timestamp;
+use crate::tui::util::{REASON_BITS, flag_label};
 use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
 use dgaard_monitor_core::util::{client_ip_addr, format_client_ip};
 
@@ -36,31 +38,6 @@ use dgaard_monitor_core::util::{client_ip_addr, format_client_ip};
 /// Maximum number of distinct client IPs tracked simultaneously.
 /// When the limit is reached the least-recently-seen entry is evicted.
 pub const MAX_TALKERS: usize = 500;
-
-// ── Flag metadata ─────────────────────────────────────────────────────────────
-
-/// Short display name for each `StatBlockReason` flag, indexed by bit position
-/// (0 = `STATIC_BLACKLIST` … 14 = `ASN_BLOCKED`).
-pub fn flag_name(bit: usize) -> &'static str {
-    const NAMES: [&str; 15] = [
-        "Blacklist",
-        "AbpRule",
-        "HighEntropy",
-        "Lexical",
-        "BannedKw",
-        "InvalidStruct",
-        "SuspIDN",
-        "NRD",
-        "TLD",
-        "Suspicious",
-        "CnameCloaking",
-        "ForbidQtype",
-        "DnsRebinding",
-        "LowTTL",
-        "AsnBlocked",
-    ];
-    NAMES.get(bit).copied().unwrap_or("Unknown")
-}
 
 // ── TalkerSort ────────────────────────────────────────────────────────────────
 
@@ -78,15 +55,8 @@ pub enum TalkerSortBy {
     BlockedPct,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Talkers tab not wired into the TUI yet: it only shows a placeholder"
-    )
-)]
 impl TalkerSortBy {
-    /// Human-readable label shown in the sort popup.
+    /// Human-readable label shown in the table title.
     pub fn label(self) -> &'static str {
         match self {
             TalkerSortBy::Requests => "Most requests",
@@ -115,7 +85,7 @@ impl TalkerSortBy {
     not(test),
     expect(
         dead_code,
-        reason = "Talkers tab not wired into the TUI yet: it only shows a placeholder"
+        reason = "set by the Talkers filter popup (`f`), not written yet"
     )
 )]
 pub enum TalkerFilter {
@@ -168,8 +138,8 @@ pub struct TalkerEntry {
     pub blocked: u64,
     pub suspicious: u64,
     pub highly_suspicious: u64,
-    /// Hit count per `StatBlockReason` flag bit (index 0..=14).
-    pub flag_hits: [u64; 15],
+    /// Hit count per `StatBlockReason` flag bit, custom bits included.
+    pub flag_hits: [u64; REASON_BITS],
 }
 
 impl TalkerEntry {
@@ -185,7 +155,7 @@ impl TalkerEntry {
             blocked: 0,
             suspicious: 0,
             highly_suspicious: 0,
-            flag_hits: [0; 15],
+            flag_hits: [0; REASON_BITS],
         }
     }
 
@@ -224,9 +194,9 @@ impl TalkerEntry {
     }
 
     fn record_flags(&mut self, r: StatBlockReason) {
-        for bit in 0..15u32 {
+        for (bit, hits) in self.flag_hits.iter_mut().enumerate() {
             if r.bits() & (1 << bit) != 0 {
-                self.flag_hits[bit as usize] += 1;
+                *hits += 1;
             }
         }
     }
@@ -241,7 +211,7 @@ impl TalkerEntry {
         }
     }
 
-    /// Index (0..=14) of the flag with the highest hit count.
+    /// Bit index of the flag with the highest hit count.
     /// Returns `None` when no flagged events have been recorded.
     pub fn top_flag_idx(&self) -> Option<usize> {
         let (idx, count) = self.flag_hits.iter().enumerate().max_by_key(|(_, c)| **c)?;
@@ -252,23 +222,13 @@ impl TalkerEntry {
 // ── TalkerRow ─────────────────────────────────────────────────────────────────
 
 /// Display-ready row for the Talkers table.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Talkers tab not wired into the TUI yet: it only shows a placeholder"
-    )
-)]
 pub struct TalkerRow {
     /// Resolved hostname when available; raw formatted IP otherwise.
     pub display_name: String,
     /// Raw IP bytes — needed to open the detail popup.
-    #[cfg_attr(
-        test,
-        expect(
-            dead_code,
-            reason = "read by the Talkers detail popup, not written yet"
-        )
+    #[expect(
+        dead_code,
+        reason = "read by the Talkers detail popup, not written yet"
     )]
     pub client_ip: [u8; 16],
     /// Formatted first-seen (`HH:MM:SS`).
@@ -303,7 +263,7 @@ impl TalkerRow {
         };
         let top_flag = entry
             .top_flag_idx()
-            .map(|idx| (flag_name(idx).to_string(), entry.flag_hits[idx]));
+            .map(|idx| (flag_label(idx), entry.flag_hits[idx]));
         Self {
             display_name,
             client_ip: entry.client_ip,
@@ -341,43 +301,64 @@ pub fn store_hostname(ip: [u8; 16], hostname: String) {
     }
 }
 
-/// Perform an async reverse-DNS lookup for `ip` and cache the result.
-///
-/// Uses `hickory-resolver` (the `TokioAsyncResolver`) with the system
-/// resolver configuration so that PTR records for private RFC-1918 addresses
-/// are resolved by the local DNS server rather than a public resolver.
-///
-/// This function is a no-op when `ip` is already in the cache.
-/// Call it from a background `tokio::spawn` task; the result will be visible
-/// on the next render cycle via `cached_hostname()`.
-///
-/// NOTE: uses `ResolverConfig::default()` as a fallback when the system
-/// configuration cannot be read (e.g. in sandboxed environments).  For
-/// production deployments the system config is preferred because private PTR
-/// records are only served by the local nameserver.
-#[expect(
-    dead_code,
-    reason = "Talkers tab not wired into the TUI yet: reverse DNS for its hostname column"
-)]
-pub async fn resolve_and_cache(ip: [u8; 16]) {
-    use hickory_resolver::TokioResolver;
+// ── Reverse DNS ───────────────────────────────────────────────────────────────
 
-    // Skip if already cached.
-    if cached_hostname(ip).is_some() {
-        return;
+/// Whether `addr` is on the local network side: private, loopback,
+/// link-local or shared (CGNAT, Tailscale) IPv4; loopback, unique-local or
+/// link-local IPv6.  Only those are reverse-resolved: their PTR records live
+/// on the local DNS server, and public client addresses are never sent to
+/// upstream resolvers.
+pub fn is_local_address(addr: &IpAddr) -> bool {
+    match addr {
+        IpAddr::V4(v4) => {
+            let [first, second, ..] = v4.octets();
+            let shared = first == 100 && (second & 0xc0) == 64; // 100.64.0.0/10
+            v4.is_private() || v4.is_loopback() || v4.is_link_local() || shared
+        }
+        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local(),
+    }
+}
+
+/// `true` when `ip` is local and has no cached hostname yet.
+fn needs_lookup(ip: [u8; 16]) -> bool {
+    is_local_address(&client_ip_addr(&ip)) && cached_hostname(ip).is_none()
+}
+
+/// Background reverse-DNS lookups of local client addresses.
+///
+/// One resolver, built from the system configuration so that the local DNS
+/// server answers PTR queries for private ranges, serves every lookup.
+pub struct ReverseDns {
+    resolver: Option<TokioResolver>,
+}
+
+impl ReverseDns {
+    /// Use the system resolver configuration; lookups are disabled when it
+    /// cannot be read.
+    pub fn from_system() -> Self {
+        let resolver = TokioResolver::builder_tokio()
+            .ok()
+            .and_then(|builder| builder.build().ok());
+        Self { resolver }
     }
 
-    let addr = client_ip_addr(&ip);
+    /// Start a background lookup of `ip` when it is local and not resolved
+    /// yet; returns whether one was started.  Must run inside a Tokio runtime.
+    pub fn lookup(&self, ip: [u8; 16]) -> bool {
+        let Some(resolver) = &self.resolver else {
+            return false;
+        };
+        if !needs_lookup(ip) {
+            return false;
+        }
+        tokio::spawn(resolve_and_cache(resolver.clone(), ip));
+        true
+    }
+}
 
-    // Build the resolver; prefer system config so local PTR records resolve.
-    let Ok(resolver) = TokioResolver::builder_tokio().map(|b| b.build()) else {
-        return;
-    };
-    let Ok(resolver) = resolver else {
-        return;
-    };
-
-    let ptr_name = hickory_resolver::proto::rr::Name::from(addr);
+/// Look up the PTR record of `ip` and cache the first hostname found.
+async fn resolve_and_cache(resolver: TokioResolver, ip: [u8; 16]) {
+    let ptr_name = hickory_resolver::proto::rr::Name::from(client_ip_addr(&ip));
     if let Ok(lookup) = resolver.reverse_lookup(ptr_name).await
         && let Some(hostname) = lookup.answers().iter().find_map(|r| match &r.data {
             hickory_resolver::proto::rr::RData::PTR(n) => {
@@ -392,7 +373,8 @@ pub async fn resolve_and_cache(ip: [u8; 16]) {
 
 // ── TalkersState ──────────────────────────────────────────────────────────────
 
-/// All mutable state owned by the Talkers tab.
+/// All mutable state owned by the Talkers tab, its scroll position included.
+#[derive(Default)]
 pub struct TalkersState {
     /// Per-IP aggregates keyed by raw 16-byte client address.
     pub entries: HashMap<[u8; 16], TalkerEntry>,
@@ -402,34 +384,22 @@ pub struct TalkersState {
     pub filter: TalkerFilter,
     /// When `true`, `push_event` is a no-op.
     pub frozen: bool,
+    /// Top row on screen and table height, bounded by the filtered clients.
+    scroll: ScrollState,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Talkers tab not wired into the TUI yet: it only shows a placeholder"
-    )
-)]
 impl TalkersState {
-    pub fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-            sort: TalkerSortBy::default(),
-            filter: TalkerFilter::default(),
-            frozen: false,
-        }
-    }
-
-    /// Ingest a `StatEvent` into the per-IP aggregates.
+    /// Ingest a `StatEvent` into the per-IP aggregates; returns `true` when
+    /// it came from a client not tracked yet.
     ///
     /// No-op when `frozen`.  When `MAX_TALKERS` is reached the entry with the
     /// oldest `last_seen` timestamp is evicted before inserting the new one.
-    pub fn push_event(&mut self, event: &StatEvent) {
+    pub fn push_event(&mut self, event: &StatEvent) -> bool {
         if self.frozen {
-            return;
+            return false;
         }
-        if !self.entries.contains_key(&event.client_ip) && self.entries.len() >= MAX_TALKERS {
+        let new_client = !self.entries.contains_key(&event.client_ip);
+        if new_client && self.entries.len() >= MAX_TALKERS {
             // Evict the least-recently-seen entry.
             if let Some(oldest_ip) = self
                 .entries
@@ -444,13 +414,14 @@ impl TalkersState {
             .entry(event.client_ip)
             .or_insert_with(|| TalkerEntry::new(event.client_ip, event.timestamp))
             .record(event);
+        new_client
     }
 
     /// Return up to `height` display rows starting at `scroll`, after applying
     /// the current filter and sort.
     ///
-    /// Virtual scrolling: only `height` rows are materialised — the rest of
-    /// the entry map is never visited by the renderer.
+    /// Sorting needs every row (at most `MAX_TALKERS`), but only the returned
+    /// window is handed to the renderer.
     pub fn visible_rows(&self, height: usize, scroll: usize) -> Vec<TalkerRow> {
         let mut rows: Vec<TalkerRow> = self
             .entries
@@ -479,38 +450,146 @@ impl TalkersState {
         rows.into_iter().skip(scroll).take(height).collect()
     }
 
-    /// Store a resolved hostname for `ip` in the global cache.
-    ///
-    /// Convenience wrapper over `store_hostname`; lets callers avoid
-    /// importing the free function separately.
-    pub fn update_hostname(&self, ip: [u8; 16], hostname: String) {
-        store_hostname(ip, hostname);
-    }
-
     /// Number of distinct client IPs currently tracked.
     pub fn client_count(&self) -> usize {
         self.entries.len()
     }
-}
 
-impl Default for TalkersState {
-    fn default() -> Self {
-        Self::new()
+    /// Clients that pass the current filter.
+    pub fn filtered_count(&self) -> usize {
+        match self.filter {
+            TalkerFilter::None => self.entries.len(),
+            _ => self
+                .entries
+                .values()
+                .filter(|e| self.filter.matches(e))
+                .count(),
+        }
+    }
+
+    /// Forget every client (resolved hostnames stay cached).
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.scroll.jump_to_top();
     }
 }
 
-// ── Render stubs ──────────────────────────────────────────────────────────────
+impl Scrollable for TalkersState {
+    fn scroll_state(&self) -> &ScrollState {
+        &self.scroll
+    }
 
-/// Render the Talkers tab body.
+    fn scroll_state_mut(&mut self) -> &mut ScrollState {
+        &mut self.scroll
+    }
+
+    fn scroll_len(&self) -> usize {
+        self.filtered_count()
+    }
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+
+/// Format a percentage cell (`"12.5%"`).
+fn pct_cell(pct: f32) -> String {
+    format!("{pct:.1}%")
+}
+
+/// Render the Talkers tab body: only the rows that fit are drawn.
 ///
-/// TODO: signature becomes
-/// `render(state: &TalkersState, scroll: usize, area: Area, frame: &mut Frame)`.
-pub fn render(area: ratatui::layout::Rect, frame: &mut ratatui::Frame) {
-    use ratatui::widgets::{Block, Paragraph};
+/// Takes the state mutably to record the table height (`set_viewport`),
+/// which bounds scrolling.  `frozen` adds `[FROZEN]` to the title.
+pub fn render(
+    state: &mut TalkersState,
+    frozen: bool,
+    area: ratatui::layout::Rect,
+    frame: &mut ratatui::Frame,
+) {
+    use ratatui::{
+        layout::{Alignment, Constraint},
+        style::{Color, Modifier, Style},
+        text::Text,
+        widgets::{Block, Cell, Row, Table},
+    };
+
+    let title = format!(
+        "Talkers {}/{} · {}{}",
+        state.filtered_count(),
+        state.client_count(),
+        state.sort.label(),
+        if frozen { " [FROZEN]" } else { "" }
+    );
+    let block = Block::bordered().title(title);
+
+    // The table header takes one row of the block.
+    let viewport = usize::from(block.inner(area).height.saturating_sub(1));
+    state.set_viewport(viewport);
+
+    let right = |text: String| Text::from(text).alignment(Alignment::Right);
+    let pct = |value: f32, style: Style| Cell::from(right(pct_cell(value))).style(style);
+    let rows: Vec<Row> = state
+        .visible_rows(viewport, state.scroll())
+        .into_iter()
+        .map(|row| {
+            let top_flag = match row.top_flag {
+                Some((name, count)) => format!("{name} {count}"),
+                None => "—".to_string(),
+            };
+            Row::new([
+                Cell::from(row.display_name),
+                Cell::from(right(row.total_requests.to_string())),
+                pct(row.allowed_pct, Style::new().fg(Color::Green)),
+                pct(row.blocked_pct, Style::new().fg(Color::Red)),
+                pct(row.suspicious_pct, Style::new().fg(Color::Yellow)),
+                pct(
+                    row.highly_suspicious_pct,
+                    Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
+                pct(row.proxied_pct, Style::new().fg(Color::DarkGray)),
+                Cell::from(top_flag),
+                Cell::from(row.first_seen),
+                Cell::from(row.last_seen),
+            ])
+        })
+        .collect();
+
+    let header = [
+        "Client", "Reqs", "Allowed", "Blocked", "Susp", "H.Susp", "Proxied",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, label)| {
+        // Numeric columns are right-aligned; so are their headers.
+        if index == 0 {
+            Cell::from(label)
+        } else {
+            Cell::from(right(label.to_string()))
+        }
+    })
+    .chain(["Top Flag", "First Seen", "Last Seen"].map(Cell::from));
+
     frame.render_widget(
-        Paragraph::new("Coming soon").block(Block::bordered().title("Talkers")),
+        Table::new(
+            rows,
+            [
+                Constraint::Min(18),
+                Constraint::Length(7),
+                Constraint::Length(7),
+                Constraint::Length(7),
+                Constraint::Length(6),
+                Constraint::Length(6),
+                Constraint::Length(7),
+                Constraint::Min(14),
+                Constraint::Length(10),
+                Constraint::Length(10),
+            ],
+        )
+        .block(block)
+        .header(Row::new(header).style(Style::new().add_modifier(Modifier::BOLD))),
         area,
     );
+
+    render_scrollbar(state, area, frame);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -578,27 +657,6 @@ mod tests {
         assert_eq!(TalkerSortBy::default(), TalkerSortBy::Requests);
     }
 
-    // ── flag_name ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_flag_name_first_and_last() {
-        assert_eq!(flag_name(0), "Blacklist");
-        assert_eq!(flag_name(14), "AsnBlocked");
-    }
-
-    #[test]
-    fn test_flag_name_out_of_range_returns_unknown() {
-        assert_eq!(flag_name(15), "Unknown");
-        assert_eq!(flag_name(99), "Unknown");
-    }
-
-    #[test]
-    fn test_flag_name_all_non_empty() {
-        for i in 0..15 {
-            assert!(!flag_name(i).is_empty(), "flag_name({i}) is empty");
-        }
-    }
-
     // ── TalkerEntry ───────────────────────────────────────────────────────────
 
     #[test]
@@ -610,7 +668,7 @@ mod tests {
         assert_eq!(e.blocked, 0);
         assert_eq!(e.first_seen, 1_000);
         assert_eq!(e.last_seen, 1_000);
-        assert_eq!(e.flag_hits, [0u64; 15]);
+        assert_eq!(e.flag_hits, [0u64; REASON_BITS]);
     }
 
     #[test]
@@ -621,7 +679,7 @@ mod tests {
         assert_eq!(e.total_requests, 1);
         assert_eq!(e.allowed, 1);
         assert_eq!(e.blocked, 0);
-        assert_eq!(e.flag_hits, [0u64; 15]);
+        assert_eq!(e.flag_hits, [0u64; REASON_BITS]);
     }
 
     #[test]
@@ -850,7 +908,7 @@ mod tests {
 
     #[test]
     fn test_state_new_is_empty() {
-        let state = TalkersState::new();
+        let state = TalkersState::default();
         assert_eq!(state.client_count(), 0);
         assert!(!state.frozen);
         assert_eq!(state.sort, TalkerSortBy::Requests);
@@ -859,7 +917,7 @@ mod tests {
 
     #[test]
     fn test_push_event_creates_entry() {
-        let mut state = TalkersState::new();
+        let mut state = TalkersState::default();
         let ip = ipv4(10, 1, 0, 1);
         state.push_event(&ev(100, ip, StatAction::Allowed));
         assert_eq!(state.client_count(), 1);
@@ -870,7 +928,7 @@ mod tests {
 
     #[test]
     fn test_push_event_updates_existing_entry() {
-        let mut state = TalkersState::new();
+        let mut state = TalkersState::default();
         let ip = ipv4(10, 1, 0, 2);
         state.push_event(&ev(100, ip, StatAction::Allowed));
         state.push_event(&ev(200, ip, blocked(0)));
@@ -883,7 +941,7 @@ mod tests {
 
     #[test]
     fn test_push_event_multiple_ips() {
-        let mut state = TalkersState::new();
+        let mut state = TalkersState::default();
         for i in 0..5u8 {
             state.push_event(&ev(100, ipv4(10, 2, 0, i), StatAction::Allowed));
         }
@@ -892,8 +950,10 @@ mod tests {
 
     #[test]
     fn test_push_event_frozen_is_noop() {
-        let mut state = TalkersState::new();
-        state.frozen = true;
+        let mut state = TalkersState {
+            frozen: true,
+            ..TalkersState::default()
+        };
         let ip = ipv4(10, 1, 0, 3);
         state.push_event(&ev(100, ip, StatAction::Allowed));
         assert_eq!(state.client_count(), 0);
@@ -901,7 +961,7 @@ mod tests {
 
     #[test]
     fn test_push_event_evicts_oldest_at_max_talkers() {
-        let mut state = TalkersState::new();
+        let mut state = TalkersState::default();
         // Fill to exactly MAX_TALKERS with timestamps 0, 1, …, MAX-1
         for i in 0..MAX_TALKERS {
             let ip = [
@@ -947,7 +1007,7 @@ mod tests {
     fn state_with_three_talkers() -> TalkersState {
         // IP .1 → 30 reqs, IP .2 → 10 reqs, IP .3 → 20 reqs
         // timestamps: .1 first=100, last=300; .2 first=50, last=150; .3 first=200, last=400
-        let mut state = TalkersState::new();
+        let mut state = TalkersState::default();
         let ip1 = ipv4(10, 3, 0, 1);
         let ip2 = ipv4(10, 3, 0, 2);
         let ip3 = ipv4(10, 3, 0, 3);
@@ -1061,7 +1121,7 @@ mod tests {
 
     #[test]
     fn test_visible_rows_filter_by_exact_hostname_matches_only_exact() {
-        let mut state = TalkersState::new();
+        let mut state = TalkersState::default();
         let ip1 = ipv4(10, 4, 0, 1);
         let ip2 = ipv4(10, 4, 0, 2);
         store_hostname(ip1, "web.office.local".to_string());
@@ -1077,7 +1137,7 @@ mod tests {
 
     #[test]
     fn test_visible_rows_filter_by_exact_hostname_excludes_substring_matches() {
-        let mut state = TalkersState::new();
+        let mut state = TalkersState::default();
         let ip = ipv4(10, 4, 0, 3);
         store_hostname(ip, "my-printer.office.local".to_string());
         state.push_event(&ev(100, ip, StatAction::Allowed));
@@ -1090,7 +1150,7 @@ mod tests {
 
     #[test]
     fn test_visible_rows_filter_by_exact_hostname_excludes_unresolved_entries() {
-        let mut state = TalkersState::new();
+        let mut state = TalkersState::default();
         let ip = ipv4(10, 4, 0, 4); // no hostname stored
         state.push_event(&ev(100, ip, StatAction::Allowed));
 
@@ -1099,19 +1159,9 @@ mod tests {
         assert!(rows.is_empty());
     }
 
-    // ── update_hostname ───────────────────────────────────────────────────────
-
-    #[test]
-    fn test_update_hostname_stores_in_cache() {
-        let state = TalkersState::new();
-        let ip = ipv4(240, 10, 0, 1);
-        state.update_hostname(ip, "router.local".to_string());
-        assert_eq!(cached_hostname(ip), Some("router.local".to_string()));
-    }
-
     #[test]
     fn test_filter_by_hostname_substring() {
-        let mut state = TalkersState::new();
+        let mut state = TalkersState::default();
         let ip = ipv4(240, 11, 0, 1);
         store_hostname(ip, "my-printer.office.local".to_string());
         state.push_event(&ev(100, ip, StatAction::Allowed));
@@ -1120,5 +1170,257 @@ mod tests {
         let rows = state.visible_rows(10, 0);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].display_name, "my-printer.office.local");
+    }
+
+    // ── 32-bit flags ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_entry_counts_geo_ip_and_custom_bits() {
+        // Bits 15–31 used to be dropped by the per-client counter.
+        let mut entry = TalkerEntry::new(ipv4(10, 77, 0, 1), 0);
+        entry.record(&ev(1, entry.client_ip, blocked(1 << 15)));
+        entry.record(&ev(2, entry.client_ip, blocked(1 << 15)));
+        entry.record(&ev(3, entry.client_ip, blocked(1 << 31)));
+        assert_eq!(entry.flag_hits[15], 2);
+        assert_eq!(entry.flag_hits[31], 1);
+        let row = TalkerRow::from_entry(&entry, None);
+        assert_eq!(row.top_flag, Some(("SuspGeoIP".to_string(), 2)));
+    }
+
+    // ── reverse DNS ───────────────────────────────────────────────────────────
+
+    fn addr(text: &str) -> IpAddr {
+        text.parse().unwrap()
+    }
+
+    #[test]
+    fn test_local_addresses() {
+        for text in [
+            "10.0.0.1",
+            "172.16.5.4",
+            "192.168.1.20",
+            "127.0.0.1",
+            "169.254.1.1",
+            "100.64.0.1",
+            "100.127.255.254",
+            "::1",
+            "fd12:3456::1",
+            "fe80::1",
+        ] {
+            assert!(is_local_address(&addr(text)), "{text} should be local");
+        }
+    }
+
+    #[test]
+    fn test_public_addresses_are_not_local() {
+        for text in [
+            "8.8.8.8",
+            "172.32.0.1",
+            "100.128.0.1",
+            "100.63.255.255",
+            "2001:db8::1",
+            "2a00:1450::1",
+        ] {
+            assert!(!is_local_address(&addr(text)), "{text} should not be local");
+        }
+    }
+
+    #[test]
+    fn test_ipv4_mapped_client_is_checked_as_ipv4() {
+        // dgaard sends IPv4 clients as IPv4-mapped IPv6.
+        assert!(needs_lookup(ipv4(192, 168, 77, 1)));
+        assert!(!needs_lookup(ipv4(9, 9, 9, 9)));
+    }
+
+    #[test]
+    fn test_resolved_client_needs_no_lookup() {
+        let ip = ipv4(192, 168, 77, 2);
+        assert!(needs_lookup(ip));
+        store_hostname(ip, "nas.lan".to_string());
+        assert!(!needs_lookup(ip));
+    }
+
+    #[test]
+    fn test_disabled_resolver_starts_nothing() {
+        let dns = ReverseDns { resolver: None };
+        assert!(!dns.lookup(ipv4(192, 168, 77, 3)));
+    }
+
+    #[test]
+    fn test_public_client_never_looked_up() {
+        // Returns before spawning, so no runtime is needed.
+        let dns = ReverseDns::from_system();
+        assert!(!dns.lookup(ipv4(8, 8, 4, 4)));
+    }
+
+    // ── state: new clients, clear, scrolling ──────────────────────────────────
+
+    fn with_clients(count: u8) -> TalkersState {
+        let mut state = TalkersState::default();
+        for index in 0..count {
+            state.push_event(&ev(100, ipv4(10, 78, 0, index), StatAction::Allowed));
+        }
+        state
+    }
+
+    #[test]
+    fn test_push_event_reports_new_client() {
+        let mut state = TalkersState::default();
+        let ip = ipv4(10, 78, 1, 1);
+        assert!(state.push_event(&ev(1, ip, StatAction::Allowed)));
+        assert!(!state.push_event(&ev(2, ip, StatAction::Allowed)));
+        assert!(state.push_event(&ev(3, ipv4(10, 78, 1, 2), StatAction::Allowed)));
+    }
+
+    #[test]
+    fn test_push_event_frozen_reports_nothing_new() {
+        let mut state = TalkersState {
+            frozen: true,
+            ..TalkersState::default()
+        };
+        assert!(!state.push_event(&ev(1, ipv4(10, 78, 1, 3), StatAction::Allowed)));
+    }
+
+    #[test]
+    fn test_clear_forgets_clients_and_scroll() {
+        let mut state = with_clients(30);
+        state.set_viewport(10);
+        state.scroll_by(5);
+        state.clear();
+        assert_eq!(state.client_count(), 0);
+        assert_eq!(state.scroll(), 0);
+    }
+
+    #[test]
+    fn test_filtered_count() {
+        let mut state = with_clients(5);
+        state.push_event(&ev(1, ipv4(192, 168, 78, 1), StatAction::Allowed));
+        assert_eq!(state.filtered_count(), 6);
+        state.filter = TalkerFilter::ByText("192.168.".to_string());
+        assert_eq!(state.filtered_count(), 1);
+    }
+
+    #[test]
+    fn test_scroll_bounded_by_filtered_clients() {
+        let mut state = with_clients(30);
+        state.set_viewport(10);
+        state.scroll_to_bottom();
+        assert_eq!(state.scroll(), 20);
+        state.filter = TalkerFilter::ByText("10.78.0.1".to_string()); // .1, .10–.19
+        state.set_viewport(10);
+        assert_eq!(state.scroll(), 1);
+    }
+
+    // ── render ────────────────────────────────────────────────────────────────
+
+    fn draw(state: &mut TalkersState, frozen: bool, width: u16, height: u16) -> Vec<String> {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render(state, frozen, frame.area(), frame))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|row| {
+                (0..width)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_pct_cell_format() {
+        assert_eq!(pct_cell(0.0), "0.0%");
+        assert_eq!(pct_cell(12.345), "12.3%");
+        assert_eq!(pct_cell(100.0), "100.0%");
+    }
+
+    #[test]
+    fn test_render_title_sort_and_frozen() {
+        let mut state = with_clients(3);
+        let lines = draw(&mut state, true, 120, 10);
+        assert!(lines[0].contains("Talkers 3/3"), "{}", lines[0]);
+        assert!(lines[0].contains("Most requests"));
+        assert!(lines[0].contains("[FROZEN]"));
+        state.sort = TalkerSortBy::BlockedPct;
+        let lines = draw(&mut state, false, 120, 10);
+        assert!(lines[0].contains("Most blocked %"));
+        assert!(!lines[0].contains("[FROZEN]"));
+    }
+
+    #[test]
+    fn test_render_row_columns_and_hostname() {
+        let mut state = TalkersState::default();
+        let ip = ipv4(10, 79, 0, 1);
+        store_hostname(ip, "laptop.lan".to_string());
+        state.push_event(&ev(3_600, ip, StatAction::Allowed));
+        state.push_event(&ev(3_661, ip, blocked(1 << 1)));
+        let lines = draw(&mut state, false, 120, 8);
+        assert!(lines[1].contains("Client") && lines[1].contains("Last Seen"));
+        let row = &lines[2];
+        for cell in [
+            "laptop.lan",
+            "2",
+            "50.0%",
+            "AbpRule 1",
+            "01:00:00",
+            "01:01:01",
+        ] {
+            assert!(row.contains(cell), "missing {cell:?} in {row:?}");
+        }
+    }
+
+    #[test]
+    fn test_render_no_flag_shows_dash() {
+        let mut state = with_clients(1);
+        let lines = draw(&mut state, false, 120, 8);
+        assert!(lines[2].contains('—'));
+    }
+
+    #[test]
+    fn test_render_draws_only_the_visible_window() {
+        let mut state = TalkersState::default();
+        // Client .n sends n + 1 requests: most requests first is .29 down to .0.
+        for index in 0..30u8 {
+            for request in 0..=u64::from(index) {
+                state.push_event(&ev(request, ipv4(10, 80, 0, index), StatAction::Allowed));
+            }
+        }
+        // 12 rows - 2 borders - 1 header = 9 table rows
+        draw(&mut state, false, 120, 12);
+        assert_eq!(state.page_size(), 9);
+        state.scroll_by(5);
+        let lines = draw(&mut state, false, 120, 12);
+        let shown: Vec<&String> = lines.iter().filter(|l| l.contains("10.80.0.")).collect();
+        assert_eq!(shown.len(), 9);
+        assert!(shown[0].contains("10.80.0.24 "), "{}", shown[0]);
+        assert!(shown[8].contains("10.80.0.16 "), "{}", shown[8]);
+    }
+
+    #[test]
+    fn test_render_percentage_colours() {
+        use ratatui::{Terminal, backend::TestBackend, style::Color};
+        let mut state = TalkersState::default();
+        let ip = ipv4(10, 81, 0, 1);
+        state.push_event(&ev(1, ip, StatAction::Allowed));
+        state.push_event(&ev(2, ip, blocked(1)));
+        let mut terminal = Terminal::new(TestBackend::new(120, 6)).unwrap();
+        terminal
+            .draw(|frame| render(&mut state, false, frame.area(), frame))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        // Columns where "50.0%" starts; one cell per symbol, unlike byte offsets.
+        let symbols: Vec<&str> = (0..120)
+            .map(|column| buffer[(column, 2)].symbol())
+            .collect();
+        let starts: Vec<u16> = (0..symbols.len() - 5)
+            .filter(|&column| symbols[column..column + 5].concat() == "50.0%")
+            .map(|column| column as u16)
+            .collect();
+        // Allowed and Blocked are both "50.0%": first is green, second red.
+        assert_eq!(starts.len(), 2, "{}", symbols.concat());
+        assert_eq!(buffer[(starts[0], 2)].fg, Color::Green);
+        assert_eq!(buffer[(starts[1], 2)].fg, Color::Red);
     }
 }

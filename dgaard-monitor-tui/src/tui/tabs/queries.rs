@@ -50,12 +50,13 @@
 
 use std::collections::VecDeque;
 
+use crate::tui::scroll::{ScrollState, Scrollable, render_scrollbar};
 use crate::tui::util::{
     DomainColor, INDICATOR_ALLOWED, INDICATOR_BLOCKED, INDICATOR_ERROR, INDICATOR_PROXIED,
-    INDICATOR_SUSPICIOUS,
+    INDICATOR_SUSPICIOUS, REASON_BITS, flag_label,
 };
 use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
-use dgaard_monitor_core::util::{custom_bit_label, format_client_ip};
+use dgaard_monitor_core::util::format_client_ip;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -155,38 +156,14 @@ pub fn format_timestamp(ts: u64) -> String {
     format!("{h:02}:{m:02}:{s:02}")
 }
 
-/// Produce the short names of every set flag in `r`, joined by `+`.
-/// Returns an empty string when `r` is empty.
+/// Produce the short names of every set flag in `r`, joined by `+`, in bit
+/// order (custom bits 16–31 last).  Returns an empty string when `r` is empty.
 fn reason_str(r: StatBlockReason) -> String {
-    const FLAGS: &[(StatBlockReason, &str)] = &[
-        (StatBlockReason::STATIC_BLACKLIST, "Blacklist"),
-        (StatBlockReason::ABP_RULE, "AbpRule"),
-        (StatBlockReason::HIGH_ENTROPY, "HighEntropy"),
-        (StatBlockReason::LEXICAL_ANALYSIS, "Lexical"),
-        (StatBlockReason::BANNED_KEYWORD, "BannedKw"),
-        (StatBlockReason::INVALID_STRUCTURE, "InvalidStruct"),
-        (StatBlockReason::SUSPICIOUS_IDN, "SuspIDN"),
-        (StatBlockReason::NRD_LIST, "NRD"),
-        (StatBlockReason::TLD_EXCLUDED, "TLD"),
-        (StatBlockReason::SUSPICIOUS, "Suspicious"),
-        (StatBlockReason::CNAME_CLOAKING, "CnameCloaking"),
-        (StatBlockReason::FORBIDDEN_QTYPE, "ForbidQtype"),
-        (StatBlockReason::DNS_REBINDING, "DnsRebinding"),
-        (StatBlockReason::LOW_TTL, "LowTTL"),
-        (StatBlockReason::ASN_BLOCKED, "AsnBlocked"),
-    ];
-    let mut parts: Vec<String> = FLAGS
-        .iter()
-        .filter(|(flag, _)| r.contains(*flag))
-        .map(|(_, name)| name.to_string())
-        .collect();
-    // Custom bits 16–31: the engine's codes (`input.engine_config_path`).
-    parts.extend(
-        (16u8..=31)
-            .filter(|bit| r.bits() & (1 << bit) != 0)
-            .map(custom_bit_label),
-    );
-    parts.join("+")
+    (0..REASON_BITS)
+        .filter(|bit| r.bits() & (1 << bit) != 0)
+        .map(flag_label)
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 /// Build the display string for the Flags column from a `StatAction`.
@@ -325,10 +302,8 @@ pub struct QueriesState {
     pub sort: SortOrder,
     /// When `true`, `push_event` is a no-op; the buffer stays fixed.
     pub frozen: bool,
-    /// Index, in the filtered and sorted list, of the top row on screen.
-    scroll: usize,
-    /// Rows the table could show at the last render; bounds `scroll`.
-    viewport: usize,
+    /// Top row on screen and table height, bounded by the filtered rows.
+    scroll: ScrollState,
 }
 
 impl QueriesState {
@@ -353,13 +328,13 @@ impl QueriesState {
                 .is_some_and(|oldest| self.filter.matches(&oldest));
         self.rows.push_back(row);
 
-        if self.scroll > 0 {
+        if self.scroll() > 0 {
             match self.sort {
-                SortOrder::NewestFirst if added => self.scroll += 1,
-                SortOrder::OldestFirst if evicted => self.scroll -= 1,
-                _ => {}
+                SortOrder::NewestFirst if added => self.scroll_by(1),
+                SortOrder::OldestFirst if evicted => self.scroll_by(-1),
+                // The list may have lost its last row.
+                _ => self.scroll_by(0),
             }
-            self.scroll = self.scroll.min(self.max_scroll());
         }
     }
 
@@ -420,45 +395,21 @@ impl QueriesState {
     /// Drop all buffered rows.
     pub fn clear(&mut self) {
         self.rows.clear();
-        self.scroll = 0;
+        self.scroll.jump_to_top();
+    }
+}
+
+impl Scrollable for QueriesState {
+    fn scroll_state(&self) -> &ScrollState {
+        &self.scroll
     }
 
-    /// Index of the top row on screen.
-    pub fn scroll(&self) -> usize {
-        self.scroll
+    fn scroll_state_mut(&mut self) -> &mut ScrollState {
+        &mut self.scroll
     }
 
-    /// Largest `scroll` that still fills the view: the last row sits at the
-    /// bottom of the table, never higher.
-    pub fn max_scroll(&self) -> usize {
-        self.filtered_count().saturating_sub(self.viewport)
-    }
-
-    /// Rows moved by one page; at least one before the first render.
-    pub fn page_size(&self) -> usize {
-        self.viewport.max(1)
-    }
-
-    /// Record how many rows the table can show, and keep `scroll` in range.
-    pub fn set_viewport(&mut self, height: usize) {
-        self.viewport = height;
-        self.scroll = self.scroll.min(self.max_scroll());
-    }
-
-    /// Move the view `delta` rows down (negative: up), within range.
-    pub fn scroll_by(&mut self, delta: isize) {
-        self.scroll = self
-            .scroll
-            .saturating_add_signed(delta)
-            .min(self.max_scroll());
-    }
-
-    pub fn scroll_to_top(&mut self) {
-        self.scroll = 0;
-    }
-
-    pub fn scroll_to_bottom(&mut self) {
-        self.scroll = self.max_scroll();
+    fn scroll_len(&self) -> usize {
+        self.filtered_count()
     }
 }
 
@@ -492,9 +443,9 @@ pub fn render(
     frame: &mut ratatui::Frame,
 ) {
     use ratatui::{
-        layout::{Constraint, Margin},
+        layout::Constraint,
         style::{Modifier, Style},
-        widgets::{Block, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table},
+        widgets::{Block, Row, Table},
     };
 
     let filtered = state.filtered_count();
@@ -544,17 +495,7 @@ pub fn render(
         area,
     );
 
-    if filtered > viewport {
-        let mut scrollbar = ScrollbarState::new(state.max_scroll()).position(state.scroll());
-        frame.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::VerticalRight),
-            area.inner(Margin {
-                vertical: 1,
-                horizontal: 0,
-            }),
-            &mut scrollbar,
-        );
-    }
+    render_scrollbar(state, area, frame);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -586,6 +527,16 @@ mod tests {
         assert_eq!(
             flags_label(&StatAction::Blocked(r)),
             "Blocked:NRD+CUSTOM_BIT_23"
+        );
+    }
+
+    #[test]
+    fn test_flags_label_shows_geo_ip_bit() {
+        // Bit 15 used to be missing from the Flags column.
+        let r = StatBlockReason::SUSPICIOUS_GEO_IP | StatBlockReason::ABP_RULE;
+        assert_eq!(
+            flags_label(&StatAction::Blocked(r)),
+            "Blocked:AbpRule+SuspGeoIP"
         );
     }
 

@@ -3,6 +3,7 @@
 mod app;
 mod input;
 mod keys;
+mod scroll;
 mod tabs;
 mod top_bar;
 mod util;
@@ -21,6 +22,7 @@ use tokio::sync::watch;
 
 use app::TuiApp;
 use input::Flow;
+use tabs::talkers::ReverseDns;
 use tabs::{Tab, TabStates};
 
 use crate::config::TuiConfig;
@@ -40,6 +42,7 @@ pub async fn run(config: TuiConfig, state: Arc<AppState>, mut shutdown: watch::R
 
     let mut app = TuiApp::new(&config);
     let mut tab_states = TabStates::default();
+    let reverse_dns = ReverseDns::from_system();
     let mut event_rx = state.subscribe();
 
     // Dedicated thread for blocking crossterm key reads.
@@ -82,7 +85,9 @@ pub async fn run(config: TuiConfig, state: Arc<AppState>, mut shutdown: watch::R
                         let map = state.domain_map.read().await;
                         map.get(&event.domain_hash).cloned().unwrap_or_default()
                     };
-                    tab_states.push_event(&event, &domain);
+                    if tab_states.push_event(&event, &domain) {
+                        reverse_dns.lookup(event.client_ip);
+                    }
                 }
             }
 
@@ -129,7 +134,9 @@ fn render_frame(frame: &mut ratatui::Frame, app: &TuiApp, tab_states: &mut TabSt
         Tab::Queries => {
             tabs::queries::render(&mut tab_states.queries, app.frozen, body_area, frame)
         }
-        Tab::Talkers => tabs::talkers::render(body_area, frame),
+        Tab::Talkers => {
+            tabs::talkers::render(&mut tab_states.talkers, app.frozen, body_area, frame)
+        }
         Tab::Timelines => tabs::timelines::render(body_area, frame),
         Tab::About => tabs::about::render(&app.keymap, body_area, frame),
     }
