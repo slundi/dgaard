@@ -47,7 +47,7 @@ fn options() -> OptionParser<Opts> {
     let db = path('d', "db", "path to SQLite database (overrides config)");
     let headless = short('H')
         .long("headless")
-        .help("disable the TUI and run as a headless service")
+        .help("disable the TUI and run as a headless service (automatic when stdout is not a terminal)")
         .switch();
     construct!(Opts {
         config,

@@ -4,6 +4,7 @@ mod custom_flags;
 mod headless;
 mod lifecycle;
 
+use std::io::IsTerminal;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -134,8 +135,12 @@ async fn main() {
     }
 
     // TUI or headless JSON logger — mutually exclusive.
+    let headless = run_headless(opts.headless, std::io::stdout().is_terminal());
+    if headless && !opts.headless && cfg!(feature = "tui") {
+        eprintln!("stdout is not a terminal: running headless (one JSON event per line)");
+    }
     let mut ui_task: Option<tokio::task::JoinHandle<()>> = None;
-    if opts.headless {
+    if headless {
         let s = Arc::clone(&state);
         let rx = shutdown_rx.clone();
         handles.push(tokio::spawn(async move {
@@ -244,6 +249,13 @@ async fn main() {
     eprintln!("All tasks stopped. Bye.");
 }
 
+/// Run headless when asked, or when stdout is not a terminal (a container
+/// started without `-t`, a systemd unit, a pipe): the TUI cannot draw there,
+/// and used to leave the process running with no visible output.
+fn run_headless(requested: bool, stdout_is_terminal: bool) -> bool {
+    requested || !stdout_is_terminal
+}
+
 /// Open the SQLite history, unless `[persistence] enabled = false`. A failure
 /// is not fatal: the monitor runs without history and says how to fix it.
 fn open_persistence(cfg: &config::PersistenceConfig) -> Option<Arc<db::Database>> {
@@ -285,6 +297,17 @@ mod tests {
 
     /// Regression: persistence could not be turned off, so a non-root user
     /// got a warning about /var/dgaard/stats.sqlite on every start.
+    #[test]
+    fn headless_when_requested_or_without_a_terminal() {
+        assert!(run_headless(true, true));
+        assert!(run_headless(true, false));
+        assert!(
+            run_headless(false, false),
+            "no terminal: fall back to headless"
+        );
+        assert!(!run_headless(false, true), "a terminal and no flag: TUI");
+    }
+
     #[test]
     fn disabled_persistence_opens_nothing() {
         let dir = tempfile::tempdir().unwrap();
