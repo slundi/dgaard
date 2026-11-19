@@ -19,7 +19,7 @@
   - [x] Top bar, with 3 rows:
   - [x] Row 1 Header: contain tabs `Dashboard`, `Queries`, `Talkers`, `Timelines`, `About`. And some state indicator (active filter 🕵, frozen view ❄️, connectivity status)
   - [x] Row 2 Key metrics: total, blocked %, active client count, QPS
-  - [ ] Row 3 dynamic: Split horizontally between "Live Feed" (Left 60%) and "Flag Distribution" (Right 40%)
+  - [x] Row 3 dynamic: Split horizontally between "Live Feed" (Left 60%) and "Flag Distribution" (Right 40%)
   - [x] remaining space is to display tab content
 - [x] `Dashboard` tab:
   - [x] Total stats: total queries, active clients, blocked queries, percentage blocked, query types (A (IPv4), AAAA (IPv6), PTR, TXT, ...), ~~upstream server~~
@@ -27,7 +27,7 @@
   - [x] Top domains: A bar chart or table of domains, red for blocked, green for permitted ones.
   - [x] Traffic Gauge: Queries per second (QPS).
   - [x] Most active blocking flags (count and ratio)?
-- [ ] Flag Distribution: Use a Sparkline or BarChart to show which StatBlockReason bitflags are firing most often.
+- [x] Flag Distribution: Use a Sparkline or BarChart to show which StatBlockReason bitflags are firing most often.
 - [ ] Tab `Queries` (tail like) with column display: datetime, Domain, IP, blocking flags. `f` to filter flags or client, `s` for a sorting (default last queries on top) popup, `z` to freeze so the display is not updated (show info on ).
   - [ ] Implement Virtual Scrolling (only render what’s visible) to handle a history buffer of 1,000+ entries without lag.
   - [ ] Action Styling: Full row highlight or prefix icons (e.g., ✔ for Allowed, ✘ for Blocked).

@@ -1,30 +1,25 @@
 //! Dashboard tab — at-a-glance DNS activity summary.
 //!
-//! Layout (top → bottom):
+//! `DashboardState` also feeds the top bar shown on every tab (`top_bar`):
+//! the key metrics (`global_stats`), the live feed and the flag distribution.
+//! The tab body only shows what the top bar does not:
+//!
 //!   ┌──────────────────────────────────────────────────────────────────────┐
-//!   │  Clients: 12   Queries: 4 521   Blocked: 234 (5.17 %)   avg. QPS: 1.2  │
-//!   ├─────────────────────────────┬────────────────────────────────────────┤
-//!   │  Last 50 Domains (scroll)   │  Live Feed                             │
-//!   │  ✔ example.com              │  14:23:01  192.168.1.5  example.com ... │
-//!   │  ✘ ads.tracker.net          │  ...                                   │
-//!   │  ...                        │                                        │
-//!   ├─────────────────────────────┴────────────────────────────────────────┤
-//!   │  StaticBlacklist                                                     │
+//!   │  Recent Domains (scroll)                                             │
+//!   │  ✔ example.com                                                       │
+//!   │  ✘ ads.tracker.net                                                   │
+//!   │  ...                                                                 │
+//!   ├──────────────────────────────────────────────────────────────────────┤
+//!   │  Blacklist                                                           │
 //!   │  234                                                                 │
 //!   │  87.3 %                                                              │
 //!   └──────────────────────────────────────────────────────────────────────┘
 //!
 //! Panels:
-//!   - Header (1–2 lines): `GlobalStats` — active clients, total queries,
-//!     blocked count + percentage (in red), average QPS.
-//!   - Left (scrollable): last `MAX_RECENT_DOMAINS` domains, colour-coded via
-//!     `DomainColor`.
-//!   - Center: live feed, newest first — columns: timestamp, client, domain,
-//!     action.  Colour-coded via `DomainColor`.
+//!   - Recent Domains (scrollable): last `MAX_RECENT_DOMAINS` domains,
+//!     colour-coded via `DomainColor`.
 //!   - Footer (3 lines): most-active blocking filter name, hit count,
 //!     percentage of all blocked events.
-//!
-//! The render function uses ratatui `Table`, `List`, `Block`, and `Paragraph`.
 
 use std::collections::{HashSet, VecDeque};
 use std::time::Instant;
@@ -33,15 +28,28 @@ use crate::tui::tabs::queries::{flags_label, format_timestamp};
 use crate::tui::tabs::talkers::flag_name;
 use crate::tui::util::DomainColor;
 use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
-use dgaard_monitor_core::util::format_client_ip;
+use dgaard_monitor_core::util::{custom_bit_label, format_client_ip};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /// Maximum entries kept in the left-panel recent-domains list.
 pub const MAX_RECENT_DOMAINS: usize = 50;
 
-/// Maximum entries kept in the center live-feed panel.
+/// Maximum entries kept in the live-feed panel of the top bar.
 pub const MAX_LIVE_FEED: usize = 50;
+
+/// Number of `StatBlockReason` bits: 0–15 built in, 16–31 custom.
+const REASON_BITS: usize = 32;
+
+/// Short display name of one `StatBlockReason` bit; custom bits (16–31) use
+/// the code configured in dgaard's `[[security.custom_flags]]`.
+pub fn flag_label(bit: usize) -> String {
+    match bit {
+        0..=14 => flag_name(bit).to_string(),
+        15 => "SuspGeoIP".to_string(),
+        _ => custom_bit_label(bit as u8),
+    }
+}
 
 // ── GlobalStats ───────────────────────────────────────────────────────────────
 
@@ -86,6 +94,17 @@ pub struct LiveFeedEntry {
     pub color: DomainColor,
 }
 
+// ── FlagCount ─────────────────────────────────────────────────────────────────
+
+/// Hits of one blocking flag, as shown in the Flag Distribution chart.
+#[derive(Debug, PartialEq)]
+pub struct FlagCount {
+    /// Short display name (`flag_label`).
+    pub name: String,
+    /// Blocking events that had this flag set.
+    pub count: u64,
+}
+
 // ── TopFilter ─────────────────────────────────────────────────────────────────
 
 /// The most-active blocking filter displayed in the three-line footer.
@@ -110,8 +129,8 @@ pub struct DashboardState {
     total_blocked: u64,
     /// Monotonic timestamp of the first recorded event; used for avg-QPS.
     first_event: Option<Instant>,
-    /// Hit count per `StatBlockReason` flag bit (index 0..=14).
-    flag_hits: [u64; 15],
+    /// Hit count per `StatBlockReason` flag bit, custom bits included.
+    flag_hits: [u64; REASON_BITS],
     /// Circular buffer of the most-recent domain entries, oldest at front.
     recent_domains: VecDeque<RecentDomainEntry>,
     /// Circular buffer of the most-recent live-feed rows, oldest at front.
@@ -125,7 +144,7 @@ impl DashboardState {
             total_queries: 0,
             total_blocked: 0,
             first_event: None,
-            flag_hits: [0; 15],
+            flag_hits: [0; REASON_BITS],
             recent_domains: VecDeque::new(),
             live_feed: VecDeque::new(),
         }
@@ -194,9 +213,9 @@ impl DashboardState {
     }
 
     fn record_flags(&mut self, r: StatBlockReason) {
-        for bit in 0..15u32 {
+        for (bit, hits) in self.flag_hits.iter_mut().enumerate() {
             if r.bits() & (1 << bit) != 0 {
-                self.flag_hits[bit as usize] += 1;
+                *hits += 1;
             }
         }
     }
@@ -263,10 +282,30 @@ impl DashboardState {
         };
 
         Some(TopFilter {
-            name: flag_name(bit).to_string(),
+            name: flag_label(bit),
             count,
             pct,
         })
+    }
+
+    /// Every flag that fired at least once, most hits first (lower bit first
+    /// on ties, so the order is stable between frames).
+    pub fn flag_distribution(&self) -> Vec<FlagCount> {
+        let mut fired: Vec<(usize, u64)> = self
+            .flag_hits
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, count)| *count > 0)
+            .collect();
+        fired.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(&right.0)));
+        fired
+            .into_iter()
+            .map(|(bit, count)| FlagCount {
+                name: flag_label(bit),
+                count,
+            })
+            .collect()
     }
 }
 
@@ -279,7 +318,7 @@ impl Default for DashboardState {
 // ── Render ────────────────────────────────────────────────────────────────────
 
 /// Map a `DomainColor` to its ratatui terminal colour.
-fn to_ratatui_color(color: DomainColor) -> ratatui::style::Color {
+pub fn to_ratatui_color(color: DomainColor) -> ratatui::style::Color {
     use ratatui::style::Color;
     match color {
         DomainColor::Green => Color::Green,
@@ -291,7 +330,7 @@ fn to_ratatui_color(color: DomainColor) -> ratatui::style::Color {
 
 /// Render the Dashboard tab body into `area`.
 ///
-/// `scroll` is the vertical scroll offset for the left Recent-Domains panel.
+/// `scroll` is the vertical scroll offset for the Recent-Domains panel.
 pub fn render(
     state: &DashboardState,
     scroll: usize,
@@ -300,42 +339,14 @@ pub fn render(
 ) {
     use ratatui::{
         layout::{Constraint, Layout},
-        style::{Modifier, Style},
-        text::{Line, Span},
-        widgets::{Block, List, ListItem, ListState, Paragraph, Row, Table},
+        style::Style,
+        text::Line,
+        widgets::{Block, List, ListItem, ListState, Paragraph},
     };
 
-    // ── Outer layout: header (2 lines) / body / footer (5 lines) ─────────
-    let [header_area, body_area, footer_area] = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Min(0),
-        Constraint::Length(5),
-    ])
-    .areas(area);
-
-    // ── Body: recent domains left (30 %) + live feed right (70 %) ─────────
-    let [domains_area, feed_area] =
-        Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
-            .areas(body_area);
-
-    // ── Header ────────────────────────────────────────────────────────────
-    let stats = state.global_stats();
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(format!(
-                "Clients: {}   Queries: {}",
-                stats.active_clients, stats.total_queries
-            )),
-            Line::from(vec![
-                Span::styled(
-                    format!("Blocked: {} ({:.1} %)", stats.blocked, stats.blocked_pct),
-                    Style::new().fg(ratatui::style::Color::Red),
-                ),
-                Span::raw(format!("   avg. QPS: {:.1}", stats.avg_qps)),
-            ]),
-        ]),
-        header_area,
-    );
+    // ── Layout: recent domains / footer (5 lines) ─────────────────────────
+    let [domains_area, footer_area] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(5)]).areas(area);
 
     // ── Recent domains ─────────────────────────────────────────────────────
     let domain_items: Vec<ListItem> = state
@@ -355,40 +366,6 @@ pub fn render(
         List::new(domain_items).block(Block::bordered().title("Recent Domains")),
         domains_area,
         &mut list_state,
-    );
-
-    // ── Live feed ──────────────────────────────────────────────────────────
-    let feed_rows: Vec<Row> = state
-        .live_feed()
-        .iter()
-        .rev()
-        .map(|e| {
-            Row::new([
-                e.timestamp.clone(),
-                e.client.clone(),
-                e.domain.clone(),
-                e.action.clone(),
-            ])
-            .style(Style::new().fg(to_ratatui_color(e.color)))
-        })
-        .collect();
-
-    frame.render_widget(
-        Table::new(
-            feed_rows,
-            [
-                Constraint::Length(8),
-                Constraint::Length(17),
-                Constraint::Min(20),
-                Constraint::Min(12),
-            ],
-        )
-        .block(Block::bordered().title("Live Feed"))
-        .header(
-            Row::new(["Time", "Client", "Domain", "Action"])
-                .style(Style::new().add_modifier(Modifier::BOLD)),
-        ),
-        feed_area,
     );
 
     // ── Footer: top filter ─────────────────────────────────────────────────
@@ -809,6 +786,108 @@ mod tests {
         let tf = state.top_filter().unwrap();
         assert_eq!(tf.name, "HighEntropy");
         assert_eq!(tf.count, 2);
+    }
+
+    #[test]
+    fn test_top_filter_counts_geo_ip_and_custom_bits() {
+        // Bits 15–31 used to be dropped by the counter.
+        let mut state = DashboardState::new();
+        let ip = ipv4(10, 0, 0, 1);
+        state.push_event(&ev(100, ip, blocked(1 << 15)), "geo.example");
+        state.push_event(&ev(101, ip, blocked(1 << 15)), "geo2.example");
+        state.push_event(&ev(102, ip, blocked(1 << 31)), "custom.example");
+        let tf = state.top_filter().unwrap();
+        assert_eq!(tf.name, "SuspGeoIP");
+        assert_eq!(tf.count, 2);
+    }
+
+    // ── flag_label / flag_distribution ────────────────────────────────────────
+
+    #[test]
+    fn test_flag_label_built_in_and_custom_bits() {
+        assert_eq!(flag_label(0), "Blacklist");
+        assert_eq!(flag_label(14), "AsnBlocked");
+        assert_eq!(flag_label(15), "SuspGeoIP");
+        // No custom labels registered in unit tests: generic fallback.
+        assert_eq!(flag_label(20), custom_bit_label(20));
+        assert!(!flag_label(31).is_empty());
+    }
+
+    #[test]
+    fn test_flag_distribution_empty_without_blocking() {
+        let mut state = DashboardState::new();
+        state.push_event(&ev(1, ipv4(10, 0, 0, 1), StatAction::Allowed), "a.com");
+        assert!(state.flag_distribution().is_empty());
+    }
+
+    #[test]
+    fn test_flag_distribution_sorted_by_hits_then_bit() {
+        let mut state = DashboardState::new();
+        let ip = ipv4(10, 0, 0, 1);
+        state.push_event(&ev(1, ip, blocked(0b0110)), "a.com"); // bits 1, 2
+        state.push_event(&ev(2, ip, suspicious(0b0100)), "b.com"); // bit 2
+        state.push_event(&ev(3, ip, blocked(0b1000)), "c.com"); // bit 3
+        let names: Vec<(String, u64)> = state
+            .flag_distribution()
+            .into_iter()
+            .map(|flag| (flag.name, flag.count))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("HighEntropy".to_string(), 2),
+                ("AbpRule".to_string(), 1),
+                ("Lexical".to_string(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_flag_distribution_includes_custom_bits() {
+        let mut state = DashboardState::new();
+        state.push_event(&ev(1, ipv4(10, 0, 0, 1), blocked(1 << 16)), "a.com");
+        assert_eq!(
+            state.flag_distribution(),
+            [FlagCount {
+                name: custom_bit_label(16),
+                count: 1
+            }]
+        );
+    }
+
+    #[test]
+    fn test_clear_resets_flag_distribution() {
+        let mut state = DashboardState::new();
+        state.push_event(&ev(1, ipv4(10, 0, 0, 1), blocked(1)), "a.com");
+        state.clear();
+        assert!(state.flag_distribution().is_empty());
+    }
+
+    // ── render ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_render_shows_recent_domains_and_top_filter_only() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut state = DashboardState::new();
+        state.push_event(&ev(1, ipv4(10, 0, 0, 1), blocked(1 << 1)), "ads.example");
+        let mut terminal = Terminal::new(TestBackend::new(80, 15)).unwrap();
+        terminal
+            .draw(|frame| render(&state, 0, frame.area(), frame))
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("Recent Domains"));
+        assert!(screen.contains("ads.example"));
+        assert!(screen.contains("Top Filter") && screen.contains("AbpRule"));
+        // Now in the top bar, shown on every tab.
+        assert!(!screen.contains("Live Feed"));
+        assert!(!screen.contains("Clients:"));
     }
 
     #[test]

@@ -4,6 +4,7 @@ mod app;
 mod input;
 mod keys;
 mod tabs;
+mod top_bar;
 mod util;
 
 use std::io;
@@ -15,14 +16,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{
-    Terminal,
-    backend::CrosstermBackend,
-    layout::{Constraint, Layout},
-    style::{Color, Modifier, Style},
-    text::Line,
-    widgets::Tabs,
-};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::watch;
 
 use app::TuiApp;
@@ -125,24 +119,10 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) {
 }
 
 fn render_frame(frame: &mut ratatui::Frame, app: &TuiApp, dashboard: &DashboardState) {
-    let area = frame.area();
-    let [tab_bar_area, body_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+    let areas = top_bar::layout(frame.area());
+    top_bar::render(frame, &areas, app, dashboard);
 
-    let titles: Vec<Line> = Tab::ALL.iter().map(|t| Line::from(t.label())).collect();
-    let active_idx = Tab::ALL
-        .iter()
-        .position(|t| *t == app.active_tab)
-        .unwrap_or(0);
-    frame.render_widget(
-        Tabs::new(titles).select(active_idx).highlight_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        tab_bar_area,
-    );
-
+    let body_area = areas.body;
     match app.active_tab {
         Tab::Dashboard => tabs::dashboard::render(dashboard, app.scroll, body_area, frame),
         Tab::Queries => tabs::queries::render(body_area, frame),
