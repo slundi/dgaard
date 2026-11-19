@@ -49,6 +49,7 @@ async fn main() {
                 socket: socket_path,
                 index: index_path,
                 event_buffer,
+                peer_uid,
                 ..
             },
         persistence: persistence_cfg,
@@ -134,11 +135,17 @@ async fn main() {
         }));
     }
 
-    // Unix socket reader (always running), reconnects with backoff.
+    // Unix socket reader (always running), reconnects with backoff and
+    // checks who serves the socket before reading from it.
+    let peer_policy = match peer_uid {
+        Some(uid) => io::socket::PeerPolicy::Uid(uid),
+        None => io::socket::PeerPolicy::Auto,
+    };
     handles.push(tokio::spawn(io::socket::run_reader(
         socket_path,
         Arc::clone(&state),
         shutdown_rx.clone(),
+        peer_policy,
     )));
 
     // TUI or headless JSON logger — mutually exclusive.

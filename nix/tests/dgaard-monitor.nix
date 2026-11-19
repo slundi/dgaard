@@ -123,6 +123,11 @@ pkgs.runCommand "test-dgaard-monitor-module" { nativeBuildInputs = [ pkgs.ripgre
     echo "FAIL: engine_config_path should be absent"
     exit 1
   fi
+  # peer_uid must be absent when null (the monitor then decides itself)
+  if rg -q 'peer_uid' ${toml cfgDefaults}; then
+    echo "FAIL: peer_uid should be absent"
+    exit 1
+  fi
   # [persistence] defaults
   rg -qF 'db = "/var/dgaard/stats.sqlite"'           ${toml cfgDefaults}
   rg -qF 'events_retention_hours = 72'               ${toml cfgDefaults}

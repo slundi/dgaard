@@ -47,6 +47,7 @@ const PORT_RANGE: RangeInclusive<i64> = 1..=65_535;
 #[cfg(feature = "tui")]
 const TICK_MS_RANGE: RangeInclusive<i64> = 10..=60_000;
 const RETENTION_RANGE: RangeInclusive<i64> = 0..=u32::MAX as i64;
+const UID_RANGE: RangeInclusive<i64> = 0..=u32::MAX as i64;
 /// Capacity of the internal event bus, in events.
 const EVENT_BUFFER_RANGE: RangeInclusive<i64> = 256..=65_536;
 /// Sliding window of recent events, in seconds (1 minute to 1 day).
@@ -180,6 +181,9 @@ pub struct InputConfig {
     pub engine_config_path: Option<String>,
     /// How many events a slow sink may fall behind before it loses them.
     pub event_buffer: usize,
+    /// UID allowed to serve the stats socket. `None`: root, this user, or the
+    /// socket's owner when it sits in a directory others cannot write to.
+    pub peer_uid: Option<u32>,
 }
 
 fn default_socket() -> String {
@@ -197,6 +201,7 @@ impl Default for InputConfig {
             index: default_index(),
             engine_config_path: None,
             event_buffer: dgaard_monitor_core::state::DEFAULT_EVENT_BUFFER,
+            peer_uid: None,
         }
     }
 }
@@ -393,7 +398,13 @@ fn parse_input(table: &toml_span::value::Table<'_>) -> Result<InputConfig, Confi
     check_keys(
         table,
         "input",
-        &["socket", "index", "engine_config_path", "event_buffer"],
+        &[
+            "socket",
+            "index",
+            "engine_config_path",
+            "event_buffer",
+            "peer_uid",
+        ],
     )?;
     let mut cfg = InputConfig::default();
     if let Some(s) = get_str(table, "socket")? {
@@ -408,6 +419,7 @@ fn parse_input(table: &toml_span::value::Table<'_>) -> Result<InputConfig, Confi
     if let Some(n) = get_int_in_range(table, "event_buffer", EVENT_BUFFER_RANGE)? {
         cfg.event_buffer = n;
     }
+    cfg.peer_uid = get_int_in_range(table, "peer_uid", UID_RANGE)?;
     Ok(cfg)
 }
 
@@ -947,6 +959,20 @@ mod tests {
         // The WebSocket stream reads live events, not the window.
         let cfg = Config::parse("[websocket]\nenabled = true\n").unwrap();
         assert_eq!(cfg.window_capacity(), 0);
+    }
+
+    #[test]
+    fn peer_uid_is_optional_and_range_checked() {
+        assert_eq!(Config::default().input.peer_uid, None);
+        let cfg = Config::parse("[input]\npeer_uid = 997\n").unwrap();
+        assert_eq!(cfg.input.peer_uid, Some(997));
+        for bad in ["-1", "4294967296"] {
+            let err = parse_err(&format!("[input]\npeer_uid = {bad}\n"));
+            assert!(
+                matches!(err, ConfigError::InvalidValue { .. }),
+                "{bad}: {err}"
+            );
+        }
     }
 
     // --- Unknown keys and sections ---

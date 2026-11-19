@@ -36,6 +36,9 @@ let
       index = cfg.input.index;
       event_buffer = cfg.input.eventBuffer;
     }
+    // lib.optionalAttrs (cfg.input.peerUid != null) {
+      peer_uid = cfg.input.peerUid;
+    }
     // lib.optionalAttrs (cfg.input.engineConfigPath != null) {
       engine_config_path = cfg.input.engineConfigPath;
     };
@@ -153,6 +156,17 @@ in
           Path to the dgaard engine config file (dgaard.toml).
           When set, the monitor resolves custom security flag bit indices (16–31)
           to their configured labels. Bits without a matching entry render as CUSTOM_BIT_<n>.
+        '';
+      };
+      peerUid = lib.mkOption {
+        type = lib.types.nullOr (lib.types.ints.between 0 4294967295);
+        default = null;
+        example = 997;
+        description = ''
+          UID allowed to serve the stats socket. When null, the monitor trusts
+          root, its own user, or the socket's owner when the socket sits in a
+          directory other users cannot write to (such as dgaard's
+          RuntimeDirectory).
         '';
       };
       eventBuffer = lib.mkOption {

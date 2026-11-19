@@ -43,6 +43,17 @@ export const MONITOR_SCHEMA = {
           doc: 'Optional path to the dgaard engine config. When set, the monitor reads\n[[security.custom_flags]] from it to resolve custom bits (16–31) to their\nconfigured code labels. Bits with no entry render as CUSTOM_BIT_<n>.',
         },
         {
+          key: 'peer_uid',
+          type: 'int',
+          rust: 'u32',
+          optional: true,
+          default: null,
+          example: 997,
+          min: 0,
+          max: 4294967295,
+          doc: 'UID allowed to serve the stats socket. Unset: root, the monitor\'s own user,\nor the socket\'s owner when the socket sits in a directory other users cannot\nwrite to. A socket another user created in /tmp is refused.',
+        },
+        {
           key: 'event_buffer',
           type: 'int',
           rust: 'usize',

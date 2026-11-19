@@ -21,6 +21,11 @@ index = "/var/dgaard/host_mapping.bin"
 # configured code labels. Bits with no entry render as CUSTOM_BIT_<n>.
 engine_config_path = "/etc/dgaard/config.toml"
 
+# UID allowed to serve the stats socket. Unset: root, the monitor's own user,
+# or the socket's owner when the socket sits in a directory other users cannot
+# write to. A socket another user created in /tmp is refused.
+# peer_uid = 997
+
 # Capacity of the internal event bus, in events. A sink that falls further
 # behind (slow disk, slow HTTP endpoint) loses events; losses are counted per sink.
 event_buffer = 8192

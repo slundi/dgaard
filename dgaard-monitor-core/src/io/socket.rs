@@ -1,4 +1,6 @@
 use std::hash::BuildHasher;
+use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -99,20 +101,123 @@ fn random_unit() -> f64 {
     (bits >> 11) as f64 / (1u64 << 53) as f64
 }
 
+/// Who may serve the stats socket.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PeerPolicy {
+    /// Root, this process's user, or the user owning the socket file when it
+    /// sits in a directory other users cannot write to. A socket that another
+    /// user planted in a world-writable directory such as `/tmp` is refused.
+    #[default]
+    Auto,
+    /// Root or exactly this UID (`[input] peer_uid`).
+    Uid(u32),
+}
+
+/// What the filesystem says about the socket, for [`decide_peer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SocketFacts {
+    owner_uid: u32,
+    /// The directory holding the socket is writable by anyone (e.g. `/tmp`),
+    /// so whoever created the socket proves nothing.
+    dir_world_writable: bool,
+}
+
+fn socket_facts(path: &Path) -> Option<SocketFacts> {
+    let owner_uid = std::fs::metadata(path).ok()?.uid();
+    let dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let dir_mode = std::fs::metadata(dir).ok()?.mode();
+    Some(SocketFacts {
+        owner_uid,
+        dir_world_writable: dir_mode & 0o002 != 0,
+    })
+}
+
+/// Accept or refuse the process serving the socket, see [`PeerPolicy`].
+fn decide_peer(
+    peer_uid: u32,
+    own_uid: Option<u32>,
+    facts: Option<SocketFacts>,
+    policy: PeerPolicy,
+) -> Result<(), String> {
+    if peer_uid == 0 {
+        return Ok(());
+    }
+    match policy {
+        PeerPolicy::Uid(expected) if peer_uid == expected => Ok(()),
+        PeerPolicy::Uid(expected) => Err(format!(
+            "served by uid {peer_uid}, expected uid {expected} ([input] peer_uid)"
+        )),
+        PeerPolicy::Auto => {
+            if own_uid == Some(peer_uid) {
+                return Ok(());
+            }
+            match facts {
+                Some(facts) if !facts.dir_world_writable && facts.owner_uid == peer_uid => Ok(()),
+                Some(facts) if !facts.dir_world_writable => Err(format!(
+                    "served by uid {peer_uid}, but the socket file belongs to uid {}",
+                    facts.owner_uid
+                )),
+                _ => Err(format!(
+                    "served by uid {peer_uid}, neither root nor this user, from a directory \
+                     anyone can write to; if this is dgaard, set [input] peer_uid = {peer_uid} \
+                     or move the socket to a protected directory"
+                )),
+            }
+        }
+    }
+}
+
+/// Check who serves the socket at `path` before trusting what it sends: on a
+/// shared machine, a local user could create the socket before dgaard does
+/// and feed forged events and domain names.
+fn verify_peer(
+    stream: &UnixStream,
+    path: &str,
+    own_uid: Option<u32>,
+    policy: PeerPolicy,
+) -> Result<(), String> {
+    let peer_uid = stream
+        .peer_cred()
+        .map_err(|e| format!("cannot read the peer's credentials: {e}"))?
+        .uid();
+    decide_peer(peer_uid, own_uid, socket_facts(Path::new(path)), policy)
+}
+
+/// This process's effective UID, read from one end of a socket pair (no
+/// `libc` needed). Async because tokio sockets need a runtime.
+async fn own_uid() -> Option<u32> {
+    let (ours, _theirs) = UnixStream::pair().ok()?;
+    ours.peer_cred().ok().map(|cred| cred.uid())
+}
+
 /// Connect to dgaard's stats socket and feed every frame into `state`,
 /// reconnecting with [`Backoff`] after connect failures and stream errors.
 ///
 /// dgaard accepts then closes clients beyond its limit, so a connection that
 /// ends before any valid frame keeps growing the delay; the first valid frame
-/// resets it. Returns when `shutdown` is signalled.
-pub async fn run_reader(path: String, state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) {
+/// resets it. A peer refused by `policy` is retried the same way: dgaard
+/// replaces a stale socket file when it starts. Returns when `shutdown` is
+/// signalled.
+pub async fn run_reader(
+    path: String,
+    state: Arc<AppState>,
+    mut shutdown: watch::Receiver<bool>,
+    policy: PeerPolicy,
+) {
     let mut backoff = Backoff::new();
+    let own_uid = own_uid().await;
     loop {
         // Check for shutdown before attempting a (re)connection.
         if *shutdown.borrow() {
             return;
         }
         let failure = match connect(&path).await {
+            Ok(stream) if let Err(reason) = verify_peer(&stream, &path, own_uid, policy) => {
+                format!("Refusing {path}: {reason}")
+            }
             Ok(mut stream) => {
                 eprintln!("Connected to {path}");
                 loop {
@@ -346,6 +451,7 @@ mod tests {
             path.to_string(),
             Arc::clone(&state),
             shutdown_rx,
+            PeerPolicy::Auto,
         ));
         (state, shutdown_tx, handle)
     }
@@ -422,6 +528,140 @@ mod tests {
         assert_eq!(
             state.domain_map.read().await.get(&7).map(String::as_str),
             Some("one.test")
+        );
+    }
+
+    // --- Peer identity ---
+
+    const ME: u32 = 1000;
+    const OTHER: u32 = 1001;
+
+    fn facts(owner_uid: u32, dir_world_writable: bool) -> Option<SocketFacts> {
+        Some(SocketFacts {
+            owner_uid,
+            dir_world_writable,
+        })
+    }
+
+    #[test]
+    fn root_and_own_user_are_always_trusted() {
+        for policy in [PeerPolicy::Auto, PeerPolicy::Uid(42)] {
+            assert!(decide_peer(0, Some(ME), facts(OTHER, true), policy).is_ok());
+        }
+        assert!(decide_peer(ME, Some(ME), facts(ME, true), PeerPolicy::Auto).is_ok());
+    }
+
+    /// Regression: any local user could create the socket in `/tmp` before
+    /// dgaard and feed the monitor forged events.
+    #[test]
+    fn other_user_in_world_writable_dir_is_refused() {
+        let err = decide_peer(OTHER, Some(ME), facts(OTHER, true), PeerPolicy::Auto).unwrap_err();
+        assert!(err.contains("peer_uid = 1001"), "{err}");
+        // Without filesystem facts, assume the worst.
+        assert!(decide_peer(OTHER, Some(ME), None, PeerPolicy::Auto).is_err());
+        assert!(decide_peer(OTHER, None, None, PeerPolicy::Auto).is_err());
+    }
+
+    /// dgaard under its own user (e.g. systemd DynamicUser) in a protected
+    /// runtime directory owns the socket: trusted without configuration.
+    #[test]
+    fn socket_owner_in_protected_dir_is_trusted() {
+        assert!(decide_peer(OTHER, Some(ME), facts(OTHER, false), PeerPolicy::Auto).is_ok());
+        let err = decide_peer(OTHER, Some(ME), facts(4242, false), PeerPolicy::Auto).unwrap_err();
+        assert!(err.contains("belongs to uid 4242"), "{err}");
+    }
+
+    #[test]
+    fn explicit_peer_uid_is_exact() {
+        assert!(decide_peer(OTHER, Some(ME), facts(OTHER, true), PeerPolicy::Uid(OTHER)).is_ok());
+        // Not even this user or the socket owner, when a UID is configured.
+        assert!(decide_peer(ME, Some(ME), facts(ME, false), PeerPolicy::Uid(OTHER)).is_err());
+    }
+
+    #[tokio::test]
+    async fn own_uid_is_readable() {
+        assert!(own_uid().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn socket_facts_reflect_the_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let protected = socket_facts(&path).unwrap();
+        assert!(!protected.dir_world_writable);
+        assert_eq!(Some(protected.owner_uid), own_uid().await);
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o1777)).unwrap();
+        assert!(socket_facts(&path).unwrap().dir_world_writable);
+        assert!(socket_facts(&dir.path().join("missing.sock")).is_none());
+    }
+
+    /// End to end: a server run by this user is trusted by default.
+    #[tokio::test]
+    async fn reader_trusts_a_socket_served_by_this_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = socket_path(&dir);
+        let listener = UnixListener::bind(&path).unwrap();
+        let (state, shutdown_tx, handle) = start_reader(&path);
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let event = StatMessage::Event(StatEvent {
+            timestamp: 1,
+            domain_hash: 7,
+            client_ip: [0; 16],
+            action: StatAction::Allowed,
+        });
+        stream.write_all(&event.serialize()).await.unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while state.stats.read().await.total < 1 {
+            assert!(
+                Instant::now() < deadline,
+                "event from a trusted peer was not read"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    /// End to end: a peer outside the configured UID is never read from.
+    #[tokio::test]
+    async fn reader_refuses_an_unexpected_peer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = socket_path(&dir);
+        let listener = UnixListener::bind(&path).unwrap();
+        let state = Arc::new(AppState::new(Duration::from_secs(3600)));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let not_me = own_uid().await.unwrap().wrapping_add(1).max(1);
+        let handle = tokio::spawn(run_reader(
+            path.clone(),
+            Arc::clone(&state),
+            shutdown_rx,
+            PeerPolicy::Uid(not_me),
+        ));
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let event = StatMessage::Event(StatEvent {
+            timestamp: 1,
+            domain_hash: 7,
+            client_ip: [0; 16],
+            action: StatAction::Allowed,
+        });
+        // The reader drops the connection without reading: writing may fail.
+        let _ = stream.write_all(&event.serialize()).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        assert_eq!(
+            state.stats.read().await.total,
+            0,
+            "forged event was ingested"
         );
     }
 
