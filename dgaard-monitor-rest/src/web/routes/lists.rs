@@ -69,7 +69,7 @@ pub async fn lists_handler(
                 return None;
             }
 
-            let hits = stats.domain_hits.get(hash).copied().unwrap_or(0);
+            let hits = stats.domain_hits.get(*hash).unwrap_or(0);
 
             Some(ListEntry {
                 hash: format!("{:016x}", hash),

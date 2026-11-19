@@ -33,6 +33,21 @@ events_retention_hours = 72
 aggregates_retention_days = 90
 
 # ---------------------------------------------------------------------------
+# Stats — in-memory statistics
+# ---------------------------------------------------------------------------
+# The sliding window of recent events feeds the REST API, MCP and web UI
+# (live queries, QPS, top reasons). It is only kept when one of them is
+# enabled, and never holds more than `max_window_events` events, whatever
+# the query rate. Per-domain hit counts are bounded too (50 000 domains).
+[stats]
+# Length of the window, in seconds (60 to 86400).
+window_secs = 3600
+
+# Cap on events kept in the window (0 disables it). 56 bytes per event,
+# so the default holds at most ~11 MB.
+max_window_events = 200000
+
+# ---------------------------------------------------------------------------
 # TUI — terminal user interface
 # ---------------------------------------------------------------------------
 [tui]

@@ -6,8 +6,15 @@ use tokio::sync::{RwLock, broadcast};
 
 use crate::protocol::{StatAction, StatError, StatEvent};
 
-#[allow(dead_code)]
 pub const DEFAULT_WINDOW: Duration = Duration::from_secs(3600); // 1 hour
+
+/// Default cap on events kept in the sliding window (56 bytes each, ~11 MB).
+/// Without it the window grows with the query rate: 1.8 M events per hour
+/// at 500 q/s.
+pub const DEFAULT_MAX_WINDOW_EVENTS: usize = 200_000;
+
+/// Distinct domains tracked by `RollingStats::domain_hits`.
+pub const DOMAIN_HITS_CAPACITY: usize = 50_000;
 
 /// Cap on mappings accepted from federation peers. Past it, new remote
 /// mappings are refused so an untrusted publisher cannot exhaust memory.
@@ -51,22 +58,95 @@ impl Sink {
     }
 }
 
+/// Hit counts per key, bounded to `capacity` keys.
+///
+/// When a new key arrives at capacity, the less frequent half of the keys is
+/// forgotten (amortized O(1) per hit). Frequent keys keep exact counts; a
+/// forgotten key that comes back restarts from zero, so counts of the long
+/// tail are lower bounds.
+#[derive(Debug)]
+pub struct HitCounter {
+    counts: HashMap<u64, u64>,
+    capacity: usize,
+}
+
+impl HitCounter {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            counts: HashMap::new(),
+            capacity: capacity.max(2),
+        }
+    }
+
+    pub fn increment(&mut self, key: u64) {
+        if let Some(count) = self.counts.get_mut(&key) {
+            *count += 1;
+            return;
+        }
+        if self.counts.len() >= self.capacity {
+            self.forget_least_frequent_half();
+        }
+        self.counts.insert(key, 1);
+    }
+
+    fn forget_least_frequent_half(&mut self) {
+        let mut counts: Vec<u64> = self.counts.values().copied().collect();
+        let middle = counts.len() / 2;
+        let (_, median, _) = counts.select_nth_unstable(middle);
+        let threshold = *median;
+        self.counts.retain(|_, count| *count > threshold);
+        // Many keys sharing the median count: drop down to half regardless.
+        if self.counts.len() > middle {
+            let mut kept: Vec<(u64, u64)> = self.counts.drain().collect();
+            kept.sort_unstable_by_key(|&(_, count)| std::cmp::Reverse(count));
+            kept.truncate(middle);
+            self.counts.extend(kept);
+        }
+    }
+
+    pub fn get(&self, key: u64) -> Option<u64> {
+        self.counts.get(&key).copied()
+    }
+
+    pub fn len(&self) -> usize {
+        self.counts.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.counts.is_empty()
+    }
+
+    /// The `n` most frequent keys, most frequent first.
+    pub fn top(&self, n: usize) -> Vec<(u64, u64)> {
+        let mut pairs: Vec<(u64, u64)> = self.counts.iter().map(|(&k, &v)| (k, v)).collect();
+        pairs.sort_unstable_by_key(|&(_, count)| std::cmp::Reverse(count));
+        pairs.truncate(n);
+        pairs
+    }
+}
+
 pub struct RollingStats {
     pub total: u64,
     pub blocked: u64,
     pub allowed: u64,
     pub proxied: u64,
-    /// (time_received, event) — sliding window
+    /// (time_received, event) — sliding window, read by the REST services.
     events: VecDeque<(Instant, StatEvent)>,
     window: Duration,
-    /// All-time domain hit counts by hash
-    pub domain_hits: HashMap<u64, u64>,
-    /// All-time client hit counts by IP bytes
-    pub client_hits: HashMap<[u8; 16], u64>,
+    /// Most events kept in `events`; 0 keeps none (no reader configured).
+    max_events: usize,
+    /// Per-domain hit counts since startup, bounded (see `HitCounter`).
+    pub domain_hits: HitCounter,
 }
 
 impl RollingStats {
     pub fn new(window: Duration) -> Self {
+        Self::with_limit(window, DEFAULT_MAX_WINDOW_EVENTS)
+    }
+
+    /// Keep at most `max_events` events of the last `window`; 0 disables the
+    /// window (counters still work).
+    pub fn with_limit(window: Duration, max_events: usize) -> Self {
         Self {
             total: 0,
             blocked: 0,
@@ -74,8 +154,8 @@ impl RollingStats {
             proxied: 0,
             events: VecDeque::new(),
             window,
-            domain_hits: HashMap::new(),
-            client_hits: HashMap::new(),
+            max_events,
+            domain_hits: HitCounter::new(DOMAIN_HITS_CAPACITY),
         }
     }
 
@@ -96,12 +176,16 @@ impl RollingStats {
             StatAction::Error(StatError::Upstream) => {}
         }
 
-        *self.domain_hits.entry(event.domain_hash).or_insert(0) += 1;
-        *self.client_hits.entry(event.client_ip).or_insert(0) += 1;
+        self.domain_hits.increment(event.domain_hash);
 
-        let now = Instant::now();
-        self.events.push_back((now, event));
+        if self.max_events == 0 {
+            return;
+        }
+        self.events.push_back((Instant::now(), event));
         self.evict_old();
+        while self.events.len() > self.max_events {
+            self.events.pop_front();
+        }
     }
 
     pub fn evict_old(&mut self) {
@@ -115,26 +199,33 @@ impl RollingStats {
         }
     }
 
-    #[allow(dead_code)]
     pub fn window_events(&self) -> &VecDeque<(Instant, StatEvent)> {
         &self.events
     }
 
-    #[allow(dead_code)]
     pub fn top_domains(&self, n: usize) -> Vec<(u64, u64)> {
-        let mut pairs: Vec<(u64, u64)> = self.domain_hits.iter().map(|(&k, &v)| (k, v)).collect();
-        pairs.sort_unstable_by_key(|b| std::cmp::Reverse(b.1));
-        pairs.truncate(n);
-        pairs
+        self.domain_hits.top(n)
     }
+}
 
-    #[allow(dead_code)]
-    pub fn top_clients(&self, n: usize) -> Vec<([u8; 16], u64)> {
-        let mut pairs: Vec<([u8; 16], u64)> =
-            self.client_hits.iter().map(|(&k, &v)| (k, v)).collect();
-        pairs.sort_unstable_by_key(|b| std::cmp::Reverse(b.1));
-        pairs.truncate(n);
-        pairs
+/// How `AppState` sizes its buffers.
+#[derive(Debug, Clone)]
+pub struct StateOptions {
+    /// Length of the sliding window of recent events.
+    pub window: Duration,
+    /// Most events kept in the window; 0 keeps none.
+    pub max_window_events: usize,
+    /// How many events a sink may fall behind before it loses them.
+    pub event_buffer: usize,
+}
+
+impl Default for StateOptions {
+    fn default() -> Self {
+        Self {
+            window: DEFAULT_WINDOW,
+            max_window_events: DEFAULT_MAX_WINDOW_EVENTS,
+            event_buffer: DEFAULT_EVENT_BUFFER,
+        }
     }
 }
 
@@ -160,19 +251,33 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(window: Duration) -> Self {
-        Self::with_event_buffer(window, DEFAULT_EVENT_BUFFER)
+        Self::with_options(StateOptions {
+            window,
+            ..StateOptions::default()
+        })
     }
 
     /// `event_buffer` is how many events a sink may fall behind before it
     /// starts losing them.
     pub fn with_event_buffer(window: Duration, event_buffer: usize) -> Self {
-        let (events_tx, _) = broadcast::channel(event_buffer);
-        let (local_tx, _) = broadcast::channel(event_buffer);
+        Self::with_options(StateOptions {
+            window,
+            event_buffer,
+            ..StateOptions::default()
+        })
+    }
+
+    pub fn with_options(options: StateOptions) -> Self {
+        let (events_tx, _) = broadcast::channel(options.event_buffer);
+        let (local_tx, _) = broadcast::channel(options.event_buffer);
         Self {
             domain_map: Arc::new(RwLock::new(HashMap::new())),
             live_domains: RwLock::new(HashMap::new()),
             remote_domains: RwLock::new(HashMap::new()),
-            stats: Arc::new(RwLock::new(RollingStats::new(window))),
+            stats: Arc::new(RwLock::new(RollingStats::with_limit(
+                options.window,
+                options.max_window_events,
+            ))),
             events_tx,
             local_tx,
             dropped: Default::default(),
@@ -367,22 +472,80 @@ mod tests {
         assert_eq!(top.len(), 5);
     }
 
+    /// Regression: the window kept every event of the last hour, so memory
+    /// grew with the query rate (1.8 M events per hour at 500 q/s).
     #[test]
-    fn test_top_clients_sorted_descending() {
-        let mut stats = RollingStats::new(DEFAULT_WINDOW);
-
-        for _ in 0..4 {
-            stats.record(make_event(1, ip(10), StatAction::Allowed));
+    fn test_window_is_capped() {
+        let mut stats = RollingStats::with_limit(DEFAULT_WINDOW, 3);
+        for hash in 0..10 {
+            stats.record(make_event(hash, ip(1), StatAction::Allowed));
         }
-        for _ in 0..2 {
-            stats.record(make_event(1, ip(20), StatAction::Allowed));
-        }
-        stats.record(make_event(1, ip(30), StatAction::Allowed));
+        let kept: Vec<u64> = stats
+            .window_events()
+            .iter()
+            .map(|(_, ev)| ev.domain_hash)
+            .collect();
+        assert_eq!(kept, [7, 8, 9], "the most recent events are kept");
+        assert_eq!(stats.total, 10);
+    }
 
-        let top = stats.top_clients(3);
-        assert_eq!(top[0].1, 4);
-        assert_eq!(top[1].1, 2);
-        assert_eq!(top[2].1, 1);
+    #[test]
+    fn test_window_can_be_disabled() {
+        let mut stats = RollingStats::with_limit(DEFAULT_WINDOW, 0);
+        for hash in 0..10 {
+            stats.record(make_event(hash, ip(1), StatAction::Allowed));
+        }
+        assert!(stats.window_events().is_empty());
+        assert_eq!(stats.total, 10);
+        assert_eq!(stats.allowed, 10);
+        assert_eq!(stats.domain_hits.len(), 10);
+    }
+
+    #[test]
+    fn test_state_options_size_the_window() {
+        let state = AppState::with_options(StateOptions {
+            max_window_events: 0,
+            ..StateOptions::default()
+        });
+        assert!(state.stats.try_read().unwrap().window_events().is_empty());
+    }
+
+    #[test]
+    fn test_hit_counter_is_exact_below_capacity() {
+        let mut hits = HitCounter::new(10);
+        for key in [1, 2, 1, 3, 1, 2] {
+            hits.increment(key);
+        }
+        assert_eq!(hits.get(1), Some(3));
+        assert_eq!(hits.get(2), Some(2));
+        assert_eq!(hits.get(3), Some(1));
+        assert_eq!(hits.get(4), None);
+        assert_eq!(hits.top(2), [(1, 3), (2, 2)]);
+    }
+
+    /// Regression: `domain_hits` (and `client_hits`) grew with every distinct
+    /// domain ever seen. A heavy hitter must survive with its exact count.
+    #[test]
+    fn test_hit_counter_stays_bounded_and_keeps_heavy_hitters() {
+        let capacity = 1_000;
+        let mut hits = HitCounter::new(capacity);
+        for round in 0..100_000u64 {
+            hits.increment(u64::MAX); // the heavy hitter
+            hits.increment(round); // a long tail of one-off domains
+            assert!(hits.len() <= capacity);
+        }
+        assert_eq!(hits.get(u64::MAX), Some(100_000));
+        assert_eq!(hits.top(1), [(u64::MAX, 100_000)]);
+    }
+
+    #[test]
+    fn test_hit_counter_handles_ties_at_capacity() {
+        let mut hits = HitCounter::new(4);
+        for key in 0..100 {
+            hits.increment(key);
+            assert!(hits.len() <= 4);
+        }
+        assert!(!hits.is_empty());
     }
 
     #[tokio::test]

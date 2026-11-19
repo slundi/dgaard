@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
-use dgaard_monitor_core::{db, error, forwarding, io, state::AppState};
+use dgaard_monitor_core::state::{AppState, StateOptions};
+use dgaard_monitor_core::{db, error, forwarding, io};
 
 #[cfg(feature = "nats")]
 use dgaard_monitor_nats as nats;
@@ -38,6 +39,9 @@ async fn main() {
         eprintln!("Warning: config: {warning}");
     }
 
+    // Only REST services read the sliding window; skip it otherwise.
+    let window_capacity = cfg.window_capacity();
+
     // Destructure config so each task can take ownership of its section.
     let config::Config {
         input:
@@ -56,6 +60,7 @@ async fn main() {
         mcp: mcp_cfg,
         web: web_cfg,
         nats: nats_cfg,
+        stats: stats_cfg,
         warnings: _,
     } = cfg;
     #[cfg(not(feature = "tui"))]
@@ -102,10 +107,11 @@ async fn main() {
         }
     };
 
-    let state = Arc::new(AppState::with_event_buffer(
-        Duration::from_secs(3600),
+    let state = Arc::new(AppState::with_options(StateOptions {
+        window: Duration::from_secs(stats_cfg.window_secs),
+        max_window_events: window_capacity,
         event_buffer,
-    ));
+    }));
 
     // One write lock for the whole index, and kept apart from runtime
     // mappings so later reloads can drop entries removed from the lists.

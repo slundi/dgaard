@@ -88,15 +88,8 @@ pub async fn stats_handler(State(web): State<Arc<WebState>>) -> Json<StatsRespon
     top_reasons.sort_unstable_by_key(|r| std::cmp::Reverse(r.count));
     top_reasons.truncate(10);
 
-    let mut domain_pairs: Vec<(u64, u64)> = stats
-        .domain_hits
-        .iter()
-        .map(|(&hash, &count)| (hash, count))
-        .collect();
-    domain_pairs.sort_unstable_by_key(|&(_, c)| std::cmp::Reverse(c));
-    domain_pairs.truncate(10);
-
-    let top_domains: Vec<DomainCount> = domain_pairs
+    let top_domains: Vec<DomainCount> = stats
+        .top_domains(10)
         .into_iter()
         .map(|(hash, count)| {
             let domain = domain_map

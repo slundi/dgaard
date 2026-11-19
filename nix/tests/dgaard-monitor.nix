@@ -127,6 +127,9 @@ pkgs.runCommand "test-dgaard-monitor-module" { nativeBuildInputs = [ pkgs.ripgre
   rg -qF 'db = "/var/dgaard/stats.sqlite"'           ${toml cfgDefaults}
   rg -qF 'events_retention_hours = 72'               ${toml cfgDefaults}
   rg -qF 'aggregates_retention_days = 90'            ${toml cfgDefaults}
+  # [stats] defaults
+  rg -qF 'window_secs = 3600'                        ${toml cfgDefaults}
+  rg -qF 'max_window_events = 200000'                ${toml cfgDefaults}
   # [tui] defaults
   rg -qF 'tick_ms = 250'   ${toml cfgDefaults}
   rg -qF 'key_quit = "q"'  ${toml cfgDefaults}

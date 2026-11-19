@@ -49,6 +49,10 @@ const TICK_MS_RANGE: RangeInclusive<i64> = 10..=60_000;
 const RETENTION_RANGE: RangeInclusive<i64> = 0..=u32::MAX as i64;
 /// Capacity of the internal event bus, in events.
 const EVENT_BUFFER_RANGE: RangeInclusive<i64> = 256..=65_536;
+/// Sliding window of recent events, in seconds (1 minute to 1 day).
+const WINDOW_SECS_RANGE: RangeInclusive<i64> = 60..=86_400;
+/// Events kept in the sliding window; 0 disables it.
+const MAX_WINDOW_EVENTS_RANGE: RangeInclusive<i64> = 0..=10_000_000;
 #[cfg(feature = "rest")]
 const HISTORY_SIZE_RANGE: RangeInclusive<i64> = 1..=1_000_000;
 #[cfg(feature = "rest")]
@@ -157,6 +161,7 @@ pub struct Config {
     pub mcp: McpConfig,
     pub web: WebConfig,
     pub nats: NatsConfig,
+    pub stats: StatsConfig,
     /// Non-fatal findings to report at startup, e.g. a section for a
     /// feature this binary was built without.
     pub warnings: Vec<String>,
@@ -192,6 +197,25 @@ impl Default for InputConfig {
             index: default_index(),
             engine_config_path: None,
             event_buffer: dgaard_monitor_core::state::DEFAULT_EVENT_BUFFER,
+        }
+    }
+}
+
+/// `[stats]` — in-memory statistics.
+#[derive(Debug)]
+pub struct StatsConfig {
+    /// Length of the sliding window of recent events served by the REST
+    /// services (API, MCP, web UI).
+    pub window_secs: u64,
+    /// Cap on events kept in that window, whatever the query rate.
+    pub max_window_events: usize,
+}
+
+impl Default for StatsConfig {
+    fn default() -> Self {
+        Self {
+            window_secs: dgaard_monitor_core::state::DEFAULT_WINDOW.as_secs(),
+            max_window_events: dgaard_monitor_core::state::DEFAULT_MAX_WINDOW_EVENTS,
         }
     }
 }
@@ -404,6 +428,18 @@ fn parse_persistence(
     }
     if let Some(n) = get_int_in_range(table, "aggregates_retention_days", RETENTION_RANGE)? {
         cfg.aggregates_retention_days = n;
+    }
+    Ok(cfg)
+}
+
+fn parse_stats(table: &toml_span::value::Table<'_>) -> Result<StatsConfig, ConfigError> {
+    check_keys(table, "stats", &["window_secs", "max_window_events"])?;
+    let mut cfg = StatsConfig::default();
+    if let Some(n) = get_int_in_range(table, "window_secs", WINDOW_SECS_RANGE)? {
+        cfg.window_secs = n;
+    }
+    if let Some(n) = get_int_in_range(table, "max_window_events", MAX_WINDOW_EVENTS_RANGE)? {
+        cfg.max_window_events = n;
     }
     Ok(cfg)
 }
@@ -663,7 +699,7 @@ impl Config {
                         "section [{name}] ignored: this binary was built without the `{feature}` feature"
                     ));
                 }
-            } else if !["input", "persistence", "forwarding"].contains(&name) {
+            } else if !["input", "persistence", "forwarding", "stats"].contains(&name) {
                 return Err(ConfigError::UnknownKey {
                     key: name.to_string(),
                     span: key.span,
@@ -674,6 +710,9 @@ impl Config {
 
         if let Some(t) = get_table(root, "input")? {
             cfg.input = parse_input(t)?;
+        }
+        if let Some(t) = get_table(root, "stats")? {
+            cfg.stats = parse_stats(t)?;
         }
         if let Some(t) = get_table(root, "persistence")? {
             cfg.persistence = parse_persistence(t)?;
@@ -711,6 +750,20 @@ impl Config {
         }
 
         Ok(cfg)
+    }
+
+    /// Events to keep in the sliding window: none unless a REST service
+    /// that reads it (API, MCP, web UI) is enabled.
+    pub fn window_capacity(&self) -> usize {
+        #[cfg(feature = "rest")]
+        let has_reader = self.api.enabled || self.mcp.enabled || self.web.enabled;
+        #[cfg(not(feature = "rest"))]
+        let has_reader = false;
+        if has_reader {
+            self.stats.max_window_events
+        } else {
+            0
+        }
     }
 
     pub fn load(path: &str) -> Result<Self, ConfigError> {
@@ -839,6 +892,54 @@ mod tests {
                 "{bad}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn stats_defaults_and_ranges() {
+        let cfg = Config::default();
+        assert_eq!(cfg.stats.window_secs, 3600);
+        assert_eq!(cfg.stats.max_window_events, 200_000);
+
+        let cfg = Config::parse("[stats]\nwindow_secs = 600\nmax_window_events = 0\n").unwrap();
+        assert_eq!(cfg.stats.window_secs, 600);
+        assert_eq!(cfg.stats.max_window_events, 0);
+
+        for bad in [
+            "window_secs = 59",
+            "window_secs = 86401",
+            "max_window_events = -1",
+            "max_window_events = 10000001",
+        ] {
+            let err = parse_err(&format!("[stats]\n{bad}\n"));
+            assert!(
+                matches!(err, ConfigError::InvalidValue { .. }),
+                "{bad}: {err}"
+            );
+        }
+        let err = parse_err("[stats]\nwindow = 60\n");
+        assert!(matches!(err, ConfigError::UnknownKey { .. }), "{err}");
+    }
+
+    /// Without a REST service reading it, the window keeps nothing.
+    #[test]
+    fn window_is_kept_only_for_a_reader() {
+        let cfg = Config::default();
+        assert_eq!(cfg.window_capacity(), 0);
+    }
+
+    #[cfg(feature = "rest")]
+    #[test]
+    fn each_rest_reader_enables_the_window() {
+        for section in ["api", "mcp", "web"] {
+            let cfg = Config::parse(&format!(
+                "[{section}]\nenabled = true\n[stats]\nmax_window_events = 1234\n"
+            ))
+            .unwrap();
+            assert_eq!(cfg.window_capacity(), 1234, "[{section}]");
+        }
+        // The WebSocket stream reads live events, not the window.
+        let cfg = Config::parse("[websocket]\nenabled = true\n").unwrap();
+        assert_eq!(cfg.window_capacity(), 0);
     }
 
     // --- Unknown keys and sections ---

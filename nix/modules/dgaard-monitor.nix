@@ -46,6 +46,11 @@ let
       aggregates_retention_days = cfg.persistence.aggregatesRetentionDays;
     };
 
+    stats = {
+      window_secs = cfg.stats.windowSecs;
+      max_window_events = cfg.stats.maxWindowEvents;
+    };
+
     tui = {
       tick_ms = cfg.tui.tickMs;
       key_quit = cfg.tui.keyQuit;
@@ -179,6 +184,26 @@ in
         type = lib.types.int;
         default = 90;
         description = "Hourly aggregates retention in days (Tier 2).";
+      };
+    };
+
+    # -------------------------------------------------------------------------
+    # [stats]
+    # -------------------------------------------------------------------------
+    stats = {
+      windowSecs = lib.mkOption {
+        type = lib.types.ints.between 60 86400;
+        default = 3600;
+        description = "Sliding window of recent events served by the REST API, MCP and web UI, in seconds.";
+      };
+      maxWindowEvents = lib.mkOption {
+        type = lib.types.ints.between 0 10000000;
+        default = 200000;
+        description = ''
+          Cap on events kept in the sliding window, whatever the query rate
+          (0 disables it). The window is only kept when the API, MCP or web
+          UI is enabled.
+        '';
       };
     };
 
