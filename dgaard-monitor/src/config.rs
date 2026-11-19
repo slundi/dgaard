@@ -1425,6 +1425,30 @@ subscribe_subject = "upstream.events"
         assert!(matches!(result, Err(ConfigError::InvalidType { .. })));
     }
 
+    /// The web configurator's generated monitor configs must load with this
+    /// (strict) parser; dgaard-engine has the same check for its own file.
+    #[test]
+    fn configurator_golden_files_parse() {
+        for (name, golden) in [
+            (
+                "default",
+                include_str!(
+                    "../../dgaard-web-configurator/tests/golden/dgaard-monitor.default.annotated.toml"
+                ),
+            ),
+            (
+                "populated",
+                include_str!(
+                    "../../dgaard-web-configurator/tests/golden/dgaard-monitor.populated.annotated.toml"
+                ),
+            ),
+        ] {
+            if let Err(e) = Config::parse(golden) {
+                panic!("configurator {name} golden does not parse: {e}");
+            }
+        }
+    }
+
     // --- Example file ---
 
     /// Lock the shipped example TOML to the parser: any drift between

@@ -152,9 +152,9 @@ url = "nats://127.0.0.1:4222"
 # Dot-separated tokens, no spaces, no wildcards (checked at startup).
 publish_subject = "dgaard.events"
 
-# Subject the monitor subscribes to. Set to "dgaard.events" to receive
-# events from peer monitors, or "dgaard.scores" to consume a daemon's
-# scoring feed. Empty disables this leg. Wildcards are allowed as whole
+# Subject the monitor subscribes to, e.g. "dgaard.events" to receive events
+# from peer monitors. (dgaard-daemon's "dgaard.scores" feed uses another
+# format and cannot be read here.) Empty disables this leg. Wildcards are allowed as whole
 # tokens: `*` matches one token, `>` (last token only) matches the rest.
 # Only events from the local daemon are published: events received here are
 # never re-published, so monitors sharing one subject do not loop. The

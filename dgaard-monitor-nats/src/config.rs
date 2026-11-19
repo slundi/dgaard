@@ -12,7 +12,8 @@ pub struct NatsConfig {
     /// Subject the monitor publishes enriched events on.
     /// Empty string disables publishing.
     pub publish_subject: String,
-    /// Subject the monitor subscribes to (e.g. `dgaard.events` or `dgaard.scores`).
+    /// Subject the monitor subscribes to (e.g. `dgaard.events`, the feed of
+    /// peer monitors). dgaard-daemon's `dgaard.scores` uses another format.
     /// Empty string disables subscription.
     pub subscribe_subject: String,
 }

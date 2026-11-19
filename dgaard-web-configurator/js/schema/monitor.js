@@ -2,7 +2,7 @@
 //
 // Transcribed from the parser and the `Default` impls, never from the example
 // file:
-//   dgaard-monitor/src/config.rs          [input] [persistence] + dispatch
+//   dgaard-monitor/src/config.rs          [input] [persistence] [stats] + dispatch
 //   dgaard-monitor-tui/src/config.rs      [tui]
 //   dgaard-monitor-core/src/config.rs     [forwarding]
 //   dgaard-monitor-rest/src/config.rs     [server] [api] [websocket] [mcp] [web]
@@ -42,6 +42,15 @@ export const MONITOR_SCHEMA = {
           example: '/etc/dgaard/config.toml',
           doc: 'Optional path to the dgaard engine config. When set, the monitor reads\n[[security.custom_flags]] from it to resolve custom bits (16–31) to their\nconfigured code labels. Bits with no entry render as CUSTOM_BIT_<n>.',
         },
+        {
+          key: 'event_buffer',
+          type: 'int',
+          rust: 'usize',
+          default: 8192,
+          min: 256,
+          max: 65536,
+          doc: 'Capacity of the internal event bus, in events. A sink that falls further\nbehind (slow disk, slow HTTP endpoint) loses events; losses are counted per sink.',
+        },
       ],
     },
     {
@@ -68,6 +77,31 @@ export const MONITOR_SCHEMA = {
           rust: 'u32',
           default: 90,
           doc: 'Tier 2 — hourly aggregates retention, in days.',
+        },
+      ],
+    },
+    {
+      path: 'stats',
+      title: 'Stats',
+      doc: 'In-memory statistics. The sliding window feeds the REST API, MCP and web UI,\nand is only kept when one of them is enabled.',
+      fields: [
+        {
+          key: 'window_secs',
+          type: 'int',
+          rust: 'u64',
+          default: 3600,
+          min: 60,
+          max: 86400,
+          doc: 'Length of the sliding window of recent events, in seconds.',
+        },
+        {
+          key: 'max_window_events',
+          type: 'int',
+          rust: 'usize',
+          default: 200000,
+          min: 0,
+          max: 10000000,
+          doc: 'Cap on events kept in the window, whatever the query rate (0 disables it).',
         },
       ],
     },
@@ -276,7 +310,7 @@ export const MONITOR_SCHEMA = {
           key: 'subscribe_subject',
           type: 'string',
           default: '',
-          doc: 'Subject the monitor subscribes to. Set to "dgaard.events" to relay a peer\nmonitor, or "dgaard.scores" to consume a daemon scoring feed.\nEmpty disables subscription.',
+          doc: 'Subject the monitor subscribes to. Set to "dgaard.events" to relay a peer\nmonitor. dgaard-daemon\'s "dgaard.scores" feed uses another format.\nEmpty disables subscription.',
         },
       ],
     },

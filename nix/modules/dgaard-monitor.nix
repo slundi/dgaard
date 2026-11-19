@@ -394,8 +394,9 @@ in
         example = "dgaard.events";
         description = ''
           Subject the monitor subscribes to and feeds into the local broadcast.
-          Use "dgaard.events" to relay a peer monitor or "dgaard.scores" to
-          consume a daemon's scoring feed. Empty string disables subscription.
+          Use "dgaard.events" to relay a peer monitor. dgaard-daemon's
+          "dgaard.scores" feed uses another format and cannot be read here.
+          Empty string disables subscription.
         '';
       };
     };

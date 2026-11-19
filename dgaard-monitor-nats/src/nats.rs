@@ -7,17 +7,26 @@
 //!      event into the local stats and broadcast, tagged as remote (empty
 //!      string disables this leg).
 //!
-//! Wire format (UTF-8 JSON, mirrors the in-process `StatEvent`):
+//! Wire format (UTF-8 JSON, one event per message):
 //! ```json
 //! {
-//!   "ts": 1731000000,
-//!   "domain_hash": 12345,
+//!   "v": 1,                    // format version; absent means 1
+//!   "ts": 1731000000,          // Unix seconds
+//!   "domain_hash": 12345,      // hash in the publishing daemon's space
 //!   "domain": "example.com",   // optional — when the publisher knows it
 //!   "client_ip": "192.168.1.1",
 //!   "action": "Blocked",
-//!   "reasons": 1               // bitmask
+//!   "reasons": 1               // optional bitmask of StatBlockReason
 //! }
 //! ```
+//! `action` is one of `Allowed`, `Proxied`, `Blocked`, `Suspicious`,
+//! `HighlySuspicious`, `Override`, `Cached`, `UpstreamError`, `DnssecBogus`,
+//! the names used by every other output.
+//!
+//! Compatibility: adding optional fields or actions does not change `v`.
+//! Receivers ignore unknown fields and skip (and count) events with an
+//! unknown action or an unknown version, like the socket protocol skips
+//! messages it does not understand. Only an incompatible change bumps `v`.
 //!
 //! Cycles are prevented by provenance: inbound events go through
 //! `AppState::record_remote_event` and the publisher reads
@@ -58,9 +67,19 @@ const MAX_ECHOED_LEN: usize = 64;
 /// Bound on the final flush of queued publications at shutdown.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Version of the wire format this monitor writes and understands.
+pub const WIRE_VERSION: u32 = 1;
+
+fn wire_version_absent() -> u32 {
+    // Messages from monitors predating the field are version 1.
+    1
+}
+
 /// On-wire representation of a monitor event.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WireEvent {
+    #[serde(default = "wire_version_absent")]
+    pub v: u32,
     pub ts: u64,
     pub domain_hash: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -86,12 +105,19 @@ pub enum WireAction {
     UpstreamError,
     /// SERVFAIL: DNSSEC validation failed.
     DnssecBogus,
+    /// Allowed by an explicit override (`StatAction::AllowedWithOverride`).
+    Override,
+    /// An action this monitor does not know, from a newer peer. The event is
+    /// skipped instead of failing to parse.
+    #[serde(other)]
+    Unknown,
 }
 
 impl WireEvent {
     pub fn from_event(event: &StatEvent, domain: Option<String>) -> Self {
         let (action, reasons) = match &event.action {
-            StatAction::Allowed | StatAction::AllowedWithOverride => (WireAction::Allowed, 0),
+            StatAction::Allowed => (WireAction::Allowed, 0),
+            StatAction::AllowedWithOverride => (WireAction::Override, 0),
             StatAction::Proxied => (WireAction::Proxied, 0),
             StatAction::Blocked(r) => (WireAction::Blocked, r.bits()),
             StatAction::Suspicious(r) => (WireAction::Suspicious, r.bits()),
@@ -101,6 +127,7 @@ impl WireEvent {
             StatAction::Error(StatError::DnssecBogus) => (WireAction::DnssecBogus, 0),
         };
         Self {
+            v: WIRE_VERSION,
             ts: event.timestamp,
             domain_hash: event.domain_hash,
             domain,
@@ -121,6 +148,8 @@ impl WireEvent {
             WireAction::Cached => StatAction::Cached,
             WireAction::UpstreamError => StatAction::Error(StatError::Upstream),
             WireAction::DnssecBogus => StatAction::Error(StatError::DnssecBogus),
+            WireAction::Override => StatAction::AllowedWithOverride,
+            WireAction::Unknown => return Err(ParseError::UnknownAction),
         };
         Ok(StatEvent {
             timestamp: self.ts,
@@ -140,6 +169,9 @@ pub enum ParseError {
     /// Not echoed: the content is untrusted and may hold escape sequences.
     InvalidDomain,
     TimestampOutOfRange(u64),
+    /// Sent by a newer peer: skipped, not an error in the event itself.
+    UnknownAction,
+    UnsupportedVersion(u32),
 }
 
 impl std::fmt::Display for ParseError {
@@ -149,6 +181,13 @@ impl std::fmt::Display for ParseError {
             // Debug formatting escapes control characters.
             ParseError::InvalidClientIp(s) => write!(f, "invalid client_ip {s:?}"),
             ParseError::InvalidDomain => write!(f, "invalid domain"),
+            ParseError::UnknownAction => write!(f, "unknown action (newer peer?)"),
+            ParseError::UnsupportedVersion(v) => {
+                write!(
+                    f,
+                    "unsupported format version {v} (this monitor reads {WIRE_VERSION})"
+                )
+            }
             ParseError::TimestampOutOfRange(ts) => {
                 write!(
                     f,
@@ -185,6 +224,9 @@ fn validate_inbound(
     mut wire: WireEvent,
     now: u64,
 ) -> Result<(StatEvent, Option<String>), ParseError> {
+    if wire.v != WIRE_VERSION {
+        return Err(ParseError::UnsupportedVersion(wire.v));
+    }
     if wire.ts.abs_diff(now) > MAX_CLOCK_SKEW_SECS {
         return Err(ParseError::TimestampOutOfRange(wire.ts));
     }
@@ -519,6 +561,7 @@ mod tests {
     #[test]
     fn into_event_rejects_bad_ip() {
         let bad = WireEvent {
+            v: WIRE_VERSION,
             ts: 0,
             domain_hash: 0,
             domain: None,
@@ -538,6 +581,7 @@ mod tests {
 
     fn inbound(domain: Option<&str>, client_ip: &str, ts: u64) -> Vec<u8> {
         serde_json::to_vec(&WireEvent {
+            v: WIRE_VERSION,
             ts,
             domain_hash: 0x42,
             domain: domain.map(str::to_string),
@@ -546,6 +590,90 @@ mod tests {
             reasons: StatBlockReason::ABP_RULE.bits(),
         })
         .unwrap()
+    }
+
+    // --- Wire format compatibility ---
+
+    /// Regression: `AllowedWithOverride` went out as `Allowed`, while every
+    /// other output reports it as `Override`.
+    #[test]
+    fn override_round_trips_losslessly() {
+        let original = StatEvent {
+            timestamp: 1,
+            domain_hash: 1,
+            client_ip: ipv4_bytes(10, 0, 0, 1),
+            action: StatAction::AllowedWithOverride,
+        };
+        let json = serde_json::to_string(&WireEvent::from_event(&original, None)).unwrap();
+        assert!(json.contains(r#""action":"Override""#), "{json}");
+        let decoded = serde_json::from_str::<WireEvent>(&json)
+            .unwrap()
+            .into_event()
+            .unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn published_events_carry_the_format_version() {
+        let wire = WireEvent::from_event(
+            &StatEvent {
+                timestamp: 1,
+                domain_hash: 1,
+                client_ip: ipv4_bytes(10, 0, 0, 1),
+                action: StatAction::Allowed,
+            },
+            None,
+        );
+        let json = serde_json::to_string(&wire).unwrap();
+        assert!(json.starts_with(r#"{"v":1,"#), "{json}");
+    }
+
+    fn raw_inbound(fields: &str) -> Vec<u8> {
+        format!(r#"{{"ts":{NOW},"domain_hash":66,"client_ip":"10.0.0.1",{fields}}}"#).into_bytes()
+    }
+
+    /// Regression: an action from a newer monitor failed JSON parsing, so the
+    /// event was treated as malformed. It is now recognised and skipped.
+    #[tokio::test]
+    async fn unknown_action_is_skipped_not_malformed() {
+        let state = make_state();
+        let payload = raw_inbound(r#""action":"FutureAction""#);
+        let wire: WireEvent = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(wire.action, WireAction::Unknown);
+
+        let err = handle_inbound(&payload, &state, NOW).await.unwrap_err();
+        assert!(matches!(err, ParseError::UnknownAction), "{err}");
+        assert_eq!(state.stats.read().await.total, 0);
+    }
+
+    /// Monitors predating the `v` field are still understood.
+    #[tokio::test]
+    async fn missing_version_means_version_one() {
+        let state = make_state();
+        let payload = raw_inbound(r#""action":"Allowed""#);
+        handle_inbound(&payload, &state, NOW).await.unwrap();
+        assert_eq!(state.stats.read().await.total, 1);
+    }
+
+    #[tokio::test]
+    async fn unknown_version_is_skipped() {
+        let state = make_state();
+        for version in ["0", "2"] {
+            let payload = raw_inbound(&format!(r#""v":{version},"action":"Allowed""#));
+            let err = handle_inbound(&payload, &state, NOW).await.unwrap_err();
+            assert!(matches!(err, ParseError::UnsupportedVersion(_)), "{err}");
+        }
+        assert_eq!(state.stats.read().await.total, 0);
+    }
+
+    /// Additive changes (new optional fields) must not break older readers.
+    #[tokio::test]
+    async fn unknown_fields_are_ignored() {
+        let state = make_state();
+        let payload =
+            raw_inbound(r#""v":1,"action":"Blocked","reasons":1,"origin":"peer-7","hops":0"#);
+        handle_inbound(&payload, &state, NOW).await.unwrap();
+        assert_eq!(state.stats.read().await.blocked, 1);
     }
 
     #[tokio::test]
@@ -823,6 +951,7 @@ mod integration {
         }
 
         let wire = WireEvent {
+            v: WIRE_VERSION,
             ts: unix_now(),
             domain_hash: 0xdeadbeef,
             domain: Some("remote.test".to_string()),
@@ -880,6 +1009,7 @@ mod integration {
         });
 
         let wire = WireEvent {
+            v: WIRE_VERSION,
             ts: unix_now(),
             domain_hash: 7,
             domain: Some("remote.test".to_string()),

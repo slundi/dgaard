@@ -21,6 +21,10 @@ index = "/var/dgaard/host_mapping.bin"
 # configured code labels. Bits with no entry render as CUSTOM_BIT_<n>.
 engine_config_path = "/etc/dgaard/config.toml"
 
+# Capacity of the internal event bus, in events. A sink that falls further
+# behind (slow disk, slow HTTP endpoint) loses events; losses are counted per sink.
+event_buffer = 8192
+
 # -----------------------------------------------------------------------------
 # [persistence] — Persistence
 # -----------------------------------------------------------------------------
@@ -34,6 +38,18 @@ events_retention_hours = 72
 
 # Tier 2 — hourly aggregates retention, in days.
 aggregates_retention_days = 90
+
+# -----------------------------------------------------------------------------
+# [stats] — Stats
+# -----------------------------------------------------------------------------
+# In-memory statistics. The sliding window feeds the REST API, MCP and web UI,
+# and is only kept when one of them is enabled.
+[stats]
+# Length of the sliding window of recent events, in seconds.
+window_secs = 3600
+
+# Cap on events kept in the window, whatever the query rate (0 disables it).
+max_window_events = 200000
 
 # -----------------------------------------------------------------------------
 # [tui] — TUI
@@ -171,6 +187,6 @@ url = "nats://127.0.0.1:4222"
 publish_subject = "dgaard.events"
 
 # Subject the monitor subscribes to. Set to "dgaard.events" to relay a peer
-# monitor, or "dgaard.scores" to consume a daemon scoring feed.
+# monitor. dgaard-daemon's "dgaard.scores" feed uses another format.
 # Empty disables subscription.
 subscribe_subject = "dgaard.events"
