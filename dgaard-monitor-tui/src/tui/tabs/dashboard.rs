@@ -131,6 +131,11 @@ impl DashboardState {
         }
     }
 
+    /// Forget everything recorded so far, as if the TUI had just started.
+    pub fn clear(&mut self) {
+        *self = Self::new();
+    }
+
     /// Ingest one `StatEvent` into the dashboard state.
     ///
     /// `domain` is the resolved name for `event.domain_hash`; pass `""` when
@@ -462,6 +467,39 @@ mod tests {
         assert!(state.recent_domains().is_empty());
         assert!(state.live_feed().is_empty());
         assert!(state.top_filter().is_none());
+    }
+
+    // ── DashboardState::clear ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_clear_resets_everything() {
+        let mut state = DashboardState::new();
+        state.push_event(&ev(1, ipv4(10, 0, 0, 1), blocked(1)), "ads.example");
+        state.push_event(&ev(2, ipv4(10, 0, 0, 2), StatAction::Allowed), "");
+        state.clear();
+
+        let stats = state.global_stats();
+        assert_eq!(stats.active_clients, 0);
+        assert_eq!(stats.total_queries, 0);
+        assert_eq!(stats.blocked, 0);
+        assert_eq!(stats.avg_qps, 0.0);
+        assert!(state.recent_domains().is_empty());
+        assert!(state.live_feed().is_empty());
+        assert!(state.top_filter().is_none());
+    }
+
+    #[test]
+    fn test_clear_then_new_events_count_from_zero() {
+        let mut state = DashboardState::new();
+        state.push_event(&ev(1, ipv4(10, 0, 0, 1), blocked(1)), "ads.example");
+        state.clear();
+        state.push_event(&ev(2, ipv4(10, 0, 0, 2), StatAction::Allowed), "ok.example");
+
+        let stats = state.global_stats();
+        assert_eq!(stats.total_queries, 1);
+        assert_eq!(stats.blocked, 0);
+        assert_eq!(stats.active_clients, 1);
+        assert_eq!(state.live_feed().len(), 1);
     }
 
     // ── push_event — counters ─────────────────────────────────────────────────

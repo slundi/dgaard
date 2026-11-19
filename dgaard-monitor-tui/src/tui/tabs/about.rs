@@ -92,6 +92,10 @@ pub fn key_bindings(keymap: &KeyMap) -> Vec<KeyBinding> {
             key: keymap.quit.clone(),
         },
         KeyBinding {
+            action: "Quit (always)",
+            key: "ctrl+c".to_string(),
+        },
+        KeyBinding {
             action: "Pause",
             key: keymap.pause.clone(),
         },
@@ -107,6 +111,10 @@ pub fn key_bindings(keymap: &KeyMap) -> Vec<KeyBinding> {
         KeyBinding {
             action: "Freeze",
             key: "z".to_string(),
+        },
+        KeyBinding {
+            action: "Clear stats",
+            key: "c".to_string(),
         },
         KeyBinding {
             action: "Search",
@@ -199,8 +207,8 @@ mod tests {
 
     #[test]
     fn test_key_bindings_count() {
-        // 5 direct-tab + 2 cycle nav + 4 configurable + 3 view + 2 queries = 16
-        assert_eq!(key_bindings(&default_keymap()).len(), 16);
+        // 5 direct-tab + 2 cycle nav + 4 configurable + ctrl+c + 4 view + 2 queries = 18
+        assert_eq!(key_bindings(&default_keymap()).len(), 18);
     }
 
     #[test]
@@ -264,6 +272,34 @@ mod tests {
         assert_eq!(freeze.key, "z");
         assert_eq!(search.key, "/");
         assert_eq!(clear.key, "esc");
+    }
+
+    #[test]
+    fn test_key_bindings_quit_and_clear_stats() {
+        let bindings = key_bindings(&default_keymap());
+        let always_quit = bindings
+            .iter()
+            .find(|b| b.action == "Quit (always)")
+            .unwrap();
+        let clear_stats = bindings.iter().find(|b| b.action == "Clear stats").unwrap();
+        assert_eq!(always_quit.key, "ctrl+c");
+        assert_eq!(clear_stats.key, "c");
+    }
+
+    #[test]
+    fn test_key_bindings_fixed_keys_resolve_to_their_action() {
+        use crate::tui::keys::Action;
+        let km = default_keymap();
+        let bindings = key_bindings(&km);
+        let cases = [
+            ("Freeze", Action::Freeze),
+            ("Clear stats", Action::ClearStats),
+            ("Clear Filter", Action::ClearFilter),
+        ];
+        for (label, action) in cases {
+            let binding = bindings.iter().find(|b| b.action == label).unwrap();
+            assert_eq!(km.resolve(&binding.key), Some(action), "{label}");
+        }
     }
 
     #[test]

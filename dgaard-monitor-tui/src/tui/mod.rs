@@ -1,6 +1,7 @@
 //! TUI entry point — crossterm raw mode, tick loop, render dispatch.
 
 mod app;
+mod input;
 mod keys;
 mod tabs;
 mod util;
@@ -10,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::{
-    event::{Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{Event, KeyEvent},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -25,7 +26,7 @@ use ratatui::{
 use tokio::sync::watch;
 
 use app::TuiApp;
-use keys::Action;
+use input::Flow;
 use tabs::Tab;
 use tabs::dashboard::DashboardState;
 
@@ -93,11 +94,8 @@ pub async fn run(config: TuiConfig, state: Arc<AppState>, mut shutdown: watch::R
             }
 
             Some(key) = key_rx.recv() => {
-                if let Some(action) = app.keymap.resolve(&key_to_str(key)) {
-                    match action {
-                        Action::Quit => break 'main,
-                        _ => app.apply(action),
-                    }
+                if input::handle_key(&key, &mut app, &mut dashboard) == Flow::Quit {
+                    break 'main;
                 }
             }
 
@@ -124,35 +122,6 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) {
     let _ = disable_raw_mode();
     let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
     let _ = terminal.show_cursor();
-}
-
-fn key_to_str(key: KeyEvent) -> String {
-    match key.code {
-        KeyCode::Char(' ') => "space".to_string(),
-        KeyCode::Char(c) => {
-            if key.modifiers.contains(KeyModifiers::SHIFT) {
-                c.to_uppercase().to_string()
-            } else {
-                c.to_string()
-            }
-        }
-        KeyCode::Up => "up".to_string(),
-        KeyCode::Down => "down".to_string(),
-        KeyCode::Left => "left".to_string(),
-        KeyCode::Right => "right".to_string(),
-        KeyCode::Tab => "tab".to_string(),
-        KeyCode::BackTab => "backtab".to_string(),
-        KeyCode::Esc => "esc".to_string(),
-        KeyCode::Enter => "enter".to_string(),
-        KeyCode::Backspace => "backspace".to_string(),
-        KeyCode::Delete => "delete".to_string(),
-        KeyCode::Home => "home".to_string(),
-        KeyCode::End => "end".to_string(),
-        KeyCode::PageUp => "pageup".to_string(),
-        KeyCode::PageDown => "pagedown".to_string(),
-        KeyCode::F(n) => format!("f{n}"),
-        _ => String::new(),
-    }
 }
 
 fn render_frame(frame: &mut ratatui::Frame, app: &TuiApp, dashboard: &DashboardState) {

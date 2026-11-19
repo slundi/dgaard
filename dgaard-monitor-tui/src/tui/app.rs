@@ -58,6 +58,9 @@ impl TuiApp {
             Action::ScrollDown => self.scroll = self.scroll.saturating_add(1),
             Action::Freeze => self.frozen = !self.frozen,
             Action::ClearFilter => self.filter = None,
+            // The tab state itself is cleared by the caller; the scroll offset
+            // would point past the end of the emptied lists.
+            Action::ClearStats => self.scroll = 0,
             Action::Tab1 | Action::Tab2 | Action::Tab3 | Action::Tab4 | Action::Tab5 => {
                 if let Some(tab) = tab_for_action(action) {
                     self.active_tab = tab;
@@ -146,6 +149,15 @@ mod tests {
         app.filter = Some("192.168.1.1".to_string());
         app.apply(Action::ClearFilter);
         assert!(app.filter.is_none());
+    }
+
+    #[test]
+    fn test_clear_stats_resets_scroll() {
+        let mut app = default_app();
+        app.scroll = 7;
+        app.apply(Action::ClearStats);
+        assert_eq!(app.scroll, 0);
+        assert_eq!(app.active_tab, Tab::Dashboard);
     }
 
     #[test]

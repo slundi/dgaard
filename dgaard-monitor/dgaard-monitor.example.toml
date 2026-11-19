@@ -74,7 +74,9 @@ max_window_events = 200000
 # Terminal refresh rate in milliseconds.
 tick_ms = 250
 
-# Key bindings (single character or named key: "space", "up", "down", …).
+# Key bindings (single character or named key: "space", "up", "down", …),
+# optionally prefixed with "ctrl+" and/or "alt+" (e.g. "ctrl+q"). Ctrl+c
+# always quits.
 key_quit = "q"
 key_pause = "space"
 key_scroll_up = "up"

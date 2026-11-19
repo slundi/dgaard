@@ -13,8 +13,8 @@
 
 ## Phase 2: TUI Implementation (Ratatui)
 
-- [ ] Main Loop: Setup terminal raw mode and tick rate (e.g., 250ms).
-- [ ] Input Handling: Support `q` or `Ctrl+c` to quit and `c` to clear current session stats in a separate file since we will support custom key mapping later.
+- [x] Main Loop: Setup terminal raw mode and tick rate (e.g., 250ms).
+- [x] Input Handling: Support `q` or `Ctrl+c` to quit and `c` to clear current session stats in a separate file since we will support custom key mapping later.
 - [x] TUI layout:
   - [x] Top bar, with 3 rows:
   - [x] Row 1 Header: contain tabs `Dashboard`, `Queries`, `Talkers`, `Timelines`, `About`. And some state indicator (active filter 🕵, frozen view ❄️, connectivity status)
