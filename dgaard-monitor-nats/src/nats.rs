@@ -38,7 +38,8 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-use crate::config::NatsConfig;
+use crate::config::{NatsConfig, validate_publish_subject, validate_subscribe_subject};
+use dgaard_monitor_core::io::socket::Backoff;
 use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
 use dgaard_monitor_core::state::{AppState, Sink};
 use dgaard_monitor_core::util::{format_client_ip, parse_client_ip};
@@ -54,6 +55,8 @@ const MAX_CLOCK_SKEW_SECS: u64 = 3600;
 const REJECT_LOG_INTERVAL: Duration = Duration::from_secs(10);
 /// How much of an invalid `client_ip` is echoed back in logs.
 const MAX_ECHOED_LEN: usize = 64;
+/// Bound on the final flush of queued publications at shutdown.
+const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// On-wire representation of a monitor event.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -231,10 +234,12 @@ impl RejectLog {
 }
 
 /// Spawn the NATS publisher + subscriber tasks. Returns immediately if
-/// `enabled` is false or both subjects are blank.
+/// `enabled` is false, both subjects are blank, or a subject is invalid.
 ///
-/// Connection failure logs and disables NATS for this run — the rest of the
-/// monitor keeps working.
+/// The broker does not need to be up: the client connects in the background
+/// and keeps reconnecting, so a broker started after the monitor (systemd,
+/// docker compose) is picked up. Meanwhile subscriptions and publications
+/// wait in the client's queue. The rest of the monitor never waits for NATS.
 pub async fn run(cfg: NatsConfig, state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) {
     if !cfg.enabled {
         return;
@@ -243,40 +248,52 @@ pub async fn run(cfg: NatsConfig, state: Arc<AppState>, mut shutdown: watch::Rec
         eprintln!("nats: both publish_subject and subscribe_subject are empty, disabling");
         return;
     }
-
-    let client = match async_nats::ConnectOptions::new()
-        .no_echo()
-        .connect(&cfg.url)
-        .await
-    {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("nats: connect to {} failed: {e}, disabling", cfg.url);
+    // The config parser checks these too; this guards other callers, since an
+    // invalid publish subject would fail every single publication.
+    let subject_checks = [
+        (
+            "publish_subject",
+            &cfg.publish_subject,
+            validate_publish_subject(&cfg.publish_subject),
+        ),
+        (
+            "subscribe_subject",
+            &cfg.subscribe_subject,
+            validate_subscribe_subject(&cfg.subscribe_subject),
+        ),
+    ];
+    for (key, subject, check) in subject_checks {
+        if let Err(e) = check {
+            eprintln!("nats: invalid {key} {subject:?}: {e}, disabling");
             return;
         }
+    }
+
+    let connect = async_nats::ConnectOptions::new()
+        .no_echo()
+        .retry_on_initial_connect()
+        .connect(&cfg.url);
+    let client = tokio::select! {
+        result = connect => match result {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("nats: cannot use {}: {e}, disabling", cfg.url);
+                return;
+            }
+        },
+        _ = shutdown.changed() => return,
     };
-    eprintln!("nats: connected to {}", cfg.url);
+    eprintln!("nats: connecting to {} in the background", cfg.url);
 
     // ── Subscriber leg ──────────────────────────────────────────────────────
-    let subscriber_task = if !cfg.subscribe_subject.is_empty() {
-        match client.subscribe(cfg.subscribe_subject.clone()).await {
-            Ok(sub) => {
-                let s = Arc::clone(&state);
-                let mut rx = shutdown.clone();
-                let subject = cfg.subscribe_subject.clone();
-                Some(tokio::spawn(async move {
-                    eprintln!("nats: subscribed to {subject}");
-                    run_subscriber(sub, s, &mut rx).await;
-                }))
-            }
-            Err(e) => {
-                eprintln!("nats: subscribe to {} failed: {e}", cfg.subscribe_subject);
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let subscriber_task = (!cfg.subscribe_subject.is_empty()).then(|| {
+        tokio::spawn(run_subscription(
+            client.clone(),
+            cfg.subscribe_subject.clone(),
+            Arc::clone(&state),
+            shutdown.clone(),
+        ))
+    });
 
     // ── Publisher leg ───────────────────────────────────────────────────────
     let publisher_task = if !cfg.publish_subject.is_empty() {
@@ -299,6 +316,51 @@ pub async fn run(cfg: NatsConfig, state: Arc<AppState>, mut shutdown: watch::Rec
     }
     if let Some(h) = publisher_task {
         let _ = h.await;
+    }
+}
+
+/// Subscribe to `subject`, and subscribe again with backoff whenever that
+/// fails or the subscription ends, until shutdown. A failed subscription used
+/// to leave the monitor running with the publisher only.
+async fn run_subscription(
+    client: async_nats::Client,
+    subject: String,
+    state: Arc<AppState>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut backoff = Backoff::new();
+    loop {
+        match client.subscribe(subject.clone()).await {
+            Ok(sub) => {
+                backoff.reset();
+                eprintln!("nats: subscribed to {subject}");
+                run_subscriber(sub, Arc::clone(&state), &mut shutdown).await;
+                if *shutdown.borrow() {
+                    return;
+                }
+                eprintln!("nats: subscription to {subject} ended");
+            }
+            Err(e) => eprintln!("nats: subscribe to {subject} failed: {e}"),
+        }
+        let delay = backoff.next_delay();
+        tokio::select! {
+            _ = shutdown.changed() => return,
+            _ = tokio::time::sleep(delay) => {}
+        }
+    }
+}
+
+/// `publish` only queues: flush what is pending so the last events are not
+/// lost at shutdown, within `FLUSH_TIMEOUT`. Skipped when disconnected, as
+/// nothing could be sent anyway.
+async fn flush_before_exit(client: &async_nats::Client) {
+    if client.connection_state() != async_nats::connection::State::Connected {
+        return;
+    }
+    match tokio::time::timeout(FLUSH_TIMEOUT, client.flush()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => eprintln!("nats: final flush failed: {e}"),
+        Err(_) => eprintln!("nats: final flush timed out after {FLUSH_TIMEOUT:?}"),
     }
 }
 
@@ -353,7 +415,10 @@ async fn run_publisher(
     loop {
         tokio::select! {
             biased;
-            _ = shutdown.changed() => return,
+            _ = shutdown.changed() => {
+                flush_before_exit(&client).await;
+                return;
+            }
             recv = rx.recv() => {
                 match recv {
                     Ok(event) => {
@@ -891,6 +956,93 @@ mod integration {
         assert_eq!(options["echo"], serde_json::Value::Bool(false));
     }
 
+    /// Regression: if the broker was not up when the monitor started (systemd,
+    /// docker compose), NATS was disabled for the whole run.
+    #[tokio::test]
+    async fn broker_started_after_the_monitor_is_picked_up() {
+        // Reserve a port nothing listens on yet.
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let state = Arc::new(AppState::new(Duration::from_secs(3600)));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let cfg = NatsConfig {
+            enabled: true,
+            url: format!("nats://{addr}"),
+            publish_subject: "dgaard.events".to_string(),
+            subscribe_subject: "upstream.events".to_string(),
+        };
+        let handle = tokio::spawn(super::run(cfg, Arc::clone(&state), shutdown_rx));
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !handle.is_finished(),
+            "NATS gave up while the broker was down"
+        );
+        let mock = MockNats::start_on(&addr.to_string()).await.unwrap();
+
+        // Subscriber leg: the queued SUB reaches the broker once connected.
+        let probe = format!(
+            "{{\"ts\":{},\"domain_hash\":1,\"client_ip\":\"10.0.0.2\",\"action\":\"Allowed\"}}",
+            unix_now()
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !mock.push("upstream.events", probe.as_bytes()).await {
+            assert!(std::time::Instant::now() < deadline, "never subscribed");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while state.stats.read().await.total < 1 {
+            assert!(std::time::Instant::now() < deadline, "inbound event lost");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // Publisher leg.
+        state.record_event(sample_event()).await;
+        let pubs = mock.wait_for_publishes(1, Duration::from_secs(5)).await;
+        assert_eq!(pubs[0].subject, "dgaard.events");
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(3), handle).await;
+    }
+
+    /// Regression: `connect` could not be interrupted by shutdown.
+    #[tokio::test]
+    async fn shutdown_is_prompt_while_the_broker_is_unreachable() {
+        let state = Arc::new(AppState::new(Duration::from_secs(3600)));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let cfg = NatsConfig {
+            enabled: true,
+            url: "nats://127.0.0.1:1".to_string(),
+            publish_subject: "dgaard.events".to_string(),
+            subscribe_subject: "upstream.events".to_string(),
+        };
+        let handle = tokio::spawn(super::run(cfg, state, shutdown_rx));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let _ = shutdown_tx.send(true);
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("run() must stop promptly without a broker")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalid_subject_disables_nats_without_dialling() {
+        let state = Arc::new(AppState::new(Duration::from_secs(3600)));
+        let (_tx, rx) = watch::channel(false);
+        let cfg = NatsConfig {
+            enabled: true,
+            url: "nats://127.0.0.1:1".to_string(),
+            publish_subject: "dgaard.*".to_string(),
+            subscribe_subject: String::new(),
+        };
+        tokio::time::timeout(Duration::from_secs(1), super::run(cfg, state, rx))
+            .await
+            .expect("invalid subject must disable NATS at once");
+    }
+
     #[tokio::test]
     async fn disabled_config_is_a_noop() {
         let state = Arc::new(AppState::new(Duration::from_secs(3600)));
@@ -943,7 +1095,12 @@ mod mock_nats {
 
     impl MockNats {
         pub async fn start() -> std::io::Result<Self> {
-            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            Self::start_on("127.0.0.1:0").await
+        }
+
+        /// Start on a given address, e.g. to come up after a client tried it.
+        pub async fn start_on(addr: &str) -> std::io::Result<Self> {
+            let listener = TcpListener::bind(addr).await?;
             let addr = listener.local_addr()?;
 
             let published: Arc<Mutex<Vec<Published>>> = Arc::new(Mutex::new(Vec::new()));

@@ -142,17 +142,20 @@ beaconing_cov_threshold = 0.15
 # ---------------------------------------------------------------------------
 # Lets one monitor publish enriched events on a NATS subject and subscribe
 # to another daemon's or monitor's feed. Disabled by default; when enabled
-# the local Unix socket input still runs in parallel.
+# the local Unix socket input still runs in parallel. The broker may start
+# after the monitor: the connection is retried in the background.
 [nats]
 enabled = false
 url = "nats://127.0.0.1:4222"
 
 # Subject the monitor publishes enriched events on. Empty disables this leg.
+# Dot-separated tokens, no spaces, no wildcards (checked at startup).
 publish_subject = "dgaard.events"
 
 # Subject the monitor subscribes to. Set to "dgaard.events" to receive
 # events from peer monitors, or "dgaard.scores" to consume a daemon's
-# scoring feed. Empty disables this leg.
+# scoring feed. Empty disables this leg. Wildcards are allowed as whole
+# tokens: `*` matches one token, `>` (last token only) matches the rest.
 # Only events from the local daemon are published: events received here are
 # never re-published, so monitors sharing one subject do not loop. The
 # connection disables server echo, so a monitor does not receive its own

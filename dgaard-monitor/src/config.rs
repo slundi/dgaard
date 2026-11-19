@@ -618,6 +618,13 @@ fn parse_nats(table: &toml_span::value::Table<'_>) -> Result<NatsConfig, ConfigE
     if let Some(s) = get_str(table, "subscribe_subject")? {
         cfg.subscribe_subject = s.to_string();
     }
+    let span_of = |key: &str| table.get(key).map_or_else(Span::default, |v| v.span);
+    dgaard_monitor_nats::config::validate_publish_subject(&cfg.publish_subject).map_err(|e| {
+        ConfigError::invalid_value("publish_subject", e, span_of("publish_subject"))
+    })?;
+    dgaard_monitor_nats::config::validate_subscribe_subject(&cfg.subscribe_subject).map_err(
+        |e| ConfigError::invalid_value("subscribe_subject", e, span_of("subscribe_subject")),
+    )?;
     Ok(cfg)
 }
 
@@ -1385,6 +1392,29 @@ subscribe_subject = "upstream.events"
         assert_eq!(cfg.nats.url, "nats://broker.internal:4222");
         assert_eq!(cfg.nats.publish_subject, "site42.events");
         assert_eq!(cfg.nats.subscribe_subject, "upstream.events");
+    }
+
+    /// Regression: a wildcard or space in `publish_subject` made every
+    /// publication fail at runtime, with one log line per event.
+    #[cfg(feature = "nats")]
+    #[test]
+    fn test_nats_invalid_subjects_are_rejected() {
+        for (key, subject) in [
+            ("publish_subject", "dgaard.*"),
+            ("publish_subject", "dgaard events"),
+            ("subscribe_subject", "dgaard.>.events"),
+            ("subscribe_subject", "a..b"),
+        ] {
+            let err = parse_err(&format!("[nats]\n{key} = \"{subject}\"\n"));
+            let message = err.to_string();
+            assert!(matches!(err, ConfigError::InvalidValue { .. }), "{message}");
+            assert!(
+                message.contains(key) && message.contains("line 2"),
+                "{message}"
+            );
+        }
+        let cfg = Config::parse("[nats]\nsubscribe_subject = \"dgaard.>\"\n").unwrap();
+        assert_eq!(cfg.nats.subscribe_subject, "dgaard.>");
     }
 
     #[cfg(feature = "nats")]
