@@ -972,6 +972,7 @@ name = "dgaard-monitor"
 version = "0.2.0"
 dependencies = [
  "bpaf",
+ "dgaard-engine",
  "dgaard-monitor-core",
  "dgaard-monitor-nats",
  "dgaard-monitor-rest",

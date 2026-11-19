@@ -184,12 +184,15 @@ pub struct InputConfig {
     pub peer_uid: Option<u32>,
 }
 
+/// Same as dgaard's `server.stats_socket_path` default, so both work together
+/// out of the box (checked by a test against `dgaard-engine`).
 fn default_socket() -> String {
     "/tmp/dgaard_stats.sock".to_string()
 }
 
+/// Same as dgaard's `sources.host_index_path` default.
 fn default_index() -> String {
-    "/var/lib/dns/hosts.bin".to_string()
+    "/var/dgaard/host_mapping.bin".to_string()
 }
 
 impl Default for InputConfig {
@@ -1083,7 +1086,7 @@ mod tests {
         let f = write_temp("[input]\n");
         let cfg = Config::load(f.path().to_str().unwrap()).unwrap();
         assert_eq!(cfg.input.socket, "/tmp/dgaard_stats.sock");
-        assert_eq!(cfg.input.index, "/var/lib/dns/hosts.bin");
+        assert_eq!(cfg.input.index, "/var/dgaard/host_mapping.bin");
     }
 
     #[test]
@@ -1098,6 +1101,17 @@ index  = "/data/hosts.bin"
         let cfg = Config::load(f.path().to_str().unwrap()).unwrap();
         assert_eq!(cfg.input.socket, "/run/dns.sock");
         assert_eq!(cfg.input.index, "/data/hosts.bin");
+    }
+
+    /// Regression: the monitor looked for the index at /var/lib/dns/hosts.bin
+    /// while dgaard writes /var/dgaard/host_mapping.bin by default. Both
+    /// default paths must keep matching dgaard's.
+    #[test]
+    fn default_paths_match_dgaard() {
+        let dgaard = dgaard_engine::Config::default();
+        let monitor = Config::default();
+        assert_eq!(monitor.input.socket, dgaard.server.stats_socket_path);
+        assert_eq!(monitor.input.index, dgaard.sources.host_index_path);
     }
 
     // --- PersistenceConfig ---

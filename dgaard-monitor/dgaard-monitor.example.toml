@@ -9,7 +9,9 @@
 # Input — where to read events from
 # ---------------------------------------------------------------------------
 [input]
-# Unix Domain Socket exposed by the dgaard DNS proxy.
+# Unix Domain Socket exposed by the dgaard DNS proxy. Must match
+# server.stats_socket_path in dgaard's config (both default to
+# /tmp/dgaard_stats.sock).
 socket = "/var/run/dgaard/stats.sock"
 
 # Who may serve that socket. Without this setting the monitor trusts root,
@@ -19,7 +21,9 @@ socket = "/var/run/dgaard/stats.sock"
 # could have planted it. Set the UID dgaard runs as to trust it explicitly.
 # peer_uid = 997
 
-# Binary host-index file produced by dgaard (hash → domain mapping).
+# Binary host-index file produced by dgaard (hash → domain mapping). Must
+# match sources.host_index_path in dgaard's config (both default to
+# /var/dgaard/host_mapping.bin).
 index = "/var/dgaard/host_mapping.bin"
 
 # dgaard engine config, read only for its [[security.custom_flags]] so that

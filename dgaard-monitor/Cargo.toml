@@ -22,4 +22,6 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net"
 toml-span.workspace = true
 
 [dev-dependencies]
+# Only to check that the monitor's default paths match dgaard's.
+dgaard-engine.workspace = true
 tempfile.workspace = true

@@ -22,6 +22,24 @@ let
   # --- scenario: all defaults ---
   cfgDefaults = eval { };
 
+  # --- scenario: dgaard on the same host — the monitor follows its paths ---
+  cfgWithDgaard =
+    (pkgs.nixos [
+      ../../nix/modules/dgaard-monitor.nix
+      ../../nix/modules/dgaard.nix
+      base
+      {
+        services.dgaard = {
+          enable = true;
+          package = pkgs.hello;
+        };
+        services.dgaard-monitor = {
+          enable = true;
+          package = pkgs.hello;
+        };
+      }
+    ]).config;
+
   # --- scenario: engine_config_path set ---
   cfgWithEngineConfig = eval {
     input.engineConfigPath = "/etc/dgaard/dgaard.toml";
@@ -116,7 +134,10 @@ pkgs.runCommand "test-dgaard-monitor-module" { nativeBuildInputs = [ pkgs.ripgre
   cat ${toml cfgDefaults}
   # [input] defaults
   rg -qF 'socket = "/tmp/dgaard_stats.sock"'    ${toml cfgDefaults}
-  rg -qF 'index = "/var/lib/dns/hosts.bin"'     ${toml cfgDefaults}
+  rg -qF 'index = "/var/dgaard/host_mapping.bin"' ${toml cfgDefaults}
+  # [input] follows services.dgaard when it runs on the same host
+  rg -qF 'socket = "/run/dgaard/stats.sock"'           ${toml cfgWithDgaard}
+  rg -qF 'index = "/var/lib/dgaard/host_mapping.bin"'  ${toml cfgWithDgaard}
   rg -qF 'event_buffer = 8192'                  ${toml cfgDefaults}
   # engine_config_path must be absent when null
   if rg -q 'engine_config_path' ${toml cfgDefaults}; then

@@ -8,6 +8,15 @@ let
   cfg = config.services.dgaard-monitor;
   tomlFormat = pkgs.formats.toml { };
 
+  # When dgaard runs on the same host (services.dgaard), read the stats socket
+  # and host index where it writes them; otherwise use the binary's defaults,
+  # which match dgaard's own.
+  dgaard = config.services.dgaard or { };
+  dgaardEnabled = dgaard.enable or false;
+  fromDgaard =
+    path: fallback:
+    if dgaardEnabled then lib.attrByPath path fallback (dgaard.settings or { }) else fallback;
+
   # Listen address and token are shared by every REST module ([server]).
   mkConnectivity = desc: defaultPort: defaultRootPath: {
     enabled = lib.mkOption {
@@ -140,12 +149,20 @@ in
     input = {
       socket = lib.mkOption {
         type = lib.types.str;
-        default = "/tmp/dgaard_stats.sock";
+        default = fromDgaard [ "server" "stats_socket_path" ] "/tmp/dgaard_stats.sock";
+        defaultText = lib.literalExpression ''
+          config.services.dgaard.settings.server.stats_socket_path when services.dgaard
+          is enabled, "/tmp/dgaard_stats.sock" otherwise
+        '';
         description = "Unix Domain Socket exposed by the dgaard DNS proxy.";
       };
       index = lib.mkOption {
         type = lib.types.str;
-        default = "/var/lib/dns/hosts.bin";
+        default = fromDgaard [ "sources" "host_index_path" ] "/var/dgaard/host_mapping.bin";
+        defaultText = lib.literalExpression ''
+          config.services.dgaard.settings.sources.host_index_path when services.dgaard
+          is enabled, "/var/dgaard/host_mapping.bin" otherwise
+        '';
         description = "Binary host-index file produced by dgaard (hash → domain mapping).";
       };
       engineConfigPath = lib.mkOption {

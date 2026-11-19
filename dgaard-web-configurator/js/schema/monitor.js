@@ -31,7 +31,7 @@ export const MONITOR_SCHEMA = {
         {
           key: 'index',
           type: 'path',
-          default: '/var/lib/dns/hosts.bin',
+          default: '/var/dgaard/host_mapping.bin',
           doc: 'Binary host-index file produced by dgaard (hash → domain mapping).\nMust match sources.host_index_path in config.toml.',
         },
         {

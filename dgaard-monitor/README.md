@@ -38,5 +38,5 @@ any message it does not understand instead of reconnecting.
 cargo install dgaard-monitor
 
 # attach to a running dgaard instance
-dgaard-monitor --socket /tmp/dgaard_stats.sock --index /var/lib/dgaard/hosts.bin
+dgaard-monitor --socket /tmp/dgaard_stats.sock --index /var/dgaard/host_mapping.bin
 ```

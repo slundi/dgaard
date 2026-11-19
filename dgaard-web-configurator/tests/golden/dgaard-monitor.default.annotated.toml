@@ -14,7 +14,7 @@ socket = "/tmp/dgaard_stats.sock"
 
 # Binary host-index file produced by dgaard (hash → domain mapping).
 # Must match sources.host_index_path in config.toml.
-index = "/var/lib/dns/hosts.bin"
+index = "/var/dgaard/host_mapping.bin"
 
 # Optional path to the dgaard engine config. When set, the monitor reads
 # [[security.custom_flags]] from it to resolve custom bits (16–31) to their
