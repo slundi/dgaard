@@ -43,7 +43,7 @@ use std::collections::VecDeque;
 
 use crate::tui::util::DomainColor;
 use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
-use dgaard_monitor_core::util::format_client_ip;
+use dgaard_monitor_core::util::{custom_bit_label, format_client_ip};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -144,16 +144,18 @@ fn reason_str(r: StatBlockReason) -> String {
         (StatBlockReason::LOW_TTL, "LowTTL"),
         (StatBlockReason::ASN_BLOCKED, "AsnBlocked"),
     ];
-    let parts: Vec<&str> = FLAGS
+    let mut parts: Vec<String> = FLAGS
         .iter()
         .filter(|(flag, _)| r.contains(*flag))
-        .map(|(_, name)| *name)
+        .map(|(_, name)| name.to_string())
         .collect();
-    if parts.is_empty() {
-        String::new()
-    } else {
-        parts.join("+")
-    }
+    // Custom bits 16–31: the engine's codes (`input.engine_config_path`).
+    parts.extend(
+        (16u8..=31)
+            .filter(|bit| r.bits() & (1 << bit) != 0)
+            .map(custom_bit_label),
+    );
+    parts.join("+")
 }
 
 /// Build the display string for the Flags column from a `StatAction`.
@@ -385,6 +387,15 @@ mod tests {
         std::net::Ipv4Addr::new(a, b, c, d)
             .to_ipv6_mapped()
             .octets()
+    }
+
+    #[test]
+    fn test_flags_label_shows_custom_bits() {
+        let r = StatBlockReason::from_bits_retain(1 << 23) | StatBlockReason::NRD_LIST;
+        assert_eq!(
+            flags_label(&StatAction::Blocked(r)),
+            "Blocked:NRD+CUSTOM_BIT_23"
+        );
     }
 
     // --- format_timestamp ---

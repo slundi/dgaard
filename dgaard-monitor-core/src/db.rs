@@ -243,7 +243,8 @@ impl Database {
             let flags_labels = match flags {
                 Some(bits) => {
                     use crate::protocol::StatBlockReason;
-                    crate::util::reason_labels(StatBlockReason::from_bits_truncate(bits))
+                    // retain, not truncate: custom bits 16–31 have labels too.
+                    crate::util::reason_labels(StatBlockReason::from_bits_retain(bits))
                 }
                 None => vec![],
             };

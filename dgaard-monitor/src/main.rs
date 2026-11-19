@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod custom_flags;
 mod headless;
 mod lifecycle;
 
@@ -37,6 +38,19 @@ async fn main() {
     opts.apply_overrides(&mut cfg);
     for warning in &cfg.warnings {
         eprintln!("Warning: config: {warning}");
+    }
+
+    // Custom flag labels (bits 16–31) from the engine config, for every output.
+    if let Some(path) = &cfg.input.engine_config_path {
+        match custom_flags::load(path) {
+            Ok(labels) => {
+                eprintln!("Loaded {} custom flag labels from {path}", labels.len());
+                dgaard_monitor_core::util::set_custom_flag_labels(labels);
+            }
+            Err(e) => eprintln!(
+                "Warning: custom flag labels unavailable ({path}): {e}; showing CUSTOM_BIT_<n>"
+            ),
+        }
     }
 
     // Only REST services read the sliding window; skip it otherwise.
@@ -135,19 +149,6 @@ async fn main() {
         }));
     }
 
-    // Unix socket reader (always running), reconnects with backoff and
-    // checks who serves the socket before reading from it.
-    let peer_policy = match peer_uid {
-        Some(uid) => io::socket::PeerPolicy::Uid(uid),
-        None => io::socket::PeerPolicy::Auto,
-    };
-    handles.push(tokio::spawn(io::socket::run_reader(
-        socket_path,
-        Arc::clone(&state),
-        shutdown_rx.clone(),
-        peer_policy,
-    )));
-
     // TUI or headless JSON logger — mutually exclusive.
     let mut ui_task: Option<tokio::task::JoinHandle<()>> = None;
     if opts.headless {
@@ -218,6 +219,21 @@ async fn main() {
             shutdown_rx.clone(),
         ))
     });
+
+    // Unix socket reader (always running), reconnects with backoff and
+    // checks who serves the socket before reading from it. Spawned last: the
+    // sinks above subscribe to the event bus when they start, and an event
+    // read before a sink subscribed would never reach it.
+    let peer_policy = match peer_uid {
+        Some(uid) => io::socket::PeerPolicy::Uid(uid),
+        None => io::socket::PeerPolicy::Auto,
+    };
+    handles.push(tokio::spawn(io::socket::run_reader(
+        socket_path,
+        Arc::clone(&state),
+        shutdown_rx.clone(),
+        peer_policy,
+    )));
 
     // --- Wait for a termination signal, or for the user to quit the TUI ---
 

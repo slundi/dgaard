@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::timeout;
 
 use crate::config::{ForwardFormat, ForwardingConfig};
-use crate::protocol::{StatAction, StatBlockReason, StatError};
+use crate::protocol::{StatAction, StatError};
 use crate::state::{AppState, Sink};
 
 // --- HTTP client ---
@@ -287,25 +287,13 @@ fn unix_to_rfc3339(secs: u64) -> String {
 
 // --- Reason labels ---
 
-/// Return a `|`-joined list of set flag names from the action's reason, or `"-"`.
+/// Return a `|`-joined list of set flag names from the action's reason, or
+/// `"-"`. Custom bits 16–31 use the engine's codes, like every other output.
 fn reason_labels(action: &StatAction) -> String {
-    let reason = match action {
-        StatAction::Blocked(r) | StatAction::Suspicious(r) | StatAction::HighlySuspicious(r) => *r,
-        _ => return "-".to_string(),
-    };
-    if reason.is_empty() {
-        return "-".to_string();
+    match crate::util::flags_of(action) {
+        Some(reason) if !reason.is_empty() => crate::util::reason_labels(reason).join("|"),
+        _ => "-".to_string(),
     }
-    let named: Vec<&str> = reason.iter_names().map(|(n, _)| n).collect();
-    let unknown = reason.bits() & !StatBlockReason::all().bits();
-    if unknown != 0 {
-        return if named.is_empty() {
-            format!("CUSTOM_0x{unknown:08x}")
-        } else {
-            format!("{}|CUSTOM_0x{unknown:08x}", named.join("|"))
-        };
-    }
-    named.join("|")
 }
 
 // --- RFC 5424 syslog ---
@@ -1196,6 +1184,15 @@ mod tests {
         assert!(labels.contains("STATIC_BLACKLIST"), "got: {labels}");
         assert!(labels.contains("NRD_LIST"), "got: {labels}");
         assert!(labels.contains('|'), "expected pipe separator: {labels}");
+    }
+
+    #[test]
+    fn test_reason_labels_custom_bits_are_named_not_hex() {
+        let r = StatBlockReason::from_bits_retain(1 << 22) | StatBlockReason::NRD_LIST;
+        assert_eq!(
+            reason_labels(&StatAction::Blocked(r)),
+            "NRD_LIST|CUSTOM_BIT_22"
+        );
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -69,8 +70,36 @@ pub fn flags_of(action: &StatAction) -> Option<StatBlockReason> {
     }
 }
 
+/// Labels of the custom bits 16–31, from the engine's
+/// `[[security.custom_flags]]` (`(bit, code)`). Set once at startup.
+static CUSTOM_FLAG_LABELS: OnceLock<Vec<(u8, String)>> = OnceLock::new();
+
+/// Register the custom bit labels used by every output. Returns `false` if
+/// they were already set (they are process-wide and immutable).
+pub fn set_custom_flag_labels(labels: Vec<(u8, String)>) -> bool {
+    CUSTOM_FLAG_LABELS.set(labels).is_ok()
+}
+
+fn custom_flag_labels() -> &'static [(u8, String)] {
+    CUSTOM_FLAG_LABELS.get().map_or(&[], Vec::as_slice)
+}
+
+/// Label of one custom bit (16–31): its configured code, or `CUSTOM_BIT_<n>`.
+pub fn custom_bit_label(bit: u8) -> String {
+    custom_label(bit, custom_flag_labels())
+}
+
+fn custom_label(bit: u8, defs: &[(u8, String)]) -> String {
+    defs.iter()
+        .find(|(b, _)| *b == bit)
+        .map(|(_, code)| code.clone())
+        .unwrap_or_else(|| format!("CUSTOM_BIT_{bit}"))
+}
+
+/// Labels of every bit set in `r`, custom bits resolved through the
+/// registered labels (see [`set_custom_flag_labels`]).
 pub fn reason_labels(r: StatBlockReason) -> Vec<String> {
-    reason_labels_with_defs(r, &[])
+    reason_labels_with_defs(r, custom_flag_labels())
 }
 
 /// Like `reason_labels` but resolves custom bits 16–31 using the supplied
@@ -130,12 +159,7 @@ pub fn reason_labels_with_defs(r: StatBlockReason, defs: &[(u8, String)]) -> Vec
     let bits = r.bits();
     for bit in 16u8..=31 {
         if bits & (1u32 << bit) != 0 {
-            let label = defs
-                .iter()
-                .find(|(b, _)| *b == bit)
-                .map(|(_, code)| code.clone())
-                .unwrap_or_else(|| format!("CUSTOM_BIT_{}", bit));
-            v.push(label);
+            v.push(custom_label(bit, defs));
         }
     }
     v
@@ -270,6 +294,38 @@ mod tests {
     #[test]
     fn reason_labels_empty_for_empty_flags() {
         assert!(reason_labels(StatBlockReason::empty()).is_empty());
+    }
+
+    /// Every flag `StatBlockReason` defines has its own label, so outputs
+    /// built on `reason_labels` lose nothing.
+    #[test]
+    fn every_defined_flag_has_its_label() {
+        for (name, flag) in StatBlockReason::all().iter_names() {
+            assert_eq!(reason_labels_with_defs(flag, &[]), [name], "{name}");
+        }
+    }
+
+    #[test]
+    fn custom_bits_use_the_supplied_codes() {
+        let r = StatBlockReason::from_bits_retain((1 << 20) | (1 << 21))
+            | StatBlockReason::HIGH_ENTROPY;
+        let defs = [(20, "AI_GENERATED".to_string())];
+        assert_eq!(
+            reason_labels_with_defs(r, &defs),
+            ["HIGH_ENTROPY", "AI_GENERATED", "CUSTOM_BIT_21"]
+        );
+    }
+
+    /// Regression: `input.engine_config_path` was parsed but never used, so
+    /// custom bits always rendered as `CUSTOM_BIT_<n>`. Bit 29 is used by no
+    /// other test, the registry being process-wide.
+    #[test]
+    fn registered_labels_reach_reason_labels() {
+        set_custom_flag_labels(vec![(29, "CORP_FEED".to_string())]);
+        let r = StatBlockReason::from_bits_retain(1 << 29);
+        assert_eq!(reason_labels(r), ["CORP_FEED"]);
+        assert_eq!(custom_bit_label(29), "CORP_FEED");
+        assert!(!set_custom_flag_labels(Vec::new()), "labels are set once");
     }
 
     // ── event_to_record ───────────────────────────────────────────────────────

@@ -176,8 +176,6 @@ pub struct InputConfig {
     /// When set, the monitor parses `[[security.custom_flags]]` from this file
     /// to resolve custom bit indices (16–31) to their configured `code` labels.
     /// Bits with no matching entry render as `CUSTOM_BIT_<n>`.
-    // Parsed but not used yet: see review finding F1.
-    #[allow(dead_code)]
     pub engine_config_path: Option<String>,
     /// How many events a slow sink may fall behind before it loses them.
     pub event_buffer: usize,
