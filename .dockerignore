@@ -1,0 +1,19 @@
+# Build context for the Dockerfiles: only what `cargo build` needs. Without
+# this, `COPY . .` ships the whole target/ directory (often tens of GB) to the
+# Docker daemon on every build.
+target/
+**/target/
+result
+result-*
+.git/
+.direnv/
+.claude/
+lcov.info
+
+# Not needed to compile any workspace crate.
+docs/
+nix/
+dgaard-web-configurator/
+**/*.sqlite
+**/*.sqlite-*
+**/*.png
