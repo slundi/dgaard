@@ -137,7 +137,9 @@ fn render_frame(frame: &mut ratatui::Frame, app: &TuiApp, tab_states: &mut TabSt
         Tab::Talkers => {
             tabs::talkers::render(&mut tab_states.talkers, app.frozen, body_area, frame)
         }
-        Tab::Timelines => tabs::timelines::render(body_area, frame),
+        Tab::Timelines => {
+            tabs::timelines::render(&mut tab_states.timelines, app.frozen, body_area, frame)
+        }
         Tab::About => tabs::about::render(&app.keymap, body_area, frame),
     }
 }

@@ -77,7 +77,12 @@ impl TuiApp {
                 }
             }
             // Handled at a higher level (quit, popups, search mode)
-            Action::Quit | Action::Pause | Action::Filter | Action::Sort | Action::Search => {}
+            Action::Quit
+            | Action::Pause
+            | Action::Filter
+            | Action::Sort
+            | Action::Search
+            | Action::Zoom => {}
         }
     }
 }

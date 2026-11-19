@@ -33,14 +33,14 @@
   - [x] Action Styling: Full row highlight or prefix icons (e.g., ✔ for Allowed, ✘ for Blocked).
 - [x] Tab `Talkers` (most active client IPs) with column display: Client or name, DNS request count, per filter count, first/last seen
   - [x] Add Reverse DNS: If the monitor can resolve local IPs to hostnames, display the hostname in the Talker tab.
-- [ ] Tab `Timelines` for 24h trends: Total queries, Client activity
+- [x] Tab `Timelines` for 24h trends: Total queries, Client activity
 
 > The `Queries` tab shows the event log with virtual scrolling (↑/↓, PgUp/PgDn, Home/End);
 > its filter and sort popups (`f`, `s`) are not wired yet. The `Talkers` tab ranks clients
 > (`s` cycles the sort) and shows PTR hostnames for local addresses only (private, loopback,
 > link-local, CGNAT, ULA); its filter popup (`f`) and per-client detail popup are not written
-> yet. The `Timelines` logic exists and is unit-tested (`dgaard-monitor-tui/src/tui/tabs/`), but
-> the tab still shows a placeholder. The unwired items carry
+> yet. The `Timelines` tab shows stacked activity and client bars per bucket (`t` zoom 1m–1d,
+> `s` newest/oldest), every zoom level kept in memory. Items still waiting for a popup carry
 > `#[expect(dead_code, reason = ...)]`, so the compiler flags each marker to remove once wired.
 
 - [x] Tab `About`: contains project name, version, repo URL `https://codeberg.org/slundi/dgaard`, license Apache 2, separator, key mapping

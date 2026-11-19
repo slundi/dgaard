@@ -22,8 +22,9 @@ pub enum Flow {
 /// Apply one key press to the TUI state.
 ///
 /// Unbound keys and key releases are ignored.  Scrolling goes to the active
-/// tab's own state when it has one (Queries, Talkers), `TuiApp::scroll`
-/// otherwise.  On the Talkers tab, `s` cycles the sort order.
+/// tab's own state when it has one (Queries, Talkers, Timelines),
+/// `TuiApp::scroll` otherwise.  `s` cycles the sort order on Talkers and
+/// Timelines; `t` cycles the Timelines bucket size.
 pub fn handle_key(key: &KeyEvent, app: &mut TuiApp, tabs: &mut TabStates) -> Flow {
     let Some(action) = app.keymap.resolve_event(key) else {
         return Flow::Continue;
@@ -33,6 +34,14 @@ pub fn handle_key(key: &KeyEvent, app: &mut TuiApp, tabs: &mut TabStates) -> Flo
         Action::ClearStats => tabs.clear(),
         Action::Sort if app.active_tab == Tab::Talkers => {
             tabs.talkers.sort = tabs.talkers.sort.next();
+            return Flow::Continue;
+        }
+        Action::Sort if app.active_tab == Tab::Timelines => {
+            tabs.timelines.cycle_sort();
+            return Flow::Continue;
+        }
+        Action::Zoom if app.active_tab == Tab::Timelines => {
+            tabs.timelines.cycle_zoom();
             return Flow::Continue;
         }
         _ => {}
@@ -51,7 +60,8 @@ fn scrollable_tab(tab: Tab, tabs: &mut TabStates) -> Option<&mut dyn Scrollable>
     match tab {
         Tab::Queries => Some(&mut tabs.queries),
         Tab::Talkers => Some(&mut tabs.talkers),
-        Tab::Dashboard | Tab::Timelines | Tab::About => None,
+        Tab::Timelines => Some(&mut tabs.timelines),
+        Tab::Dashboard | Tab::About => None,
     }
 }
 
@@ -279,5 +289,54 @@ mod tests {
         let (mut app, mut tabs) = talkers_setup(3);
         handle_key(&key(KeyCode::Char('c')), &mut app, &mut tabs);
         assert_eq!(tabs.talkers.client_count(), 0);
+    }
+
+    // --- Timelines ---
+
+    fn timelines_setup(hours: u64) -> (TuiApp, TabStates) {
+        let mut app = TuiApp::new(&TuiConfig::default());
+        app.active_tab = Tab::Timelines;
+        let mut tabs = TabStates::default();
+        for hour in 0..hours {
+            tabs.push_event(&allowed(hour * 3600), "example.com");
+        }
+        tabs.timelines.set_viewport(10);
+        (app, tabs)
+    }
+
+    #[test]
+    fn test_t_cycles_timelines_zoom() {
+        use crate::tui::tabs::timelines::TimeZoom;
+        let (mut app, mut tabs) = timelines_setup(3);
+        handle_key(&key(KeyCode::Char('t')), &mut app, &mut tabs);
+        assert_eq!(tabs.timelines.zoom, TimeZoom::OneDay);
+    }
+
+    #[test]
+    fn test_t_elsewhere_does_nothing() {
+        use crate::tui::tabs::timelines::TimeZoom;
+        let (mut app, mut tabs) = timelines_setup(3);
+        app.active_tab = Tab::Dashboard;
+        handle_key(&key(KeyCode::Char('t')), &mut app, &mut tabs);
+        assert_eq!(tabs.timelines.zoom, TimeZoom::OneHour);
+        assert_eq!(app.active_tab, Tab::Dashboard);
+    }
+
+    #[test]
+    fn test_s_toggles_timelines_sort() {
+        use crate::tui::tabs::timelines::TimelineSort;
+        let (mut app, mut tabs) = timelines_setup(3);
+        handle_key(&key(KeyCode::Char('s')), &mut app, &mut tabs);
+        assert_eq!(tabs.timelines.sort, TimelineSort::OldestFirst);
+    }
+
+    #[test]
+    fn test_timelines_tab_scrolls_its_own_state() {
+        let (mut app, mut tabs) = timelines_setup(30);
+        handle_key(&key(KeyCode::PageDown), &mut app, &mut tabs);
+        assert_eq!(tabs.timelines.scroll(), 10);
+        handle_key(&key(KeyCode::End), &mut app, &mut tabs);
+        assert_eq!(tabs.timelines.scroll(), 20);
+        assert_eq!(app.scroll, 0);
     }
 }

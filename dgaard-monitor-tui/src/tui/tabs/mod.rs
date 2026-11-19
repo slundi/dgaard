@@ -74,6 +74,7 @@ pub struct TabStates {
     pub dashboard: dashboard::DashboardState,
     pub queries: queries::QueriesState,
     pub talkers: talkers::TalkersState,
+    pub timelines: timelines::TimelinesState,
 }
 
 impl TabStates {
@@ -82,14 +83,17 @@ impl TabStates {
     pub fn push_event(&mut self, event: &StatEvent, domain: &str) -> bool {
         self.dashboard.push_event(event, domain);
         self.queries.push_event(event, domain);
+        self.timelines.push_event(event);
         self.talkers.push_event(event)
     }
 
-    /// Forget the session: counters, feeds, the query log and the clients.
+    /// Forget the session: counters, feeds, the query log, the clients and
+    /// the timeline.
     pub fn clear(&mut self) {
         self.dashboard.clear();
         self.queries.clear();
         self.talkers.clear();
+        self.timelines.clear();
     }
 }
 
@@ -114,6 +118,7 @@ mod tests {
         assert_eq!(states.dashboard.global_stats().total_queries, 1);
         assert_eq!(states.queries.row_count(), 1);
         assert_eq!(states.talkers.client_count(), 1);
+        assert_eq!(states.timelines.total_rows(), 1);
     }
 
     #[test]
@@ -131,6 +136,7 @@ mod tests {
         assert_eq!(states.dashboard.global_stats().total_queries, 0);
         assert_eq!(states.queries.row_count(), 0);
         assert_eq!(states.talkers.client_count(), 0);
+        assert_eq!(states.timelines.total_rows(), 0);
     }
 
     #[test]

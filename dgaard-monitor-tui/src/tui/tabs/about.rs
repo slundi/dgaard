@@ -147,7 +147,11 @@ pub fn key_bindings(keymap: &KeyMap) -> Vec<KeyBinding> {
             key: "f".to_string(),
         },
         KeyBinding {
-            action: "Cycle sort (Talkers)",
+            action: "Zoom (Timelines)",
+            key: "t".to_string(),
+        },
+        KeyBinding {
+            action: "Cycle sort",
             key: "s".to_string(),
         },
     ]
@@ -225,8 +229,8 @@ mod tests {
     #[test]
     fn test_key_bindings_count() {
         // 5 direct-tab + 2 cycle nav + 4 configurable + ctrl+c + 4 paging + 4 view
-        // + 2 queries = 22
-        assert_eq!(key_bindings(&default_keymap()).len(), 22);
+        // + filter, zoom, sort = 23
+        assert_eq!(key_bindings(&default_keymap()).len(), 23);
     }
 
     #[test]
@@ -317,6 +321,8 @@ mod tests {
             ("Page Down", Action::PageDown),
             ("First row", Action::ScrollTop),
             ("Last row", Action::ScrollBottom),
+            ("Zoom (Timelines)", Action::Zoom),
+            ("Cycle sort", Action::Sort),
         ];
         for (label, action) in cases {
             let binding = bindings.iter().find(|b| b.action == label).unwrap();
@@ -331,10 +337,7 @@ mod tests {
             .iter()
             .find(|b| b.action == "Filter flags/client")
             .unwrap();
-        let sort = bindings
-            .iter()
-            .find(|b| b.action == "Cycle sort (Talkers)")
-            .unwrap();
+        let sort = bindings.iter().find(|b| b.action == "Cycle sort").unwrap();
         assert_eq!(filter.key, "f");
         assert_eq!(sort.key, "s");
     }

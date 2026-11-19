@@ -45,6 +45,8 @@ pub enum Action {
     Sort,
     /// Enter domain search mode (`/`).
     Search,
+    /// Cycle the bucket size in the Timelines tab (`t`).
+    Zoom,
     /// Clear the active filter and return to the unfiltered view.
     ClearFilter,
     /// Reset the statistics gathered since the TUI started (`c`).
@@ -109,6 +111,7 @@ impl KeyMap {
             "f" => Some(Action::Filter),
             "s" => Some(Action::Sort),
             "/" => Some(Action::Search),
+            "t" => Some(Action::Zoom),
             "esc" => Some(Action::ClearFilter),
             "1" => Some(Action::Tab1),
             "2" => Some(Action::Tab2),
@@ -218,6 +221,12 @@ mod tests {
         assert_eq!(km.resolve("pagedown"), Some(Action::PageDown));
         assert_eq!(km.resolve("home"), Some(Action::ScrollTop));
         assert_eq!(km.resolve("end"), Some(Action::ScrollBottom));
+    }
+
+    #[test]
+    fn test_fixed_zoom() {
+        let km = default_keymap();
+        assert_eq!(km.resolve("t"), Some(Action::Zoom));
     }
 
     #[test]
