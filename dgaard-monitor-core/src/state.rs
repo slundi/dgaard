@@ -229,6 +229,21 @@ impl Default for StateOptions {
     }
 }
 
+/// Poll `condition` until it holds or `timeout` elapses (broadcast channels
+/// do not notify new subscriptions).
+async fn wait_until(condition: impl Fn() -> bool, timeout: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if condition() {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 pub struct AppState {
     /// Host-index entries merged with `live_domains` and `remote_domains`.
     /// Readers use this one.
@@ -329,6 +344,28 @@ impl AppState {
     /// Subscribe to events from the local daemon only.
     pub fn subscribe_local(&self) -> broadcast::Receiver<StatEvent> {
         self.local_tx.subscribe()
+    }
+
+    /// Sinks currently subscribed to every event (`subscribe`).
+    pub fn subscriber_count(&self) -> usize {
+        self.events_tx.receiver_count()
+    }
+
+    /// Publishers currently subscribed to local events (`subscribe_local`).
+    pub fn local_subscriber_count(&self) -> usize {
+        self.local_tx.receiver_count()
+    }
+
+    /// Wait until at least `count` sinks subscribed to every event, or until
+    /// `timeout`. An event recorded before a sink subscribed never reaches it,
+    /// so this tells when emitting is safe. Returns whether they did.
+    pub async fn wait_for_subscribers(&self, count: usize, timeout: Duration) -> bool {
+        wait_until(|| self.subscriber_count() >= count, timeout).await
+    }
+
+    /// Same as [`Self::wait_for_subscribers`], for local-event publishers.
+    pub async fn wait_for_local_subscribers(&self, count: usize, timeout: Duration) -> bool {
+        wait_until(|| self.local_subscriber_count() >= count, timeout).await
     }
 
     /// Record a mapping from the local daemon. It survives index reloads.
@@ -751,6 +788,37 @@ mod tests {
             slow.try_recv(),
             Err(broadcast::error::TryRecvError::Lagged(1))
         ));
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_subscribers() {
+        let state = Arc::new(AppState::new(DEFAULT_WINDOW));
+        assert_eq!(state.subscriber_count(), 0);
+        assert!(
+            !state
+                .wait_for_subscribers(1, Duration::from_millis(30))
+                .await
+        );
+
+        // A sink that subscribes a little later, like a spawned task.
+        let late = Arc::clone(&state);
+        let sink = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let rx = late.subscribe();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            drop(rx);
+        });
+        assert!(state.wait_for_subscribers(1, Duration::from_secs(2)).await);
+        assert_eq!(state.subscriber_count(), 1);
+        // Local publishers are counted apart.
+        assert_eq!(state.local_subscriber_count(), 0);
+        let _local = state.subscribe_local();
+        assert!(
+            state
+                .wait_for_local_subscribers(1, Duration::from_millis(30))
+                .await
+        );
+        sink.abort();
     }
 
     #[tokio::test]

@@ -166,9 +166,14 @@ async fn main() {
         }
     }
 
+    // Sinks that subscribe to the event bus, counted so the socket reader only
+    // starts once they listen: the headless output or TUI is always one.
+    let mut bus_sinks = 1;
+
     // Forwarding sink — only when a file or URL is configured. It never
     // writes to stdout, which belongs to the TUI or the headless JSON stream.
     if fwd_cfg.has_sink() {
+        bus_sinks += 1;
         let s = Arc::clone(&state);
         let rx = shutdown_rx.clone();
         handles.push(tokio::spawn(async move {
@@ -179,6 +184,8 @@ async fn main() {
     // Optional connectivity services (REST API, WebSocket, MCP, Web UI).
     #[cfg(feature = "rest")]
     {
+        // The web UI ingests every event; the other modules do not.
+        bus_sinks += usize::from(web_cfg.enabled);
         let s = Arc::clone(&state);
         let db_clone = db.clone();
         let rx = shutdown_rx.clone();
@@ -209,10 +216,17 @@ async fn main() {
         ))
     });
 
+    bus_sinks += usize::from(writer_task.is_some());
+
+    // The sinks above subscribe when their task first runs, and an event read
+    // before a sink subscribed would never reach it: wait for them (bounded,
+    // e.g. a TUI that cannot start never subscribes).
+    state
+        .wait_for_subscribers(bus_sinks, SINK_READY_TIMEOUT)
+        .await;
+
     // Unix socket reader (always running), reconnects with backoff and
-    // checks who serves the socket before reading from it. Spawned last: the
-    // sinks above subscribe to the event bus when they start, and an event
-    // read before a sink subscribed would never reach it.
+    // checks who serves the socket before reading from it.
     let peer_policy = match peer_uid {
         Some(uid) => io::socket::PeerPolicy::Uid(uid),
         None => io::socket::PeerPolicy::Auto,
@@ -248,6 +262,9 @@ async fn main() {
 
     eprintln!("All tasks stopped. Bye.");
 }
+
+/// Longest startup wait for the sinks to subscribe to the event bus.
+const SINK_READY_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Run headless when asked, or when stdout is not a terminal (a container
 /// started without `-t`, a systemd unit, a pipe): the TUI cannot draw there,

@@ -98,9 +98,9 @@ mod tests {
         (state, shutdown_tx, task)
     }
 
-    /// Give the spawned task time to subscribe before events are recorded.
-    async fn settle() {
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    /// Wait until the spawned task listens: earlier events never reach it.
+    async fn settle(state: &AppState) {
+        assert!(state.wait_for_subscribers(1, Duration::from_secs(5)).await);
     }
 
     #[tokio::test]
@@ -108,7 +108,7 @@ mod tests {
         let (out, reader) = tokio::io::duplex(64 * 1024);
         let (state, shutdown_tx, task) = start(out);
         state.insert_domain(1, "one.test".to_string()).await;
-        settle().await;
+        settle(&state).await;
 
         for hash in [1, 2, 1] {
             state.record_event(event(hash)).await;
@@ -141,7 +141,7 @@ mod tests {
         // A pipe nobody reads, smaller than one line: the flush never ends.
         let (out, _reader) = tokio::io::duplex(16);
         let (state, shutdown_tx, task) = start(out);
-        settle().await;
+        settle(&state).await;
 
         state.record_event(event(1)).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -165,7 +165,7 @@ mod tests {
     async fn pending_lines_are_flushed_on_shutdown() {
         let (out, reader) = tokio::io::duplex(64 * 1024);
         let (state, shutdown_tx, task) = start(out);
-        settle().await;
+        settle(&state).await;
 
         for hash in 0..5 {
             state.record_event(event(hash)).await;
@@ -190,7 +190,7 @@ mod tests {
         let (out, reader) = tokio::io::duplex(64);
         drop(reader);
         let (state, _shutdown_tx, task) = start(out);
-        settle().await;
+        settle(&state).await;
 
         state.record_event(event(1)).await;
         tokio::time::timeout(Duration::from_secs(1), task)

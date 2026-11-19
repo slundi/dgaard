@@ -695,7 +695,7 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let writer = tokio::spawn(run_writer(Arc::clone(&app), Arc::clone(&db), shutdown_rx));
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(app.wait_for_subscribers(1, Duration::from_secs(5)).await);
 
         // Single-threaded runtime: the writer cannot run while we publish
         // 10 events into a 4-slot bus, so it misses the first 6.

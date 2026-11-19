@@ -288,7 +288,7 @@ mod tests {
         let app = Arc::new(AppState::new(Duration::from_secs(3600)));
         let web = Arc::new(WebState::new(Arc::clone(&app), 100));
         let ingestor = tokio::spawn(run_ingestor(Arc::clone(&app), Arc::clone(&web)));
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(app.wait_for_subscribers(1, Duration::from_secs(5)).await);
 
         app.record_event(StatEvent {
             timestamp: 1,

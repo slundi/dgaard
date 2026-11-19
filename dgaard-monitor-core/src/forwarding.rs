@@ -839,8 +839,11 @@ mod tests {
         };
         let handle = tokio::spawn(run(cfg, Arc::clone(&state), shutdown_rx));
 
-        // Let the task subscribe to the broadcast before emitting anything.
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        // Emit only once the task listens: earlier events never reach it.
+        assert!(
+            state.wait_for_subscribers(1, Duration::from_secs(5)).await,
+            "sink never subscribed"
+        );
         state.record_event(make_event(StatAction::Allowed)).await;
         state
             .record_event(make_event(StatAction::Blocked(StatBlockReason::ABP_RULE)))
@@ -945,7 +948,10 @@ mod tests {
             ..ForwardingConfig::default()
         };
         let task = tokio::spawn(run(cfg, Arc::clone(&state), shutdown_rx));
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            state.wait_for_subscribers(1, Duration::from_secs(5)).await,
+            "sink never subscribed"
+        );
 
         for _ in 0..3 {
             state.record_event(make_event(StatAction::Allowed)).await;
@@ -974,12 +980,22 @@ mod tests {
             ..ForwardingConfig::default()
         };
         let task = tokio::spawn(run_with_queue(cfg, Arc::clone(&state), shutdown_rx, 2));
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            state.wait_for_subscribers(1, Duration::from_secs(5)).await,
+            "sink never subscribed"
+        );
 
         for _ in 0..20 {
             state.record_event(make_event(StatAction::Allowed)).await;
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while state.dropped(Sink::ForwardingHttp) < 17 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "overflow never counted"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         task.abort();
 
         // 2 queued, at most 1 in flight, the rest dropped and counted.
@@ -999,7 +1015,10 @@ mod tests {
             ..ForwardingConfig::default()
         };
         let task = tokio::spawn(run(cfg, Arc::clone(&state), shutdown_rx));
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            state.wait_for_subscribers(1, Duration::from_secs(5)).await,
+            "sink never subscribed"
+        );
 
         for _ in 0..50 {
             state.record_event(make_event(StatAction::Allowed)).await;
@@ -1045,7 +1064,10 @@ mod tests {
             ..ForwardingConfig::default()
         };
         let task = tokio::spawn(run(cfg, Arc::clone(&state), shutdown_rx));
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            state.wait_for_subscribers(1, Duration::from_secs(5)).await,
+            "sink never subscribed"
+        );
 
         for _ in 0..5 {
             state.record_event(make_event(StatAction::Allowed)).await;

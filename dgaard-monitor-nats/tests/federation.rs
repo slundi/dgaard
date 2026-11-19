@@ -55,8 +55,13 @@ async fn publishes_local_events_to_nats() {
         run(cfg, s, shutdown_rx).await;
     });
 
-    // Let the publisher subscribe to AppState before we emit anything.
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // Emit only once the publisher listens: earlier events never reach it.
+    assert!(
+        state
+            .wait_for_local_subscribers(1, Duration::from_secs(5))
+            .await,
+        "publisher never subscribed"
+    );
     state.record_event(sample_event()).await;
 
     let pubs = mock.wait_for_publishes(1, Duration::from_secs(2)).await;

@@ -182,7 +182,7 @@ mod tests {
             Arc::clone(&database),
             shutdown_rx,
         ));
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(state.wait_for_subscribers(1, Duration::from_secs(5)).await);
 
         // Fewer events than a batch, well before the 5 s flush tick: they
         // only reach SQLite through the shutdown flush.
