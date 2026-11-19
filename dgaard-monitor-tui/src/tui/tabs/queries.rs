@@ -9,11 +9,18 @@
 //!   ⚠ 14:22:58  suspicious.xyz                 192.168.1.7       Suspicious:HighEntropy
 //!   · 14:22:55  upstream-relay.corp            192.168.1.2       Proxied
 //!
-//! The indicator column (single char, first) and domain colour are driven by `DomainColor`:
-//!   `✔` green  — Allowed
-//!   `✘` red    — Blocked / HighlySuspicious
+//! The indicator column (single char, first) comes from `ActionKind`, the row colour
+//! from `DomainColor`:
+//!   `✔` green  — Allowed / Override / Cached
+//!   `✘` red    — Blocked; HighlySuspicious rows are also highlighted (white on red)
+//!                so they stand out among routine list blocks
 //!   `⚠` yellow — Suspicious
 //!   `·` dim    — Proxied
+//!   `!` yellow / red — SERVFAIL: upstream failure / DNSSEC bogus
+//!
+//! Indicators stay single-width text glyphs, not emoji: emoji are two cells wide
+//! (with uneven terminal support for `⚠️`), ignore the row colour, and are missing from
+//! console fonts.
 //!
 //! Interactive controls (`f` / `s` / `z` are global fixed bindings — available on every
 //! tab that opts in; the outer event loop dispatches `Action::Filter` / `Action::Sort` to
@@ -43,7 +50,10 @@
 
 use std::collections::VecDeque;
 
-use crate::tui::util::DomainColor;
+use crate::tui::util::{
+    DomainColor, INDICATOR_ALLOWED, INDICATOR_BLOCKED, INDICATOR_ERROR, INDICATOR_PROXIED,
+    INDICATOR_SUSPICIOUS,
+};
 use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
 use dgaard_monitor_core::util::{custom_bit_label, format_client_ip};
 
@@ -96,7 +106,7 @@ impl SortOrder {
 
 // ── ActionKind ────────────────────────────────────────────────────────────────
 
-/// Collapsed action category used for colour-coding in the renderer.
+/// Collapsed action category: picks the row's indicator and styling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
     Allowed,
@@ -118,6 +128,18 @@ impl ActionKind {
             StatAction::HighlySuspicious(_) => Self::HighlySuspicious,
             StatAction::Cached => Self::Cached,
             StatAction::Error(_) => Self::Error,
+        }
+    }
+
+    /// Single-width indicator for the first column, by verdict: a SERVFAIL
+    /// gets its own mark instead of borrowing the suspicious or blocked one.
+    pub fn indicator(self) -> &'static str {
+        match self {
+            Self::Allowed | Self::Cached => INDICATOR_ALLOWED,
+            Self::Proxied => INDICATOR_PROXIED,
+            Self::Blocked | Self::HighlySuspicious => INDICATOR_BLOCKED,
+            Self::Suspicious => INDICATOR_SUSPICIOUS,
+            Self::Error => INDICATOR_ERROR,
         }
     }
 }
@@ -208,15 +230,8 @@ pub fn flags_label(action: &StatAction) -> String {
 // ── QueryRow ──────────────────────────────────────────────────────────────────
 
 /// One display-ready row in the Queries table.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Queries tab not wired into the TUI yet: it only shows a placeholder"
-    )
-)]
 pub struct QueryRow {
-    /// Single-char indicator (`✔` / `✘` / `⚠` / `·`) — first column.
+    /// Single-char indicator (`✔` / `✘` / `⚠` / `·` / `!`) — first column.
     pub indicator: &'static str,
     /// Colour hint for the indicator and domain text.
     pub domain_color: DomainColor,
@@ -228,7 +243,7 @@ pub struct QueryRow {
     pub client_ip: String,
     /// Flags column string (`"Allowed"`, `"Blocked:Blacklist+AbpRule"`, …).
     pub flags: String,
-    /// Collapsed action kind — cross-checks colour decisions in tests.
+    /// Collapsed action kind — picks the indicator and the row style.
     pub action_kind: ActionKind,
     /// Raw bitmask for `FilterMode::ByFlags` matching (empty for Allowed/Proxied).
     pub reasons: StatBlockReason,
@@ -246,10 +261,10 @@ impl QueryRow {
             | StatAction::HighlySuspicious(r) => *r,
             _ => StatBlockReason::empty(),
         };
-        let color = DomainColor::from_action(&event.action);
+        let action_kind = ActionKind::from_action(&event.action);
         Self {
-            indicator: color.indicator(),
-            domain_color: color,
+            indicator: action_kind.indicator(),
+            domain_color: DomainColor::from_action(&event.action),
             datetime: format_timestamp(event.timestamp),
             domain: if domain.is_empty() {
                 format!("#{:016x}", event.domain_hash)
@@ -258,7 +273,7 @@ impl QueryRow {
             },
             client_ip: format_client_ip(&event.client_ip),
             flags: flags_label(&event.action),
-            action_kind: ActionKind::from_action(&event.action),
+            action_kind,
             reasons,
         }
     }
@@ -449,6 +464,23 @@ impl QueriesState {
 
 // ── Render ────────────────────────────────────────────────────────────────────
 
+/// Style of a whole table row: the verdict colour, plus a full-row highlight
+/// for highly suspicious queries so they stand out among routine list blocks.
+pub fn row_style(row: &QueryRow) -> ratatui::style::Style {
+    use ratatui::style::{Color, Modifier, Style};
+
+    use crate::tui::tabs::dashboard::to_ratatui_color;
+
+    let color = to_ratatui_color(row.domain_color);
+    match row.action_kind {
+        ActionKind::HighlySuspicious => Style::new()
+            .fg(Color::White)
+            .bg(color)
+            .add_modifier(Modifier::BOLD),
+        _ => Style::new().fg(color),
+    }
+}
+
 /// Render the Queries tab body: only the rows that fit are built.
 ///
 /// Takes the state mutably to record the table height (`set_viewport`),
@@ -464,8 +496,6 @@ pub fn render(
         style::{Modifier, Style},
         widgets::{Block, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table},
     };
-
-    use crate::tui::tabs::dashboard::to_ratatui_color;
 
     let filtered = state.filtered_count();
     let title = format!(
@@ -491,7 +521,7 @@ pub fn render(
                 row.client_ip.clone(),
                 row.flags.clone(),
             ])
-            .style(Style::new().fg(to_ratatui_color(row.domain_color)))
+            .style(row_style(row))
         })
         .collect();
 
@@ -532,9 +562,6 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::util::{
-        INDICATOR_ALLOWED, INDICATOR_BLOCKED, INDICATOR_PROXIED, INDICATOR_SUSPICIOUS,
-    };
     use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
 
     fn ev(ts: u64, ip: [u8; 16], action: StatAction) -> StatEvent {
@@ -685,6 +712,97 @@ mod tests {
         let row = QueryRow::from_event(&event, "relay.corp");
         assert_eq!(row.domain_color, DomainColor::Dim);
         assert_eq!(row.indicator, INDICATOR_PROXIED);
+    }
+
+    // --- action styling ---
+
+    const ALL_KINDS: [ActionKind; 7] = [
+        ActionKind::Allowed,
+        ActionKind::Proxied,
+        ActionKind::Blocked,
+        ActionKind::Suspicious,
+        ActionKind::HighlySuspicious,
+        ActionKind::Cached,
+        ActionKind::Error,
+    ];
+
+    fn row_for(action: StatAction) -> QueryRow {
+        QueryRow::from_event(&ev(0, ipv4(1, 2, 3, 4), action), "x.com")
+    }
+
+    #[test]
+    fn test_indicator_per_action_kind() {
+        let cases = [
+            (ActionKind::Allowed, INDICATOR_ALLOWED),
+            (ActionKind::Cached, INDICATOR_ALLOWED),
+            (ActionKind::Proxied, INDICATOR_PROXIED),
+            (ActionKind::Blocked, INDICATOR_BLOCKED),
+            (ActionKind::HighlySuspicious, INDICATOR_BLOCKED),
+            (ActionKind::Suspicious, INDICATOR_SUSPICIOUS),
+            (ActionKind::Error, INDICATOR_ERROR),
+        ];
+        for (kind, indicator) in cases {
+            assert_eq!(kind.indicator(), indicator, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn test_indicators_are_single_cell_text() {
+        // Emoji are two cells wide and ignore the row colour; keep the column at 1.
+        for kind in ALL_KINDS {
+            let width = ratatui::text::Span::raw(kind.indicator()).width();
+            assert_eq!(width, 1, "{kind:?} indicator {:?}", kind.indicator());
+        }
+    }
+
+    #[test]
+    fn test_servfail_rows_get_error_indicator_not_threat() {
+        let upstream = row_for(StatAction::Error(StatError::Upstream));
+        let dnssec = row_for(StatAction::Error(StatError::DnssecBogus));
+        assert_eq!(upstream.indicator, INDICATOR_ERROR);
+        assert_eq!(upstream.domain_color, DomainColor::Yellow);
+        assert_eq!(dnssec.indicator, INDICATOR_ERROR);
+        assert_eq!(dnssec.domain_color, DomainColor::Red);
+    }
+
+    #[test]
+    fn test_cached_and_override_rows_are_allowed() {
+        for action in [StatAction::Cached, StatAction::AllowedWithOverride] {
+            let row = row_for(action);
+            assert_eq!(row.indicator, INDICATOR_ALLOWED);
+            assert_eq!(row.domain_color, DomainColor::Green);
+        }
+    }
+
+    #[test]
+    fn test_highly_suspicious_row_is_highlighted() {
+        use ratatui::style::{Color, Modifier};
+        let row = row_for(StatAction::HighlySuspicious(StatBlockReason::NRD_LIST));
+        let style = row_style(&row);
+        assert_eq!(style.bg, Some(Color::Red));
+        assert_eq!(style.fg, Some(Color::White));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(row.indicator, INDICATOR_BLOCKED);
+    }
+
+    #[test]
+    fn test_other_rows_only_take_the_verdict_colour() {
+        use ratatui::style::Color;
+        let cases = [
+            (StatAction::Allowed, Color::Green),
+            (StatAction::Blocked(StatBlockReason::ABP_RULE), Color::Red),
+            (
+                StatAction::Suspicious(StatBlockReason::HIGH_ENTROPY),
+                Color::Yellow,
+            ),
+            (StatAction::Proxied, Color::DarkGray),
+            (StatAction::Error(StatError::Upstream), Color::Yellow),
+        ];
+        for (action, color) in cases {
+            let style = row_style(&row_for(action));
+            assert_eq!(style.fg, Some(color));
+            assert_eq!(style.bg, None, "no highlight for {color:?}");
+        }
     }
 
     #[test]
@@ -1184,6 +1302,37 @@ mod tests {
         let lines = draw(&mut s, false, 80, 10);
         assert!(lines[0].contains("Queries 0/0"));
         assert_eq!(s.scroll(), 0);
+    }
+
+    #[test]
+    fn test_render_highlights_whole_highly_suspicious_row() {
+        use ratatui::{Terminal, backend::TestBackend, style::Color};
+        let mut s = QueriesState::default();
+        let ip = ipv4(10, 0, 0, 1);
+        s.push_event(
+            &ev(1, ip, StatAction::Blocked(StatBlockReason::ABP_RULE)),
+            "ads.example",
+        );
+        s.push_event(
+            &ev(
+                2,
+                ip,
+                StatAction::HighlySuspicious(StatBlockReason::NRD_LIST),
+            ),
+            "evil.example",
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+        terminal
+            .draw(|frame| render(&mut s, false, frame.area(), frame))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        // Row 2: newest (highly suspicious); row 3: the plain block.
+        // Columns 1..79 are inside the borders: every cell, gaps included.
+        for column in 1..79 {
+            assert_eq!(buffer[(column, 2)].bg, Color::Red, "column {column}");
+            assert_eq!(buffer[(column, 3)].bg, Color::Reset, "column {column}");
+            assert_eq!(buffer[(column, 3)].fg, Color::Red, "column {column}");
+        }
     }
 
     // --- SortOrder ---

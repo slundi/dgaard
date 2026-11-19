@@ -6,6 +6,8 @@ pub const INDICATOR_ALLOWED: &str = "✔";
 pub const INDICATOR_BLOCKED: &str = "✘";
 pub const INDICATOR_SUSPICIOUS: &str = "⚠";
 pub const INDICATOR_PROXIED: &str = "·";
+/// SERVFAIL: the lookup failed, nothing was blocked.
+pub const INDICATOR_ERROR: &str = "!";
 
 // ── DomainColor ───────────────────────────────────────────────────────────────
 
