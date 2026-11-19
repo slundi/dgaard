@@ -2,16 +2,16 @@
 //!
 //! `Tab` is the single source of truth for which tabs exist, their display
 //! order, and their labels.  The `next()` / `prev()` methods implement
-//! wrap-around navigation driven by `TuiApp::apply`.
-//!
-//! TODO: add a `render()` dispatcher that calls the correct submodule once
-//! ratatui `Frame` is available.
+//! wrap-around navigation driven by `TuiApp::apply`.  `TabStates` holds the
+//! per-tab data the event stream feeds.
 
 pub mod about;
 pub mod dashboard;
 pub mod queries;
 pub mod talkers;
 pub mod timelines;
+
+use dgaard_monitor_core::protocol::StatEvent;
 
 /// The five tabs of the TUI, in left-to-right display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -68,9 +68,57 @@ impl Tab {
     }
 }
 
+/// State of every tab fed by the event stream, owned by the main loop.
+#[derive(Default)]
+pub struct TabStates {
+    pub dashboard: dashboard::DashboardState,
+    pub queries: queries::QueriesState,
+}
+
+impl TabStates {
+    /// Record one event in every tab; `domain` is `""` when unresolved.
+    pub fn push_event(&mut self, event: &StatEvent, domain: &str) {
+        self.dashboard.push_event(event, domain);
+        self.queries.push_event(event, domain);
+    }
+
+    /// Forget the session: counters, feeds and the query log.
+    pub fn clear(&mut self) {
+        self.dashboard.clear();
+        self.queries.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dgaard_monitor_core::protocol::StatAction;
+
+    fn allowed(timestamp: u64) -> StatEvent {
+        StatEvent {
+            timestamp,
+            domain_hash: 0xbeef,
+            client_ip: [0; 16],
+            action: StatAction::Allowed,
+        }
+    }
+
+    #[test]
+    fn test_tab_states_push_feeds_every_tab() {
+        let mut states = TabStates::default();
+        states.push_event(&allowed(1), "example.com");
+        assert_eq!(states.dashboard.global_stats().total_queries, 1);
+        assert_eq!(states.queries.row_count(), 1);
+    }
+
+    #[test]
+    fn test_tab_states_clear_empties_every_tab() {
+        let mut states = TabStates::default();
+        states.push_event(&allowed(1), "example.com");
+        states.clear();
+        assert_eq!(states.dashboard.global_stats().total_queries, 0);
+        assert_eq!(states.queries.row_count(), 0);
+    }
 
     #[test]
     fn test_default_tab_is_dashboard() {

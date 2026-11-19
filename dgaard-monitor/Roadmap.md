@@ -29,16 +29,18 @@
   - [x] Most active blocking flags (count and ratio)?
 - [x] Flag Distribution: Use a Sparkline or BarChart to show which StatBlockReason bitflags are firing most often.
 - [ ] Tab `Queries` (tail like) with column display: datetime, Domain, IP, blocking flags. `f` to filter flags or client, `s` for a sorting (default last queries on top) popup, `z` to freeze so the display is not updated (show info on ).
-  - [ ] Implement Virtual Scrolling (only render what’s visible) to handle a history buffer of 1,000+ entries without lag.
+  - [x] Implement Virtual Scrolling (only render what’s visible) to handle a history buffer of 1,000+ entries without lag.
   - [ ] Action Styling: Full row highlight or prefix icons (e.g., ✔ for Allowed, ✘ for Blocked).
 - [ ] Tab `Talkers` (most active client IPs) with column display: Client or name, DNS request count, per filter count, first/last seen
   - [ ] Add Reverse DNS: If the monitor can resolve local IPs to hostnames, display the hostname in the Talker tab.
 - [ ] Tab `Timelines` for 24h trends: Total queries, Client activity
 
-> The state, sorting, filtering and reverse-DNS logic of the `Queries`, `Talkers` and `Timelines`
-> tabs exists and is unit-tested (`dgaard-monitor-tui/src/tui/tabs/`), but none of it is wired into
-> the TUI yet: the three tabs show a placeholder. The unwired items carry
-> `#[expect(dead_code, reason = ...)]`, so the compiler flags each marker to remove once wired.
+> The `Queries` tab shows the event log with virtual scrolling (↑/↓, PgUp/PgDn, Home/End);
+> its filter and sort popups (`f`, `s`) are not wired yet. The state, sorting, filtering and
+> reverse-DNS logic of the `Talkers` and `Timelines` tabs exists and is unit-tested
+> (`dgaard-monitor-tui/src/tui/tabs/`), but those two tabs still show a placeholder. The unwired
+> items carry `#[expect(dead_code, reason = ...)]`, so the compiler flags each marker to remove
+> once wired.
 
 - [x] Tab `About`: contains project name, version, repo URL `https://codeberg.org/slundi/dgaard`, license Apache 2, separator, key mapping
 - [ ] Country flags for hosted domains

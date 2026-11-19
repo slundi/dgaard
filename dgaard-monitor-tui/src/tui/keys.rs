@@ -29,6 +29,14 @@ pub enum Action {
     ScrollUp,
     /// Scroll the active view downward.
     ScrollDown,
+    /// Scroll one screen up (`pageup`).
+    PageUp,
+    /// Scroll one screen down (`pagedown`).
+    PageDown,
+    /// Jump to the first row (`home`).
+    ScrollTop,
+    /// Jump to the last row (`end`).
+    ScrollBottom,
     /// Toggle frozen display in the Queries and Live Feed views.
     Freeze,
     /// Open the filter popup in the Queries tab (`f`).
@@ -92,6 +100,10 @@ impl KeyMap {
         match key {
             "tab" => Some(Action::TabNext),
             "backtab" => Some(Action::TabPrev),
+            "pageup" => Some(Action::PageUp),
+            "pagedown" => Some(Action::PageDown),
+            "home" => Some(Action::ScrollTop),
+            "end" => Some(Action::ScrollBottom),
             "z" => Some(Action::Freeze),
             "c" => Some(Action::ClearStats),
             "f" => Some(Action::Filter),
@@ -197,6 +209,15 @@ mod tests {
         let km = default_keymap();
         assert_eq!(km.resolve("tab"), Some(Action::TabNext));
         assert_eq!(km.resolve("backtab"), Some(Action::TabPrev));
+    }
+
+    #[test]
+    fn test_fixed_page_bindings() {
+        let km = default_keymap();
+        assert_eq!(km.resolve("pageup"), Some(Action::PageUp));
+        assert_eq!(km.resolve("pagedown"), Some(Action::PageDown));
+        assert_eq!(km.resolve("home"), Some(Action::ScrollTop));
+        assert_eq!(km.resolve("end"), Some(Action::ScrollBottom));
     }
 
     #[test]

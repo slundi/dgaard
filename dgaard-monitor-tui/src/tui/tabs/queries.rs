@@ -26,16 +26,20 @@
 //!   `↑/↓`   — virtual scroll: only the `height` rows around `scroll` are returned by
 //!             `visible_rows(height, scroll)`, so 1 000+ buffered entries cause no lag.
 //!
+//!   `PgUp/PgDn` — one screen up / down; `Home/End` — first / last row.
+//!
 //! Virtual scrolling detail:
 //!   The internal buffer (`VecDeque`) is capped at `MAX_ROWS`.  Eviction is O(1) via
-//!   `pop_front`.  `visible_rows(height, scroll)` iterates the filtered+sorted slice once
-//!   and returns at most `height` rows starting at `scroll` — the renderer never touches
-//!   more rows than fit on screen.
+//!   `pop_front`.  `visible_rows(height, scroll)` returns at most `height` rows starting
+//!   at `scroll`, read by index when no filter is active — the renderer never touches
+//!   more rows than fit on screen.  `render` records the table height so `scroll`
+//!   stops at the last row, and the view stays on the same rows while new events
+//!   arrive.
 //!
 //! The data layer (all `pub fn`s, structs, and `QueriesState`) is pure Rust with no
 //! ratatui dependency, making it fully unit-testable.
 //!
-//! TODO: implement `render()` with ratatui `Table` + `Block` + popup `Paragraph`.
+//! TODO: filter and sort popups (`f`, `s`).
 
 use std::collections::VecDeque;
 
@@ -49,20 +53,8 @@ use dgaard_monitor_core::util::{custom_bit_label, format_client_ip};
 pub const MAX_ROWS: usize = 1_000;
 
 /// Column widths for text formatting (matches the module doc table above).
-#[expect(
-    dead_code,
-    reason = "Queries tab not wired into the TUI yet: column widths of its table renderer, not written yet"
-)]
 pub const COL_DATETIME: usize = 8;
-#[expect(
-    dead_code,
-    reason = "Queries tab not wired into the TUI yet: column widths of its table renderer, not written yet"
-)]
 pub const COL_DOMAIN: usize = 30;
-#[expect(
-    dead_code,
-    reason = "Queries tab not wired into the TUI yet: column widths of its table renderer, not written yet"
-)]
 pub const COL_CLIENT: usize = 17;
 
 // ── SortOrder ─────────────────────────────────────────────────────────────────
@@ -306,9 +298,7 @@ impl FilterMode {
 
 // ── QueriesState ──────────────────────────────────────────────────────────────
 
-/// All mutable state owned by the Queries tab.
-///
-/// `TuiApp` holds one of these alongside the generic scroll offset.
+/// All mutable state owned by the Queries tab, its scroll position included.
 #[derive(Default)]
 pub struct QueriesState {
     /// Internal buffer in insertion order (oldest front, newest back).
@@ -320,59 +310,82 @@ pub struct QueriesState {
     pub sort: SortOrder,
     /// When `true`, `push_event` is a no-op; the buffer stays fixed.
     pub frozen: bool,
+    /// Index, in the filtered and sorted list, of the top row on screen.
+    scroll: usize,
+    /// Rows the table could show at the last render; bounds `scroll`.
+    viewport: usize,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Queries tab not wired into the TUI yet: it only shows a placeholder"
-    )
-)]
 impl QueriesState {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Append a new event to the buffer.
     ///
     /// Does nothing when `frozen` is `true`.  When the buffer reaches
     /// `MAX_ROWS`, the oldest row is dropped in O(1) via `pop_front`.
+    ///
+    /// When the view is scrolled away from the top, it keeps showing the same
+    /// rows: a row arriving above it (newest first) or leaving above it
+    /// (oldest first) moves `scroll` along.
     pub fn push_event(&mut self, event: &StatEvent, domain: &str) {
         if self.frozen {
             return;
         }
-        if self.rows.len() >= MAX_ROWS {
-            self.rows.pop_front();
+        let row = QueryRow::from_event(event, domain);
+        let added = self.filter.matches(&row);
+        let evicted = self.rows.len() >= MAX_ROWS
+            && self
+                .rows
+                .pop_front()
+                .is_some_and(|oldest| self.filter.matches(&oldest));
+        self.rows.push_back(row);
+
+        if self.scroll > 0 {
+            match self.sort {
+                SortOrder::NewestFirst if added => self.scroll += 1,
+                SortOrder::OldestFirst if evicted => self.scroll -= 1,
+                _ => {}
+            }
+            self.scroll = self.scroll.min(self.max_scroll());
         }
-        self.rows.push_back(QueryRow::from_event(event, domain));
     }
 
     /// Return up to `height` rows starting at `scroll`, after applying
     /// the current filter and sort.
     ///
-    /// Virtual scrolling: only `height` rows are materialised — the rest of
-    /// the buffer is never visited by the renderer regardless of buffer size.
+    /// Virtual scrolling: only the returned rows are materialised.  Without a
+    /// filter they are read by index, so the cost does not depend on the
+    /// buffer size; with one, rows are matched lazily up to the last needed.
     ///
     /// * `NewestFirst` — index 0 = most recent; scrolling down shows older rows.
     /// * `OldestFirst` — index 0 = oldest; scrolling down shows newer rows.
     ///
-    /// `scroll` is silently clamped so it never goes past the last row.
+    /// A `scroll` past the last row returns nothing.
     pub fn visible_rows(&self, height: usize, scroll: usize) -> Vec<&QueryRow> {
-        let filtered: Vec<&QueryRow> = self
-            .rows
-            .iter()
-            .filter(|r| self.filter.matches(r))
-            .collect();
+        if self.filter == FilterMode::None {
+            let len = self.rows.len();
+            let start = scroll.min(len);
+            let end = scroll.saturating_add(height).min(len);
+            return match self.sort {
+                SortOrder::NewestFirst => self.rows.range(len - end..len - start).rev().collect(),
+                SortOrder::OldestFirst => self.rows.range(start..end).collect(),
+            };
+        }
+        let matching = |row: &&QueryRow| self.filter.matches(row);
         match self.sort {
-            SortOrder::NewestFirst => filtered
+            SortOrder::NewestFirst => self
+                .rows
                 .iter()
                 .rev()
+                .filter(matching)
                 .skip(scroll)
                 .take(height)
-                .copied()
                 .collect(),
-            SortOrder::OldestFirst => filtered.iter().skip(scroll).take(height).copied().collect(),
+            SortOrder::OldestFirst => self
+                .rows
+                .iter()
+                .filter(matching)
+                .skip(scroll)
+                .take(height)
+                .collect(),
         }
     }
 
@@ -381,24 +394,137 @@ impl QueriesState {
         self.rows.len()
     }
 
+    /// Rows that pass the current filter.
+    pub fn filtered_count(&self) -> usize {
+        match self.filter {
+            FilterMode::None => self.rows.len(),
+            _ => self.rows.iter().filter(|r| self.filter.matches(r)).count(),
+        }
+    }
+
     /// Drop all buffered rows.
     pub fn clear(&mut self) {
         self.rows.clear();
+        self.scroll = 0;
+    }
+
+    /// Index of the top row on screen.
+    pub fn scroll(&self) -> usize {
+        self.scroll
+    }
+
+    /// Largest `scroll` that still fills the view: the last row sits at the
+    /// bottom of the table, never higher.
+    pub fn max_scroll(&self) -> usize {
+        self.filtered_count().saturating_sub(self.viewport)
+    }
+
+    /// Rows moved by one page; at least one before the first render.
+    pub fn page_size(&self) -> usize {
+        self.viewport.max(1)
+    }
+
+    /// Record how many rows the table can show, and keep `scroll` in range.
+    pub fn set_viewport(&mut self, height: usize) {
+        self.viewport = height;
+        self.scroll = self.scroll.min(self.max_scroll());
+    }
+
+    /// Move the view `delta` rows down (negative: up), within range.
+    pub fn scroll_by(&mut self, delta: isize) {
+        self.scroll = self
+            .scroll
+            .saturating_add_signed(delta)
+            .min(self.max_scroll());
+    }
+
+    pub fn scroll_to_top(&mut self) {
+        self.scroll = 0;
+    }
+
+    pub fn scroll_to_bottom(&mut self) {
+        self.scroll = self.max_scroll();
     }
 }
 
-// ── Render stub ───────────────────────────────────────────────────────────────
+// ── Render ────────────────────────────────────────────────────────────────────
 
-/// Render the Queries tab body.
+/// Render the Queries tab body: only the rows that fit are built.
 ///
-/// TODO: signature becomes
-/// `render(state: &QueriesState, scroll: usize, area: Area, frame: &mut Frame)`.
-pub fn render(area: ratatui::layout::Rect, frame: &mut ratatui::Frame) {
-    use ratatui::widgets::{Block, Paragraph};
+/// Takes the state mutably to record the table height (`set_viewport`),
+/// which bounds scrolling.  `frozen` adds `[FROZEN]` to the title.
+pub fn render(
+    state: &mut QueriesState,
+    frozen: bool,
+    area: ratatui::layout::Rect,
+    frame: &mut ratatui::Frame,
+) {
+    use ratatui::{
+        layout::{Constraint, Margin},
+        style::{Modifier, Style},
+        widgets::{Block, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table},
+    };
+
+    use crate::tui::tabs::dashboard::to_ratatui_color;
+
+    let filtered = state.filtered_count();
+    let title = format!(
+        "Queries {filtered}/{} · {}{}",
+        state.row_count(),
+        state.sort.label(),
+        if frozen { " [FROZEN]" } else { "" }
+    );
+    let block = Block::bordered().title(title);
+
+    // The table header takes one row of the block.
+    let viewport = usize::from(block.inner(area).height.saturating_sub(1));
+    state.set_viewport(viewport);
+
+    let rows: Vec<Row> = state
+        .visible_rows(viewport, state.scroll())
+        .into_iter()
+        .map(|row| {
+            Row::new([
+                row.indicator.to_string(),
+                row.datetime.clone(),
+                row.domain.clone(),
+                row.client_ip.clone(),
+                row.flags.clone(),
+            ])
+            .style(Style::new().fg(to_ratatui_color(row.domain_color)))
+        })
+        .collect();
+
     frame.render_widget(
-        Paragraph::new("Coming soon").block(Block::bordered().title("Queries")),
+        Table::new(
+            rows,
+            [
+                Constraint::Length(1),
+                Constraint::Length(COL_DATETIME as u16),
+                Constraint::Min(COL_DOMAIN as u16),
+                Constraint::Length(COL_CLIENT as u16),
+                Constraint::Min(10),
+            ],
+        )
+        .block(block)
+        .header(
+            Row::new(["", "Time", "Domain", "Client IP", "Flags"])
+                .style(Style::new().add_modifier(Modifier::BOLD)),
+        ),
         area,
     );
+
+    if filtered > viewport {
+        let mut scrollbar = ScrollbarState::new(state.max_scroll()).position(state.scroll());
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar,
+        );
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -643,22 +769,24 @@ mod tests {
 
     #[test]
     fn test_push_adds_row() {
-        let mut s = QueriesState::new();
+        let mut s = QueriesState::default();
         s.push_event(&ev(0, ipv4(1, 1, 1, 1), StatAction::Allowed), "a.com");
         assert_eq!(s.row_count(), 1);
     }
 
     #[test]
     fn test_push_frozen_does_not_add() {
-        let mut s = QueriesState::new();
-        s.frozen = true;
+        let mut s = QueriesState {
+            frozen: true,
+            ..QueriesState::default()
+        };
         s.push_event(&ev(0, ipv4(1, 1, 1, 1), StatAction::Allowed), "a.com");
         assert_eq!(s.row_count(), 0);
     }
 
     #[test]
     fn test_push_evicts_oldest_at_max_rows() {
-        let mut s = QueriesState::new();
+        let mut s = QueriesState::default();
         for i in 0..MAX_ROWS {
             s.push_event(
                 &ev(i as u64, ipv4(1, 1, 1, 1), StatAction::Allowed),
@@ -679,7 +807,7 @@ mod tests {
 
     #[test]
     fn test_visible_rows_newest_first_order() {
-        let mut s = QueriesState::new();
+        let mut s = QueriesState::default();
         push_n(&mut s, 5);
         s.sort = SortOrder::NewestFirst;
         let rows = s.visible_rows(5, 0);
@@ -689,7 +817,7 @@ mod tests {
 
     #[test]
     fn test_visible_rows_oldest_first_order() {
-        let mut s = QueriesState::new();
+        let mut s = QueriesState::default();
         push_n(&mut s, 5);
         s.sort = SortOrder::OldestFirst;
         let rows = s.visible_rows(5, 0);
@@ -701,14 +829,14 @@ mod tests {
 
     #[test]
     fn test_visible_rows_height_limit() {
-        let mut s = QueriesState::new();
+        let mut s = QueriesState::default();
         push_n(&mut s, 10);
         assert_eq!(s.visible_rows(3, 0).len(), 3);
     }
 
     #[test]
     fn test_visible_rows_scroll_newest_first() {
-        let mut s = QueriesState::new();
+        let mut s = QueriesState::default();
         push_n(&mut s, 5); // ts 0..4
         s.sort = SortOrder::NewestFirst;
         // scroll=0: [ts4, ts3, ts2]; scroll=1: [ts3, ts2, ts1]; scroll=2: [ts2, ts1, ts0]
@@ -719,7 +847,7 @@ mod tests {
 
     #[test]
     fn test_visible_rows_scroll_oldest_first() {
-        let mut s = QueriesState::new();
+        let mut s = QueriesState::default();
         push_n(&mut s, 5); // ts 0..4
         s.sort = SortOrder::OldestFirst;
         // scroll=0: [ts0, ts1, ts2]; scroll=1: [ts1, ts2, ts3]; scroll=2: [ts2, ts3, ts4]
@@ -730,7 +858,7 @@ mod tests {
 
     #[test]
     fn test_visible_rows_scroll_past_end_returns_empty() {
-        let mut s = QueriesState::new();
+        let mut s = QueriesState::default();
         push_n(&mut s, 3);
         // scroll beyond all 3 rows → empty
         assert!(s.visible_rows(3, 10).is_empty());
@@ -740,7 +868,7 @@ mod tests {
 
     #[test]
     fn test_visible_rows_with_filter() {
-        let mut s = QueriesState::new();
+        let mut s = QueriesState::default();
         s.push_event(&ev(0, ipv4(192, 168, 1, 1), StatAction::Allowed), "a.com");
         s.push_event(&ev(1, ipv4(10, 0, 0, 1), StatAction::Allowed), "b.com");
         s.push_event(&ev(2, ipv4(192, 168, 1, 2), StatAction::Allowed), "c.com");
@@ -750,10 +878,312 @@ mod tests {
 
     #[test]
     fn test_clear_empties_buffer() {
-        let mut s = QueriesState::new();
+        let mut s = QueriesState::default();
         push_n(&mut s, 3);
         s.clear();
         assert_eq!(s.row_count(), 0);
+    }
+
+    // --- virtual scrolling ---
+
+    /// `count` events at timestamps 0.., alternating 10.0.0.1 / 10.0.0.2.
+    fn alternating(count: u64) -> QueriesState {
+        let mut s = QueriesState::default();
+        for ts in 0..count {
+            let ip = ipv4(10, 0, 0, 1 + (ts % 2) as u8);
+            s.push_event(&ev(ts, ip, StatAction::Allowed), "a.com");
+        }
+        s
+    }
+
+    fn timestamps(rows: &[&QueryRow]) -> Vec<String> {
+        rows.iter().map(|row| row.datetime.clone()).collect()
+    }
+
+    #[test]
+    fn test_visible_rows_partial_last_page() {
+        let mut s = QueriesState::default();
+        push_n(&mut s, 5);
+        assert_eq!(
+            timestamps(&s.visible_rows(10, 3)),
+            ["00:00:01", "00:00:00"],
+            "newest first: the two oldest"
+        );
+        s.sort = SortOrder::OldestFirst;
+        assert_eq!(timestamps(&s.visible_rows(10, 3)), ["00:00:03", "00:00:04"]);
+    }
+
+    #[test]
+    fn test_visible_rows_huge_scroll_and_height_do_not_overflow() {
+        let mut s = QueriesState::default();
+        push_n(&mut s, 5);
+        assert!(s.visible_rows(usize::MAX, usize::MAX).is_empty());
+        assert_eq!(s.visible_rows(usize::MAX, 0).len(), 5);
+    }
+
+    #[test]
+    fn test_visible_rows_full_buffer_returns_only_height() {
+        let mut s = QueriesState::default();
+        push_n(&mut s, MAX_ROWS as u64 + 200);
+        let rows = s.visible_rows(20, 500);
+        assert_eq!(rows.len(), 20);
+        // Newest is ts MAX_ROWS+199; index 500 is 500 rows older.
+        assert_eq!(
+            rows[0].datetime,
+            format_timestamp(MAX_ROWS as u64 + 199 - 500)
+        );
+    }
+
+    #[test]
+    fn test_visible_rows_filtered_skips_in_filtered_space() {
+        let mut s = alternating(10); // .1 at even ts, .2 at odd ts
+        s.filter = FilterMode::ByClient("10.0.0.2".to_string());
+        assert_eq!(
+            timestamps(&s.visible_rows(2, 1)),
+            ["00:00:07", "00:00:05"],
+            "second and third .2 rows, newest first"
+        );
+        s.sort = SortOrder::OldestFirst;
+        assert_eq!(timestamps(&s.visible_rows(2, 1)), ["00:00:03", "00:00:05"]);
+    }
+
+    #[test]
+    fn test_filtered_count() {
+        let mut s = alternating(10);
+        assert_eq!(s.filtered_count(), 10);
+        s.filter = FilterMode::ByClient("10.0.0.1".to_string());
+        assert_eq!(s.filtered_count(), 5);
+        assert_eq!(s.row_count(), 10);
+    }
+
+    #[test]
+    fn test_scroll_clamped_to_last_full_page() {
+        let mut s = alternating(30);
+        s.set_viewport(10);
+        assert_eq!(s.max_scroll(), 20);
+        s.scroll_by(100);
+        assert_eq!(s.scroll(), 20);
+        s.scroll_by(-5);
+        assert_eq!(s.scroll(), 15);
+        s.scroll_by(-100);
+        assert_eq!(s.scroll(), 0);
+    }
+
+    #[test]
+    fn test_scroll_to_top_and_bottom() {
+        let mut s = alternating(30);
+        s.set_viewport(10);
+        s.scroll_to_bottom();
+        assert_eq!(s.scroll(), 20);
+        s.scroll_to_top();
+        assert_eq!(s.scroll(), 0);
+    }
+
+    #[test]
+    fn test_short_list_does_not_scroll() {
+        let mut s = alternating(5);
+        s.set_viewport(10);
+        s.scroll_by(3);
+        assert_eq!(s.scroll(), 0);
+        assert_eq!(s.max_scroll(), 0);
+    }
+
+    #[test]
+    fn test_taller_viewport_pulls_scroll_back() {
+        let mut s = alternating(30);
+        s.set_viewport(10);
+        s.scroll_to_bottom();
+        s.set_viewport(25);
+        assert_eq!(s.scroll(), 5);
+    }
+
+    #[test]
+    fn test_filter_shrinking_list_is_clamped_on_next_viewport() {
+        let mut s = alternating(30);
+        s.set_viewport(10);
+        s.scroll_to_bottom();
+        s.filter = FilterMode::ByClient("10.0.0.1".to_string()); // 15 rows
+        s.set_viewport(10);
+        assert_eq!(s.scroll(), 5);
+    }
+
+    #[test]
+    fn test_page_size_is_viewport_and_never_zero() {
+        let mut s = QueriesState::default();
+        assert_eq!(s.page_size(), 1);
+        s.set_viewport(12);
+        assert_eq!(s.page_size(), 12);
+    }
+
+    #[test]
+    fn test_clear_resets_scroll() {
+        let mut s = alternating(30);
+        s.set_viewport(10);
+        s.scroll_by(7);
+        s.clear();
+        assert_eq!(s.scroll(), 0);
+    }
+
+    #[test]
+    fn test_newest_first_view_stays_put_when_scrolled() {
+        let mut s = alternating(30);
+        s.set_viewport(10);
+        s.scroll_by(5);
+        let before = timestamps(&s.visible_rows(10, s.scroll()));
+        s.push_event(&ev(100, ipv4(10, 0, 0, 1), StatAction::Allowed), "new.com");
+        assert_eq!(s.scroll(), 6);
+        assert_eq!(timestamps(&s.visible_rows(10, s.scroll())), before);
+    }
+
+    #[test]
+    fn test_newest_first_at_top_follows_new_rows() {
+        let mut s = alternating(30);
+        s.set_viewport(10);
+        s.push_event(&ev(100, ipv4(10, 0, 0, 1), StatAction::Allowed), "new.com");
+        assert_eq!(s.scroll(), 0);
+        assert_eq!(s.visible_rows(1, 0)[0].domain, "new.com");
+    }
+
+    #[test]
+    fn test_newest_first_filtered_out_row_does_not_shift() {
+        let mut s = alternating(30);
+        s.filter = FilterMode::ByClient("10.0.0.1".to_string());
+        s.set_viewport(5);
+        s.scroll_by(3);
+        s.push_event(
+            &ev(100, ipv4(10, 0, 0, 2), StatAction::Allowed),
+            "hidden.com",
+        );
+        assert_eq!(s.scroll(), 3);
+    }
+
+    #[test]
+    fn test_oldest_first_view_stays_put_on_eviction() {
+        let mut s = QueriesState {
+            sort: SortOrder::OldestFirst,
+            ..QueriesState::default()
+        };
+        push_n(&mut s, MAX_ROWS as u64);
+        s.set_viewport(10);
+        s.scroll_by(50);
+        let before = timestamps(&s.visible_rows(10, s.scroll()));
+        s.push_event(&ev(5_000, ipv4(1, 1, 1, 1), StatAction::Allowed), "a.com");
+        assert_eq!(s.scroll(), 49, "oldest row evicted above the view");
+        assert_eq!(timestamps(&s.visible_rows(10, s.scroll())), before);
+    }
+
+    #[test]
+    fn test_oldest_first_new_row_does_not_shift() {
+        let mut s = QueriesState {
+            sort: SortOrder::OldestFirst,
+            ..QueriesState::default()
+        };
+        push_n(&mut s, 30);
+        s.set_viewport(10);
+        s.scroll_by(5);
+        s.push_event(&ev(100, ipv4(1, 1, 1, 1), StatAction::Allowed), "a.com");
+        assert_eq!(s.scroll(), 5);
+    }
+
+    // --- render ---
+
+    /// Draw the tab on a `width` × `height` terminal and return its rows.
+    fn draw(s: &mut QueriesState, frozen: bool, width: u16, height: u16) -> Vec<String> {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render(s, frozen, frame.area(), frame))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|row| {
+                (0..width)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_render_records_viewport_from_area() {
+        let mut s = alternating(50);
+        // 12 rows - 2 borders - 1 header = 9 table rows
+        draw(&mut s, false, 100, 12);
+        assert_eq!(s.page_size(), 9);
+        assert_eq!(s.max_scroll(), 41);
+    }
+
+    #[test]
+    fn test_render_draws_only_the_visible_window() {
+        let mut s = alternating(50);
+        draw(&mut s, false, 100, 12);
+        s.scroll_by(10);
+        let lines = draw(&mut s, false, 100, 12);
+        let shown: Vec<&String> = lines.iter().filter(|l| l.contains("a.com")).collect();
+        assert_eq!(shown.len(), 9);
+        // Newest is ts 49; scrolled 10 rows: ts 39 down to 31.
+        assert!(shown[0].contains("00:00:39"));
+        assert!(shown[8].contains("00:00:31"));
+        assert!(!lines.iter().any(|l| l.contains("00:00:40")));
+    }
+
+    #[test]
+    fn test_render_title_counts_sort_and_frozen() {
+        let mut s = alternating(10);
+        s.filter = FilterMode::ByClient("10.0.0.1".to_string());
+        let lines = draw(&mut s, true, 100, 12);
+        assert!(lines[0].contains("Queries 5/10"), "{}", lines[0]);
+        assert!(lines[0].contains("Newest first"));
+        assert!(lines[0].contains("[FROZEN]"));
+        let lines = draw(&mut s, false, 100, 12);
+        assert!(!lines[0].contains("[FROZEN]"));
+    }
+
+    #[test]
+    fn test_render_header_and_row_columns() {
+        let mut s = QueriesState::default();
+        s.push_event(
+            &ev(3_661, ipv4(192, 168, 1, 5), StatAction::Allowed),
+            "example.com",
+        );
+        let lines = draw(&mut s, false, 100, 8);
+        assert!(lines[1].contains("Time") && lines[1].contains("Flags"));
+        let row = &lines[2];
+        for cell in [
+            INDICATOR_ALLOWED,
+            "01:01:01",
+            "example.com",
+            "192.168.1.5",
+            "Allowed",
+        ] {
+            assert!(row.contains(cell), "missing {cell:?} in {row:?}");
+        }
+    }
+
+    #[test]
+    fn test_render_scrollbar_only_when_list_overflows() {
+        // The scrollbar replaces the right border column between the corners.
+        let right_border = |lines: &[String]| -> String {
+            lines[1..lines.len() - 1]
+                .iter()
+                .map(|l| l.chars().last().unwrap())
+                .collect()
+        };
+        let mut short = alternating(3);
+        let lines = draw(&mut short, false, 60, 12);
+        assert!(right_border(&lines).chars().all(|c| c == '│'));
+
+        let mut long = alternating(50);
+        let lines = draw(&mut long, false, 60, 12);
+        assert!(right_border(&lines).chars().any(|c| c != '│'));
+    }
+
+    #[test]
+    fn test_render_empty_buffer() {
+        let mut s = QueriesState::default();
+        let lines = draw(&mut s, false, 80, 10);
+        assert!(lines[0].contains("Queries 0/0"));
+        assert_eq!(s.scroll(), 0);
     }
 
     // --- SortOrder ---

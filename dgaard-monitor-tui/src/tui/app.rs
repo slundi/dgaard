@@ -9,6 +9,9 @@ use crate::config::TuiConfig;
 use crate::tui::keys::{Action, KeyMap};
 use crate::tui::tabs::Tab;
 
+/// Rows moved by `PageUp` / `PageDown` in tabs that do not know their height.
+const PAGE_STEP: usize = 10;
+
 /// Map a direct-tab action to its `Tab` variant.
 fn tab_for_action(action: Action) -> Option<Tab> {
     match action {
@@ -56,6 +59,12 @@ impl TuiApp {
             Action::TabPrev => self.active_tab = self.active_tab.prev(),
             Action::ScrollUp => self.scroll = self.scroll.saturating_sub(1),
             Action::ScrollDown => self.scroll = self.scroll.saturating_add(1),
+            Action::PageUp => self.scroll = self.scroll.saturating_sub(PAGE_STEP),
+            Action::PageDown => self.scroll = self.scroll.saturating_add(PAGE_STEP),
+            Action::ScrollTop => self.scroll = 0,
+            // Needs the list length: only tabs with their own scroll state
+            // (Queries) handle it.
+            Action::ScrollBottom => {}
             Action::Freeze => self.frozen = !self.frozen,
             Action::ClearFilter => self.filter = None,
             // The tab state itself is cleared by the caller; the scroll offset
@@ -149,6 +158,22 @@ mod tests {
         app.filter = Some("192.168.1.1".to_string());
         app.apply(Action::ClearFilter);
         assert!(app.filter.is_none());
+    }
+
+    #[test]
+    fn test_page_and_jump_scroll() {
+        let mut app = default_app();
+        app.apply(Action::PageDown);
+        app.apply(Action::PageDown);
+        assert_eq!(app.scroll, 2 * PAGE_STEP);
+        app.apply(Action::PageUp);
+        assert_eq!(app.scroll, PAGE_STEP);
+        app.apply(Action::ScrollBottom);
+        assert_eq!(app.scroll, PAGE_STEP, "no length known: unchanged");
+        app.apply(Action::ScrollTop);
+        assert_eq!(app.scroll, 0);
+        app.apply(Action::PageUp);
+        assert_eq!(app.scroll, 0);
     }
 
     #[test]

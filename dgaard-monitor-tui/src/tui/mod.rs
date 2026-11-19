@@ -21,8 +21,7 @@ use tokio::sync::watch;
 
 use app::TuiApp;
 use input::Flow;
-use tabs::Tab;
-use tabs::dashboard::DashboardState;
+use tabs::{Tab, TabStates};
 
 use crate::config::TuiConfig;
 use dgaard_monitor_core::state::AppState;
@@ -40,7 +39,7 @@ pub async fn run(config: TuiConfig, state: Arc<AppState>, mut shutdown: watch::R
     };
 
     let mut app = TuiApp::new(&config);
-    let mut dashboard = DashboardState::new();
+    let mut tab_states = TabStates::default();
     let mut event_rx = state.subscribe();
 
     // Dedicated thread for blocking crossterm key reads.
@@ -83,18 +82,18 @@ pub async fn run(config: TuiConfig, state: Arc<AppState>, mut shutdown: watch::R
                         let map = state.domain_map.read().await;
                         map.get(&event.domain_hash).cloned().unwrap_or_default()
                     };
-                    dashboard.push_event(&event, &domain);
+                    tab_states.push_event(&event, &domain);
                 }
             }
 
             Some(key) = key_rx.recv() => {
-                if input::handle_key(&key, &mut app, &mut dashboard) == Flow::Quit {
+                if input::handle_key(&key, &mut app, &mut tab_states) == Flow::Quit {
                     break 'main;
                 }
             }
 
             _ = tick.tick() => {
-                if terminal.draw(|f| render_frame(f, &app, &dashboard)).is_err() {
+                if terminal.draw(|f| render_frame(f, &app, &mut tab_states)).is_err() {
                     break 'main;
                 }
             }
@@ -118,14 +117,18 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) {
     let _ = terminal.show_cursor();
 }
 
-fn render_frame(frame: &mut ratatui::Frame, app: &TuiApp, dashboard: &DashboardState) {
+fn render_frame(frame: &mut ratatui::Frame, app: &TuiApp, tab_states: &mut TabStates) {
     let areas = top_bar::layout(frame.area());
-    top_bar::render(frame, &areas, app, dashboard);
+    top_bar::render(frame, &areas, app, &tab_states.dashboard);
 
     let body_area = areas.body;
     match app.active_tab {
-        Tab::Dashboard => tabs::dashboard::render(dashboard, app.scroll, body_area, frame),
-        Tab::Queries => tabs::queries::render(body_area, frame),
+        Tab::Dashboard => {
+            tabs::dashboard::render(&tab_states.dashboard, app.scroll, body_area, frame)
+        }
+        Tab::Queries => {
+            tabs::queries::render(&mut tab_states.queries, app.frozen, body_area, frame)
+        }
         Tab::Talkers => tabs::talkers::render(body_area, frame),
         Tab::Timelines => tabs::timelines::render(body_area, frame),
         Tab::About => tabs::about::render(&app.keymap, body_area, frame),

@@ -107,6 +107,23 @@ pub fn key_bindings(keymap: &KeyMap) -> Vec<KeyBinding> {
             action: "Scroll Down",
             key: keymap.scroll_down.clone(),
         },
+        // Paging (fixed)
+        KeyBinding {
+            action: "Page Up",
+            key: "pageup".to_string(),
+        },
+        KeyBinding {
+            action: "Page Down",
+            key: "pagedown".to_string(),
+        },
+        KeyBinding {
+            action: "First row",
+            key: "home".to_string(),
+        },
+        KeyBinding {
+            action: "Last row",
+            key: "end".to_string(),
+        },
         // View controls (fixed)
         KeyBinding {
             action: "Freeze",
@@ -207,8 +224,9 @@ mod tests {
 
     #[test]
     fn test_key_bindings_count() {
-        // 5 direct-tab + 2 cycle nav + 4 configurable + ctrl+c + 4 view + 2 queries = 18
-        assert_eq!(key_bindings(&default_keymap()).len(), 18);
+        // 5 direct-tab + 2 cycle nav + 4 configurable + ctrl+c + 4 paging + 4 view
+        // + 2 queries = 22
+        assert_eq!(key_bindings(&default_keymap()).len(), 22);
     }
 
     #[test]
@@ -295,6 +313,10 @@ mod tests {
             ("Freeze", Action::Freeze),
             ("Clear stats", Action::ClearStats),
             ("Clear Filter", Action::ClearFilter),
+            ("Page Up", Action::PageUp),
+            ("Page Down", Action::PageDown),
+            ("First row", Action::ScrollTop),
+            ("Last row", Action::ScrollBottom),
         ];
         for (label, action) in cases {
             let binding = bindings.iter().find(|b| b.action == label).unwrap();
