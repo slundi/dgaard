@@ -47,6 +47,8 @@ const PORT_RANGE: RangeInclusive<i64> = 1..=65_535;
 #[cfg(feature = "tui")]
 const TICK_MS_RANGE: RangeInclusive<i64> = 10..=60_000;
 const RETENTION_RANGE: RangeInclusive<i64> = 0..=u32::MAX as i64;
+/// Capacity of the internal event bus, in events.
+const EVENT_BUFFER_RANGE: RangeInclusive<i64> = 256..=65_536;
 #[cfg(feature = "rest")]
 const HISTORY_SIZE_RANGE: RangeInclusive<i64> = 1..=1_000_000;
 #[cfg(feature = "rest")]
@@ -171,6 +173,8 @@ pub struct InputConfig {
     // Parsed but not used yet: see review finding F1.
     #[allow(dead_code)]
     pub engine_config_path: Option<String>,
+    /// How many events a slow sink may fall behind before it loses them.
+    pub event_buffer: usize,
 }
 
 fn default_socket() -> String {
@@ -187,6 +191,7 @@ impl Default for InputConfig {
             socket: default_socket(),
             index: default_index(),
             engine_config_path: None,
+            event_buffer: dgaard_monitor_core::state::DEFAULT_EVENT_BUFFER,
         }
     }
 }
@@ -361,7 +366,11 @@ fn check_keys(
 // ---------------------------------------------------------------------------
 
 fn parse_input(table: &toml_span::value::Table<'_>) -> Result<InputConfig, ConfigError> {
-    check_keys(table, "input", &["socket", "index", "engine_config_path"])?;
+    check_keys(
+        table,
+        "input",
+        &["socket", "index", "engine_config_path", "event_buffer"],
+    )?;
     let mut cfg = InputConfig::default();
     if let Some(s) = get_str(table, "socket")? {
         cfg.socket = s.to_string();
@@ -371,6 +380,9 @@ fn parse_input(table: &toml_span::value::Table<'_>) -> Result<InputConfig, Confi
     }
     if let Some(s) = get_str(table, "engine_config_path")? {
         cfg.engine_config_path = Some(s.to_string());
+    }
+    if let Some(n) = get_int_in_range(table, "event_buffer", EVENT_BUFFER_RANGE)? {
+        cfg.event_buffer = n;
     }
     Ok(cfg)
 }
@@ -805,6 +817,28 @@ mod tests {
     fn wrong_type_is_still_an_invalid_type() {
         let err = parse_err("[persistence]\nevents_retention_hours = \"72\"\n");
         assert!(matches!(err, ConfigError::InvalidType { .. }), "{err}");
+    }
+
+    #[test]
+    fn event_buffer_defaults_and_range() {
+        assert_eq!(
+            Config::default().input.event_buffer,
+            dgaard_monitor_core::state::DEFAULT_EVENT_BUFFER
+        );
+        assert_eq!(
+            Config::parse("[input]\nevent_buffer = 65536\n")
+                .unwrap()
+                .input
+                .event_buffer,
+            65_536
+        );
+        for bad in ["255", "65537", "-1"] {
+            let err = parse_err(&format!("[input]\nevent_buffer = {bad}\n"));
+            assert!(
+                matches!(err, ConfigError::InvalidValue { .. }),
+                "{bad}: {err}"
+            );
+        }
     }
 
     // --- Unknown keys and sections ---

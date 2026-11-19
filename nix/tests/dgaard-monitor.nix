@@ -117,6 +117,7 @@ pkgs.runCommand "test-dgaard-monitor-module" { nativeBuildInputs = [ pkgs.ripgre
   # [input] defaults
   rg -qF 'socket = "/tmp/dgaard_stats.sock"'    ${toml cfgDefaults}
   rg -qF 'index = "/var/lib/dns/hosts.bin"'     ${toml cfgDefaults}
+  rg -qF 'event_buffer = 8192'                  ${toml cfgDefaults}
   # engine_config_path must be absent when null
   if rg -q 'engine_config_path' ${toml cfgDefaults}; then
     echo "FAIL: engine_config_path should be absent"

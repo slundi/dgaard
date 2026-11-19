@@ -40,7 +40,7 @@ use tokio::sync::watch;
 
 use crate::config::NatsConfig;
 use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
-use dgaard_monitor_core::state::AppState;
+use dgaard_monitor_core::state::{AppState, Sink};
 use dgaard_monitor_core::util::{format_client_ip, parse_client_ip};
 
 /// Longest domain name accepted from a peer (RFC 1035, presentation form).
@@ -371,6 +371,7 @@ async fn run_publisher(
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        state.record_drop(Sink::NatsPublisher, n);
                         eprintln!("nats: publisher lagged, skipped {n} events");
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,

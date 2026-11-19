@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::{broadcast, watch};
 
-use dgaard_monitor_core::state::AppState;
+use dgaard_monitor_core::state::{AppState, Sink};
 use dgaard_monitor_core::util::event_to_record;
 
 /// Runs when `--headless` is set: emits one JSON line per event to stdout.
@@ -54,6 +54,7 @@ async fn run_to<W: AsyncWrite + Unpin>(
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
+                    state.record_drop(Sink::Headless, n);
                     eprintln!("warn: headless logger dropped {n} events (channel lagged)");
                 }
                 Err(broadcast::error::RecvError::Closed) => break,

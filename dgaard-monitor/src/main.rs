@@ -44,6 +44,7 @@ async fn main() {
             config::InputConfig {
                 socket: socket_path,
                 index: index_path,
+                event_buffer,
                 ..
             },
         persistence: persistence_cfg,
@@ -101,7 +102,10 @@ async fn main() {
         }
     };
 
-    let state = Arc::new(AppState::new(Duration::from_secs(3600)));
+    let state = Arc::new(AppState::with_event_buffer(
+        Duration::from_secs(3600),
+        event_buffer,
+    ));
 
     // One write lock for the whole index, and kept apart from runtime
     // mappings so later reloads can drop entries removed from the lists.
@@ -216,6 +220,13 @@ async fn main() {
 
     lifecycle::exit_on_second_signal();
     lifecycle::shutdown(shutdown_tx, writer_task, handles, db).await;
+
+    // Make silent losses visible: events each sink could not keep up with.
+    for (sink, dropped) in state.dropped_counts() {
+        if dropped > 0 {
+            eprintln!("Warning: {sink} dropped {dropped} events");
+        }
+    }
 
     eprintln!("All tasks stopped. Bye.");
 }

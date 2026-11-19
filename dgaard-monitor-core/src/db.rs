@@ -3,13 +3,17 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use rusqlite::{Connection, params};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 
-use crate::state::AppState;
+use crate::state::{AppState, Sink};
 use crate::util::{EventRecord, event_to_record};
 
 const BATCH_SIZE: usize = 256;
 const FLUSH_INTERVAL_SECS: u64 = 5;
+/// Jobs queued for the SQLite worker (one job: up to `BATCH_SIZE` events or
+/// one hour of aggregates). Full means the disk is truly behind: the event
+/// loop then waits, and the bus buffer absorbs the difference.
+const WRITE_QUEUE: usize = 64;
 
 // ── Database ──────────────────────────────────────────────────────────────────
 
@@ -292,20 +296,59 @@ impl Database {
 
 // ── Writer task ───────────────────────────────────────────────────────────────
 
+/// Hourly aggregate counters, keyed by `(hour, domain_hash, client_ip, action)`.
+type HourlyCounts = HashMap<(u64, String, String, String), u64>;
+
+/// One unit of work for the SQLite worker.
+enum WriteJob {
+    Events(Vec<EventRecord>),
+    Hourly(HourlyCounts),
+    Prune,
+}
+
+/// Run every SQLite write on one blocking thread, in submission order, so
+/// the event loop never waits for the disk.
+fn run_jobs(db: &Database, mut jobs: mpsc::Receiver<WriteJob>) {
+    while let Some(job) = jobs.blocking_recv() {
+        let (what, result) = match &job {
+            WriteJob::Events(records) => ("batch insert", db.insert_events(records)),
+            WriteJob::Hourly(counts) => ("hourly flush", db.upsert_hourly(counts)),
+            WriteJob::Prune => ("prune", db.prune_old()),
+        };
+        if let Err(e) = result {
+            eprintln!("persistence: {what} error: {e}");
+        }
+    }
+}
+
+/// Queue `job` for the worker; waits only when the queue is full.
+async fn submit(jobs: &mpsc::Sender<WriteJob>, job: WriteJob) {
+    if jobs.send(job).await.is_err() {
+        eprintln!("persistence: SQLite worker stopped, dropping a write");
+    }
+}
+
 /// Background task: subscribes to AppState events and persists them to SQLite.
 ///
 /// Events are batched and flushed every `FLUSH_INTERVAL_SECS` seconds or when
 /// `BATCH_SIZE` is reached.  Hourly aggregates are flushed event-driven: when
 /// the first event of a new hour arrives the previous hour's counters are
-/// written to `dns_stats_hourly`.
+/// written to `dns_stats_hourly`. The writes themselves run on a dedicated
+/// worker; events lost to bus lag are counted under `Sink::Persistence`.
 pub async fn run_writer(
     app: Arc<AppState>,
     db: Arc<Database>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut rx = app.subscribe();
+    let (jobs, jobs_rx) = mpsc::channel(WRITE_QUEUE);
+    let worker = {
+        let db = Arc::clone(&db);
+        tokio::task::spawn_blocking(move || run_jobs(&db, jobs_rx))
+    };
+
     let mut batch: Vec<EventRecord> = Vec::with_capacity(BATCH_SIZE);
-    let mut hourly_acc: HashMap<(u64, String, String, String), u64> = HashMap::new();
+    let mut hourly_acc: HourlyCounts = HashMap::new();
     let mut current_hour: u64 = 0;
 
     let mut flush_tick = tokio::time::interval(Duration::from_secs(FLUSH_INTERVAL_SECS));
@@ -319,36 +362,26 @@ pub async fn run_writer(
             biased;
             _ = shutdown.changed() => break,
             _ = flush_tick.tick() => {
-                flush_batch(&db, &mut batch).await;
+                if !batch.is_empty() {
+                    submit(&jobs, WriteJob::Events(std::mem::take(&mut batch))).await;
+                }
                 if last_prune.elapsed() >= Duration::from_secs(3600) {
-                    let db2 = Arc::clone(&db);
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(e) = db2.prune_old() {
-                            eprintln!("persistence: prune error: {e}");
-                        }
-                    });
+                    submit(&jobs, WriteJob::Prune).await;
                     last_prune = tokio::time::Instant::now();
                 }
             }
             result = rx.recv() => {
                 match result {
                     Ok(event) => {
-                        let domain_map = app.domain_map.read().await;
-                        let record = event_to_record(&event, &domain_map);
-                        drop(domain_map);
+                        let record = {
+                            let domain_map = app.domain_map.read().await;
+                            event_to_record(&event, &domain_map)
+                        };
 
                         // Event-driven hourly flush: flush when the hour advances.
                         let event_hour = (event.timestamp / 3600) * 3600;
                         if current_hour != 0 && event_hour > current_hour {
-                            let acc = std::mem::take(&mut hourly_acc);
-                            let db2 = Arc::clone(&db);
-                            tokio::task::spawn_blocking(move || {
-                                if let Err(e) = db2.upsert_hourly(&acc) {
-                                    eprintln!("persistence: hourly flush error: {e}");
-                                }
-                            })
-                            .await
-                            .ok();
+                            submit(&jobs, WriteJob::Hourly(std::mem::take(&mut hourly_acc))).await;
                         }
                         current_hour = event_hour;
 
@@ -362,10 +395,11 @@ pub async fn run_writer(
 
                         batch.push(record);
                         if batch.len() >= BATCH_SIZE {
-                            flush_batch(&db, &mut batch).await;
+                            submit(&jobs, WriteJob::Events(std::mem::take(&mut batch))).await;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
+                        app.record_drop(Sink::Persistence, n);
                         eprintln!("persistence writer: lagged by {n} events");
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -374,36 +408,16 @@ pub async fn run_writer(
         }
     }
 
-    // Final flush on graceful shutdown.
-    flush_batch(&db, &mut batch).await;
+    // Final flush on graceful shutdown, then let the worker drain the queue.
+    if !batch.is_empty() {
+        submit(&jobs, WriteJob::Events(batch)).await;
+    }
     if !hourly_acc.is_empty() {
-        let db2 = Arc::clone(&db);
-        tokio::task::spawn_blocking(move || {
-            if let Err(e) = db2.upsert_hourly(&hourly_acc) {
-                eprintln!("persistence: final hourly flush error: {e}");
-            }
-        })
-        .await
-        .ok();
+        submit(&jobs, WriteJob::Hourly(hourly_acc)).await;
     }
+    drop(jobs);
+    let _ = worker.await;
 }
-
-async fn flush_batch(db: &Arc<Database>, batch: &mut Vec<EventRecord>) {
-    if batch.is_empty() {
-        return;
-    }
-    let to_write = std::mem::take(batch);
-    let db2 = Arc::clone(db);
-    tokio::task::spawn_blocking(move || {
-        if let Err(e) = db2.insert_events(&to_write) {
-            eprintln!("persistence: batch insert error: {e}");
-        }
-    })
-    .await
-    .ok();
-}
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -668,6 +682,38 @@ mod tests {
             .query_row("SELECT client_ip FROM dns_events", [], |row| row.get(0))
             .unwrap();
         assert_eq!(client, "::ffff:10.0.0.1");
+    }
+
+    /// Events lost to bus lag are counted for the persistence sink, and the
+    /// ones received still reach SQLite through the worker.
+    #[tokio::test]
+    async fn writer_counts_lagged_events_and_persists_the_rest() {
+        use crate::protocol::{StatAction, StatEvent};
+
+        let app = Arc::new(AppState::with_event_buffer(Duration::from_secs(3600), 4));
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let writer = tokio::spawn(run_writer(Arc::clone(&app), Arc::clone(&db), shutdown_rx));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // Single-threaded runtime: the writer cannot run while we publish
+        // 10 events into a 4-slot bus, so it misses the first 6.
+        for timestamp in 0..10 {
+            app.record_event(StatEvent {
+                timestamp,
+                domain_hash: 1,
+                client_ip: [0; 16],
+                action: StatAction::Allowed,
+            })
+            .await;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = shutdown_tx.send(true);
+        writer.await.unwrap();
+
+        assert_eq!(app.dropped(Sink::Persistence), 6);
+        let rows = db.query_range(0, u64::MAX, None, None, 100, 0).unwrap();
+        assert_eq!(rows.len(), 4);
     }
 
     #[test]

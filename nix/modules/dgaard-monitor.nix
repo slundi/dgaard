@@ -34,6 +34,7 @@ let
     input = {
       socket = cfg.input.socket;
       index = cfg.input.index;
+      event_buffer = cfg.input.eventBuffer;
     }
     // lib.optionalAttrs (cfg.input.engineConfigPath != null) {
       engine_config_path = cfg.input.engineConfigPath;
@@ -147,6 +148,15 @@ in
           Path to the dgaard engine config file (dgaard.toml).
           When set, the monitor resolves custom security flag bit indices (16–31)
           to their configured labels. Bits without a matching entry render as CUSTOM_BIT_<n>.
+        '';
+      };
+      eventBuffer = lib.mkOption {
+        type = lib.types.ints.between 256 65536;
+        default = 8192;
+        description = ''
+          Capacity of the internal event bus, in events. A sink that falls
+          further behind (slow disk, slow HTTP endpoint) loses events; losses
+          are counted per sink.
         '';
       };
     };

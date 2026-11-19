@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -33,6 +33,8 @@ pub struct StatsResponse {
     pub blocked_pct: String,
     pub top_domains: Vec<DomainCount>,
     pub top_reasons: Vec<ReasonCount>,
+    /// Events each sink lost since startup (`dropped_total{sink}`).
+    pub dropped: BTreeMap<&'static str, u64>,
 }
 
 pub async fn stats_handler(State(web): State<Arc<WebState>>) -> Json<StatsResponse> {
@@ -132,6 +134,7 @@ pub async fn stats_handler(State(web): State<Arc<WebState>>) -> Json<StatsRespon
         blocked_pct,
         top_domains,
         top_reasons,
+        dropped: web.app.dropped_counts().into_iter().collect(),
     })
 }
 
@@ -163,5 +166,16 @@ mod tests {
         let web = make_web_state();
         let Json(resp) = stats_handler(State(web)).await;
         assert_eq!(resp.blocked_pct, "0.0%");
+    }
+
+    #[tokio::test]
+    async fn dropped_counters_are_reported_per_sink() {
+        use dgaard_monitor_core::state::Sink;
+        let web = make_web_state();
+        web.app.record_drop(Sink::ForwardingHttp, 7);
+        let Json(resp) = stats_handler(State(web)).await;
+        assert_eq!(resp.dropped.get("forwarding_http"), Some(&7));
+        assert_eq!(resp.dropped.get("persistence"), Some(&0));
+        assert_eq!(resp.dropped.len(), Sink::ALL.len());
     }
 }

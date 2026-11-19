@@ -18,7 +18,7 @@ use tokio::sync::{broadcast, watch};
 use constant_time_eq::constant_time_eq;
 
 use crate::config::{ServerConfig, WebConfig};
-use dgaard_monitor_core::state::AppState;
+use dgaard_monitor_core::state::{AppState, Sink};
 use dgaard_monitor_core::util::{client_ip_addr, event_to_record, flags_of};
 pub use state::{ClientStats, WebState};
 
@@ -205,6 +205,7 @@ async fn run_ingestor(app: Arc<AppState>, web: Arc<WebState>) {
                 web.push_event(record).await;
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
+                app.record_drop(Sink::Web, n);
                 eprintln!("web ingestor: lagged by {n} events, some events lost");
             }
             Err(broadcast::error::RecvError::Closed) => break,

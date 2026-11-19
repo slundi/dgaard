@@ -10,12 +10,12 @@ use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::time::timeout;
 
 use crate::config::{ForwardFormat, ForwardingConfig};
 use crate::protocol::{StatAction, StatBlockReason, StatError};
-use crate::state::AppState;
+use crate::state::{AppState, Sink};
 
 // --- HTTP client ---
 
@@ -36,15 +36,29 @@ fn build_https_client() -> HttpsClient {
 
 // --- Entry point ---
 
+/// Events waiting for the HTTP sink. When the endpoint is slower than the
+/// event rate and the queue is full, new events are dropped and counted
+/// under `Sink::ForwardingHttp`, instead of stalling the file sink.
+const HTTP_QUEUE: usize = 4096;
+/// Most documents sent in one Elasticsearch bulk request.
+const BULK_MAX_DOCS: usize = 500;
+/// How long the HTTP sink may keep draining its queue after shutdown.
+const HTTP_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Forward enriched events to configured sinks (file and/or HTTP POST).
 ///
 /// Applies the `filter` list and formats each event via `template` before
 /// writing or posting it.  Returns when `shutdown` is signalled, or at once
 /// when no sink is configured.
-pub async fn run(
+pub async fn run(config: ForwardingConfig, state: Arc<AppState>, shutdown: watch::Receiver<bool>) {
+    run_with_queue(config, state, shutdown, HTTP_QUEUE).await;
+}
+
+async fn run_with_queue(
     config: ForwardingConfig,
     state: Arc<AppState>,
     mut shutdown: watch::Receiver<bool>,
+    http_queue_size: usize,
 ) {
     if !config.has_sink() {
         return;
@@ -69,8 +83,21 @@ pub async fn run(
         None => None,
     };
 
-    // Only build the HTTP client when a URL is actually configured.
-    let http_client = forward_url.as_ref().map(|_| build_https_client());
+    // The HTTP sink runs apart, behind a bounded queue: one slow POST must
+    // not hold back the file sink or make the bus lag.
+    let (http_queue, http_worker) = match forward_url {
+        Some(url) => {
+            let (queue, pending) = mpsc::channel(http_queue_size);
+            let worker = tokio::spawn(run_http_sink(
+                build_https_client(),
+                url,
+                format.content_type(),
+                pending,
+            ));
+            (Some(queue), Some(worker))
+        }
+        None => (None, None),
+    };
 
     let mut rx = state.subscribe();
 
@@ -102,24 +129,61 @@ pub async fn run(
                             eprintln!("forwarding: write error: {e}");
                         }
 
-                        if let (Some(client), Some(url)) = (&http_client, &forward_url) {
-                            let ct = format.content_type();
-                            // ES bulk API requires a trailing newline after the last document.
-                            // write_line already handles the file case; add it here for HTTP.
-                            if ct == "application/x-ndjson" {
-                                post_event(client, url, &format!("{body}\n"), ct).await;
-                            } else {
-                                post_event(client, url, &body, ct).await;
-                            }
+                        if let Some(queue) = &http_queue
+                            && let Err(mpsc::error::TrySendError::Full(_)) = queue.try_send(body)
+                        {
+                            state.record_drop(Sink::ForwardingHttp, 1);
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        state.record_drop(Sink::Forwarding, n);
                         eprintln!("forwarding: lagged, dropped {n} events");
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         }
+    }
+
+    // Let the HTTP sink send what is queued, within a bound.
+    drop(http_queue);
+    if let Some(mut worker) = http_worker
+        && timeout(HTTP_DRAIN_TIMEOUT, &mut worker).await.is_err()
+    {
+        worker.abort();
+        eprintln!("forwarding: HTTP queue not drained within {HTTP_DRAIN_TIMEOUT:?}");
+    }
+}
+
+/// POST queued bodies to `url`. Elasticsearch bulk NDJSON is batched (up to
+/// `BULK_MAX_DOCS` per request); the other formats send one document per
+/// request, as webhook receivers expect.
+async fn run_http_sink(
+    client: HttpsClient,
+    url: String,
+    content_type: &'static str,
+    mut pending: mpsc::Receiver<String>,
+) {
+    let bulk = content_type == "application/x-ndjson";
+    while let Some(body) = pending.recv().await {
+        if !bulk {
+            post_event(&client, &url, &body, content_type).await;
+            continue;
+        }
+        // The bulk API requires a newline after every document, the last
+        // one included.
+        let mut payload = body;
+        payload.push('\n');
+        for _ in 1..BULK_MAX_DOCS {
+            match pending.try_recv() {
+                Ok(next) => {
+                    payload.push_str(&next);
+                    payload.push('\n');
+                }
+                Err(_) => break,
+            }
+        }
+        post_event(&client, &url, &payload, content_type).await;
     }
 }
 
@@ -810,6 +874,205 @@ mod tests {
         let _ = timeout(Duration::from_secs(2), handle).await;
 
         assert_eq!(content, "1700000000 192.168.1.1 Blocked example.com\n");
+    }
+
+    // --- HTTP queue ---
+
+    /// An HTTP endpoint that accepts connections and requests but never
+    /// answers, like a hung SOAR.
+    async fn hanging_endpoint() -> String {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/hook", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    while matches!(stream.read(&mut buf).await, Ok(n) if n > 0) {}
+                });
+            }
+        });
+        url
+    }
+
+    /// An HTTP endpoint answering 200 to every request and keeping each body.
+    async fn recording_endpoint() -> (String, Arc<tokio::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt as _, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/_bulk", listener.local_addr().unwrap());
+        let bodies = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&bodies);
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let recorded = Arc::clone(&recorded);
+                tokio::spawn(async move {
+                    let mut stream = BufReader::new(stream);
+                    loop {
+                        let mut length = 0usize;
+                        let mut line = String::new();
+                        loop {
+                            line.clear();
+                            if stream.read_line(&mut line).await.unwrap_or(0) == 0 {
+                                return;
+                            }
+                            if line == "\r\n" {
+                                break;
+                            }
+                            if let Some(value) =
+                                line.to_ascii_lowercase().strip_prefix("content-length:")
+                            {
+                                length = value.trim().parse().unwrap_or(0);
+                            }
+                        }
+                        let mut body = vec![0u8; length];
+                        if stream.read_exact(&mut body).await.is_err() {
+                            return;
+                        }
+                        recorded
+                            .lock()
+                            .await
+                            .push(String::from_utf8_lossy(&body).into_owned());
+                        let reply = "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n";
+                        if stream.get_mut().write_all(reply.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (url, bodies)
+    }
+
+    /// Regression: each event waited for its POST (up to 5 s) before the next
+    /// one was handled, so a slow endpoint also delayed the file sink.
+    #[tokio::test]
+    async fn test_slow_http_endpoint_does_not_delay_the_file_sink() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fwd.log");
+        let state = make_state();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let cfg = ForwardingConfig {
+            file: Some(path.to_str().unwrap().to_string()),
+            forward_url: Some(hanging_endpoint().await),
+            ..ForwardingConfig::default()
+        };
+        let task = tokio::spawn(run(cfg, Arc::clone(&state), shutdown_rx));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        for _ in 0..3 {
+            state.record_event(make_event(StatAction::Allowed)).await;
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+            if content.lines().count() == 3 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "file sink stalled behind HTTP: {content:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn test_http_queue_overflow_is_counted() {
+        let state = make_state();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let cfg = ForwardingConfig {
+            forward_url: Some(hanging_endpoint().await),
+            ..ForwardingConfig::default()
+        };
+        let task = tokio::spawn(run_with_queue(cfg, Arc::clone(&state), shutdown_rx, 2));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        for _ in 0..20 {
+            state.record_event(make_event(StatAction::Allowed)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        task.abort();
+
+        // 2 queued, at most 1 in flight, the rest dropped and counted.
+        let dropped = state.dropped(Sink::ForwardingHttp);
+        assert!((17..=18).contains(&dropped), "dropped {dropped}");
+        assert_eq!(state.dropped(Sink::Forwarding), 0);
+    }
+
+    #[tokio::test]
+    async fn test_elasticsearch_events_are_bulk_posted() {
+        let (url, bodies) = recording_endpoint().await;
+        let state = make_state();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let cfg = ForwardingConfig {
+            forward_url: Some(url),
+            format: ForwardFormat::Elasticsearch,
+            ..ForwardingConfig::default()
+        };
+        let task = tokio::spawn(run(cfg, Arc::clone(&state), shutdown_rx));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        for _ in 0..50 {
+            state.record_event(make_event(StatAction::Allowed)).await;
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let requests = loop {
+            let requests = bodies.lock().await.clone();
+            let docs: usize = requests
+                .iter()
+                .map(|body| body.matches("@timestamp").count())
+                .sum();
+            if docs >= 50 {
+                break requests;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{docs} documents received"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        let _ = shutdown_tx.send(true);
+        let _ = task.await;
+
+        assert!(
+            requests.len() < 50,
+            "{} requests for 50 events",
+            requests.len()
+        );
+        for body in &requests {
+            assert!(body.ends_with('\n'), "bulk body must end with a newline");
+            assert_eq!(body.lines().count() % 2, 0, "action/document pairs");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_webhook_formats_stay_one_document_per_request() {
+        let (url, bodies) = recording_endpoint().await;
+        let state = make_state();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let cfg = ForwardingConfig {
+            forward_url: Some(url),
+            format: ForwardFormat::Json,
+            ..ForwardingConfig::default()
+        };
+        let task = tokio::spawn(run(cfg, Arc::clone(&state), shutdown_rx));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        for _ in 0..5 {
+            state.record_event(make_event(StatAction::Allowed)).await;
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while bodies.lock().await.len() < 5 {
+            assert!(std::time::Instant::now() < deadline, "requests missing");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let _ = shutdown_tx.send(true);
+        let _ = task.await;
+
+        for body in bodies.lock().await.iter() {
+            serde_json::from_str::<serde_json::Value>(body).expect("one JSON document per request");
+        }
     }
 
     // --- HTTP sink ---

@@ -15,6 +15,11 @@ socket = "/var/run/dgaard/stats.sock"
 # Binary host-index file produced by dgaard (hash → domain mapping).
 index = "/var/dgaard/host_mapping.bin"
 
+# Capacity of the internal event bus, in events (256 to 65536). A sink that
+# falls further behind (slow disk, slow HTTP endpoint) loses events; losses
+# are counted per sink, reported by the web /stats endpoint and at shutdown.
+event_buffer = 8192
+
 # ---------------------------------------------------------------------------
 # Persistence — local SQLite storage
 # ---------------------------------------------------------------------------

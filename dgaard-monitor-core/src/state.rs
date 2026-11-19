@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, broadcast};
 
@@ -11,6 +12,44 @@ pub const DEFAULT_WINDOW: Duration = Duration::from_secs(3600); // 1 hour
 /// Cap on mappings accepted from federation peers. Past it, new remote
 /// mappings are refused so an untrusted publisher cannot exhaust memory.
 pub const MAX_REMOTE_DOMAINS: usize = 100_000;
+
+/// Default capacity of the event bus: enough to absorb a DNS burst while a
+/// slow sink (SQLite flush, HTTP POST) catches up.
+pub const DEFAULT_EVENT_BUFFER: usize = 8192;
+
+/// Event consumers whose losses are counted (`dropped_total{sink}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sink {
+    Persistence,
+    Forwarding,
+    /// The HTTP queue of the forwarding sink overflowed.
+    ForwardingHttp,
+    Headless,
+    NatsPublisher,
+    Web,
+}
+
+impl Sink {
+    pub const ALL: [Sink; 6] = [
+        Sink::Persistence,
+        Sink::Forwarding,
+        Sink::ForwardingHttp,
+        Sink::Headless,
+        Sink::NatsPublisher,
+        Sink::Web,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Sink::Persistence => "persistence",
+            Sink::Forwarding => "forwarding",
+            Sink::ForwardingHttp => "forwarding_http",
+            Sink::Headless => "headless",
+            Sink::NatsPublisher => "nats_publisher",
+            Sink::Web => "web",
+        }
+    }
+}
 
 pub struct RollingStats {
     pub total: u64,
@@ -115,12 +154,20 @@ pub struct AppState {
     /// Only events produced by the local dgaard daemon. Federation
     /// publishers read this one so remote events are never re-emitted.
     local_tx: broadcast::Sender<StatEvent>,
+    /// Events lost per sink, indexed like `Sink::ALL`.
+    dropped: [AtomicU64; Sink::ALL.len()],
 }
 
 impl AppState {
     pub fn new(window: Duration) -> Self {
-        let (events_tx, _) = broadcast::channel(256);
-        let (local_tx, _) = broadcast::channel(256);
+        Self::with_event_buffer(window, DEFAULT_EVENT_BUFFER)
+    }
+
+    /// `event_buffer` is how many events a sink may fall behind before it
+    /// starts losing them.
+    pub fn with_event_buffer(window: Duration, event_buffer: usize) -> Self {
+        let (events_tx, _) = broadcast::channel(event_buffer);
+        let (local_tx, _) = broadcast::channel(event_buffer);
         Self {
             domain_map: Arc::new(RwLock::new(HashMap::new())),
             live_domains: RwLock::new(HashMap::new()),
@@ -128,7 +175,25 @@ impl AppState {
             stats: Arc::new(RwLock::new(RollingStats::new(window))),
             events_tx,
             local_tx,
+            dropped: Default::default(),
         }
+    }
+
+    /// Count `count` events lost by `sink`.
+    pub fn record_drop(&self, sink: Sink, count: u64) {
+        self.dropped[sink as usize].fetch_add(count, Ordering::Relaxed);
+    }
+
+    pub fn dropped(&self, sink: Sink) -> u64 {
+        self.dropped[sink as usize].load(Ordering::Relaxed)
+    }
+
+    /// `(sink name, events lost)` for every sink.
+    pub fn dropped_counts(&self) -> Vec<(&'static str, u64)> {
+        Sink::ALL
+            .iter()
+            .map(|sink| (sink.name(), self.dropped(*sink)))
+            .collect()
     }
 
     /// Record an event produced by the local dgaard daemon.
@@ -474,6 +539,55 @@ mod tests {
         // Local mappings are not subject to the cap.
         state.insert_domain(extra, "local.test".to_string()).await;
         assert!(state.domain_map.read().await.contains_key(&extra));
+    }
+
+    #[test]
+    fn test_sink_indices_match_all() {
+        for (index, sink) in Sink::ALL.iter().enumerate() {
+            assert_eq!(*sink as usize, index, "{sink:?}");
+        }
+    }
+
+    #[test]
+    fn test_drop_counters_are_per_sink() {
+        let state = AppState::new(DEFAULT_WINDOW);
+        state.record_drop(Sink::Persistence, 3);
+        state.record_drop(Sink::Persistence, 2);
+        state.record_drop(Sink::ForwardingHttp, 1);
+        assert_eq!(state.dropped(Sink::Persistence), 5);
+        assert_eq!(state.dropped(Sink::ForwardingHttp), 1);
+        assert_eq!(state.dropped(Sink::Headless), 0);
+        let counts = state.dropped_counts();
+        assert_eq!(counts.len(), Sink::ALL.len());
+        assert!(counts.contains(&("persistence", 5)));
+    }
+
+    /// Regression: the bus held 256 events, so a short stall of one sink
+    /// lost events for good.
+    #[tokio::test]
+    async fn test_event_buffer_absorbs_a_burst() {
+        let state = AppState::new(DEFAULT_WINDOW);
+        let mut slow = state.subscribe();
+        for hash in 0..DEFAULT_EVENT_BUFFER as u64 {
+            state
+                .record_event(make_event(hash, ip(1), StatAction::Allowed))
+                .await;
+        }
+        for hash in 0..DEFAULT_EVENT_BUFFER as u64 {
+            assert_eq!(slow.try_recv().unwrap().domain_hash, hash);
+        }
+
+        let small = AppState::with_event_buffer(DEFAULT_WINDOW, 4);
+        let mut slow = small.subscribe();
+        for hash in 0..5 {
+            small
+                .record_event(make_event(hash, ip(1), StatAction::Allowed))
+                .await;
+        }
+        assert!(matches!(
+            slow.try_recv(),
+            Err(broadcast::error::TryRecvError::Lagged(1))
+        ));
     }
 
     #[tokio::test]
