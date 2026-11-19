@@ -2,10 +2,8 @@
 
 mod app;
 mod keys;
-mod layout;
 mod tabs;
 mod util;
-mod widgets;
 
 use std::io;
 use std::sync::Arc;

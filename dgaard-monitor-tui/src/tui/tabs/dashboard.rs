@@ -26,8 +26,6 @@
 //!
 //! The render function uses ratatui `Table`, `List`, `Block`, and `Paragraph`.
 
-#![allow(dead_code)]
-
 use std::collections::{HashSet, VecDeque};
 use std::time::Instant;
 

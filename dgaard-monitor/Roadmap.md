@@ -19,7 +19,7 @@
   - [x] Top bar, with 3 rows:
   - [x] Row 1 Header: contain tabs `Dashboard`, `Queries`, `Talkers`, `Timelines`, `About`. And some state indicator (active filter 🕵, frozen view ❄️, connectivity status)
   - [x] Row 2 Key metrics: total, blocked %, active client count, QPS
-  - [x] Row 3 dynamic: Split horizontally between "Live Feed" (Left 60%) and "Flag Distribution" (Right 40%)
+  - [ ] Row 3 dynamic: Split horizontally between "Live Feed" (Left 60%) and "Flag Distribution" (Right 40%)
   - [x] remaining space is to display tab content
 - [x] `Dashboard` tab:
   - [x] Total stats: total queries, active clients, blocked queries, percentage blocked, query types (A (IPv4), AAAA (IPv6), PTR, TXT, ...), ~~upstream server~~
@@ -28,18 +28,24 @@
   - [x] Traffic Gauge: Queries per second (QPS).
   - [x] Most active blocking flags (count and ratio)?
 - [ ] Flag Distribution: Use a Sparkline or BarChart to show which StatBlockReason bitflags are firing most often.
-- [x] Tab `Queries` (tail like) with column display: datetime, Domain, IP, blocking flags. `f` to filter flags or client, `s` for a sorting (default last queries on top) popup, `z` to freeze so the display is not updated (show info on ).
-  - [x] Implement Virtual Scrolling (only render what’s visible) to handle a history buffer of 1,000+ entries without lag.
-  - [x] Action Styling: Full row highlight or prefix icons (e.g., ✔ for Allowed, ✘ for Blocked).
-- [x] Tab `Talkers` (most active client IPs) with column display: Client or name, DNS request count, per filter count, first/last seen
-  - [x] Add Reverse DNS: If the monitor can resolve local IPs to hostnames, display the hostname in the Talker tab.
+- [ ] Tab `Queries` (tail like) with column display: datetime, Domain, IP, blocking flags. `f` to filter flags or client, `s` for a sorting (default last queries on top) popup, `z` to freeze so the display is not updated (show info on ).
+  - [ ] Implement Virtual Scrolling (only render what’s visible) to handle a history buffer of 1,000+ entries without lag.
+  - [ ] Action Styling: Full row highlight or prefix icons (e.g., ✔ for Allowed, ✘ for Blocked).
+- [ ] Tab `Talkers` (most active client IPs) with column display: Client or name, DNS request count, per filter count, first/last seen
+  - [ ] Add Reverse DNS: If the monitor can resolve local IPs to hostnames, display the hostname in the Talker tab.
 - [ ] Tab `Timelines` for 24h trends: Total queries, Client activity
+
+> The state, sorting, filtering and reverse-DNS logic of the `Queries`, `Talkers` and `Timelines`
+> tabs exists and is unit-tested (`dgaard-monitor-tui/src/tui/tabs/`), but none of it is wired into
+> the TUI yet: the three tabs show a placeholder. The unwired items carry
+> `#[expect(dead_code, reason = ...)]`, so the compiler flags each marker to remove once wired.
+
 - [x] Tab `About`: contains project name, version, repo URL `https://codeberg.org/slundi/dgaard`, license Apache 2, separator, key mapping
 - [ ] Country flags for hosted domains
 
 ## Phase 3: Analytics
 
-- [x] **Client Tracking**: Identify "Top Talkers" (most active client IPs): done in `Talkers` tab with filter
+- [ ] **Client Tracking**: Identify "Top Talkers" (most active client IPs): logic in the `Talkers` tab, not wired yet
 - [ ] **Reason Breakdown**: If StatAction includes specific block reasons (Malware, Ad, Tracking), display a pie chart of block categories.
 - [ ] **Search/Filter**: Allow filtering the live feed by specific client IP or domain keyword.
 

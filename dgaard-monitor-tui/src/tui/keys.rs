@@ -7,8 +7,6 @@
 //! Additional bindings that are not yet user-configurable (tab switching,
 //! freeze, filter popup) are hard-coded here alongside the configurable ones.
 
-#![allow(dead_code)]
-
 use crate::config::TuiConfig;
 
 /// Every action the TUI can perform, regardless of which physical key triggers it.

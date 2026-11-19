@@ -7,8 +7,6 @@
 //! TODO: add a `render()` dispatcher that calls the correct submodule once
 //! ratatui `Frame` is available.
 
-#![allow(dead_code)]
-
 pub mod about;
 pub mod dashboard;
 pub mod queries;

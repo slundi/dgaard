@@ -37,8 +37,6 @@
 //!
 //! TODO: implement `render()` with ratatui `Table` + `Block` + popup `Paragraph`.
 
-#![allow(dead_code)]
-
 use std::collections::VecDeque;
 
 use crate::tui::util::DomainColor;
@@ -51,8 +49,20 @@ use dgaard_monitor_core::util::{custom_bit_label, format_client_ip};
 pub const MAX_ROWS: usize = 1_000;
 
 /// Column widths for text formatting (matches the module doc table above).
+#[expect(
+    dead_code,
+    reason = "Queries tab not wired into the TUI yet: column widths of its table renderer, not written yet"
+)]
 pub const COL_DATETIME: usize = 8;
+#[expect(
+    dead_code,
+    reason = "Queries tab not wired into the TUI yet: column widths of its table renderer, not written yet"
+)]
 pub const COL_DOMAIN: usize = 30;
+#[expect(
+    dead_code,
+    reason = "Queries tab not wired into the TUI yet: column widths of its table renderer, not written yet"
+)]
 pub const COL_CLIENT: usize = 17;
 
 // ── SortOrder ─────────────────────────────────────────────────────────────────
@@ -67,6 +77,13 @@ pub enum SortOrder {
     OldestFirst,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Queries tab not wired into the TUI yet: it only shows a placeholder"
+    )
+)]
 impl SortOrder {
     /// Human-readable label shown in the sort popup.
     pub fn label(self) -> &'static str {
@@ -199,6 +216,13 @@ pub fn flags_label(action: &StatAction) -> String {
 // ── QueryRow ──────────────────────────────────────────────────────────────────
 
 /// One display-ready row in the Queries table.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Queries tab not wired into the TUI yet: it only shows a placeholder"
+    )
+)]
 pub struct QueryRow {
     /// Single-char indicator (`✔` / `✘` / `⚠` / `·`) — first column.
     pub indicator: &'static str,
@@ -252,6 +276,13 @@ impl QueryRow {
 
 /// Active filter applied to the queries list.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Queries tab not wired into the TUI yet: it only shows a placeholder"
+    )
+)]
 pub enum FilterMode {
     /// No filter — all rows are visible.
     #[default]
@@ -291,6 +322,13 @@ pub struct QueriesState {
     pub frozen: bool,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Queries tab not wired into the TUI yet: it only shows a placeholder"
+    )
+)]
 impl QueriesState {
     pub fn new() -> Self {
         Self::default()

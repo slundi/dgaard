@@ -167,7 +167,6 @@ impl StatMessage {
     }
 
     /// Serialize to the full frame bytes (including the 2-byte length prefix).
-    #[allow(dead_code)]
     pub fn serialize(&self) -> Vec<u8> {
         match self {
             StatMessage::DomainMapping { hash, domain } => {

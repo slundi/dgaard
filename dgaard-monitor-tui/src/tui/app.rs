@@ -5,8 +5,6 @@
 //! filter string — so that each rendering function only needs a shared
 //! reference and never touches `AppState` directly for display decisions.
 
-#![allow(dead_code)]
-
 use crate::config::TuiConfig;
 use crate::tui::keys::{Action, KeyMap};
 use crate::tui::tabs::Tab;

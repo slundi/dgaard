@@ -27,8 +27,6 @@
 //!
 //! TODO: implement `render()` with ratatui `Table` + `Block`.
 
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet};
 
 use dgaard_monitor_core::protocol::{StatAction, StatError, StatEvent};
@@ -57,6 +55,13 @@ pub enum TimeZoom {
     OneDay,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Timelines tab not wired into the TUI yet: it only shows a placeholder"
+    )
+)]
 impl TimeZoom {
     /// Duration of one bucket in seconds.
     pub fn seconds(self) -> u64 {
@@ -105,6 +110,13 @@ pub enum TimelineSort {
     OldestFirst,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Timelines tab not wired into the TUI yet: it only shows a placeholder"
+    )
+)]
 impl TimelineSort {
     pub fn label(self) -> &'static str {
         match self {
@@ -201,6 +213,13 @@ impl BucketEntry {
 
 /// A single displayable row in the Timelines table.
 #[derive(Debug, Clone)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Timelines tab not wired into the TUI yet: it only shows a placeholder"
+    )
+)]
 pub struct TimelineRow {
     /// Formatted bucket start label (e.g. `"14:00"` or `"2024-01-15"`).
     pub bucket_label: String,
@@ -261,6 +280,13 @@ pub struct TimelinesState {
     pub frozen: bool,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Timelines tab not wired into the TUI yet: it only shows a placeholder"
+    )
+)]
 impl TimelinesState {
     pub fn new() -> Self {
         Self {

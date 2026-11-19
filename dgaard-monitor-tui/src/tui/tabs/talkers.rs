@@ -24,8 +24,6 @@
 //!
 //! TODO: implement `render()` and `render_popup()` with ratatui `Table` + `Block`.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
@@ -80,6 +78,13 @@ pub enum TalkerSortBy {
     BlockedPct,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Talkers tab not wired into the TUI yet: it only shows a placeholder"
+    )
+)]
 impl TalkerSortBy {
     /// Human-readable label shown in the sort popup.
     pub fn label(self) -> &'static str {
@@ -106,6 +111,13 @@ impl TalkerSortBy {
 
 /// Active filter for the Talkers table.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Talkers tab not wired into the TUI yet: it only shows a placeholder"
+    )
+)]
 pub enum TalkerFilter {
     /// No filter — all talkers are visible.
     #[default]
@@ -240,10 +252,24 @@ impl TalkerEntry {
 // ── TalkerRow ─────────────────────────────────────────────────────────────────
 
 /// Display-ready row for the Talkers table.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Talkers tab not wired into the TUI yet: it only shows a placeholder"
+    )
+)]
 pub struct TalkerRow {
     /// Resolved hostname when available; raw formatted IP otherwise.
     pub display_name: String,
     /// Raw IP bytes — needed to open the detail popup.
+    #[cfg_attr(
+        test,
+        expect(
+            dead_code,
+            reason = "read by the Talkers detail popup, not written yet"
+        )
+    )]
     pub client_ip: [u8; 16],
     /// Formatted first-seen (`HH:MM:SS`).
     pub first_seen: String,
@@ -329,6 +355,10 @@ pub fn store_hostname(ip: [u8; 16], hostname: String) {
 /// configuration cannot be read (e.g. in sandboxed environments).  For
 /// production deployments the system config is preferred because private PTR
 /// records are only served by the local nameserver.
+#[expect(
+    dead_code,
+    reason = "Talkers tab not wired into the TUI yet: reverse DNS for its hostname column"
+)]
 pub async fn resolve_and_cache(ip: [u8; 16]) {
     use hickory_resolver::TokioResolver;
 
@@ -374,6 +404,13 @@ pub struct TalkersState {
     pub frozen: bool,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Talkers tab not wired into the TUI yet: it only shows a placeholder"
+    )
+)]
 impl TalkersState {
     pub fn new() -> Self {
         Self {
@@ -474,14 +511,6 @@ pub fn render(area: ratatui::layout::Rect, frame: &mut ratatui::Frame) {
         Paragraph::new("Coming soon").block(Block::bordered().title("Talkers")),
         area,
     );
-}
-
-/// Render the Talker detail popup over the current frame.
-///
-/// TODO: signature becomes
-/// `render_popup(client: &[u8;16], state: &TalkersState, area: Area, frame: &mut Frame)`.
-pub fn render_popup() {
-    // TODO: implement with ratatui Block + Paragraph
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
