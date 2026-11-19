@@ -162,43 +162,24 @@ impl WireEvent {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ParseError {
-    Malformed(serde_json::Error),
+    #[error("malformed event: {0}")]
+    Malformed(#[source] serde_json::Error),
+    /// Debug formatting escapes control characters.
+    #[error("invalid client_ip {0:?}")]
     InvalidClientIp(String),
     /// Not echoed: the content is untrusted and may hold escape sequences.
+    #[error("invalid domain")]
     InvalidDomain,
+    #[error("timestamp {0} more than {MAX_CLOCK_SKEW_SECS}s from local clock")]
     TimestampOutOfRange(u64),
     /// Sent by a newer peer: skipped, not an error in the event itself.
+    #[error("unknown action (newer peer?)")]
     UnknownAction,
+    #[error("unsupported format version {0} (this monitor reads {WIRE_VERSION})")]
     UnsupportedVersion(u32),
 }
-
-impl std::fmt::Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ParseError::Malformed(e) => write!(f, "malformed event: {e}"),
-            // Debug formatting escapes control characters.
-            ParseError::InvalidClientIp(s) => write!(f, "invalid client_ip {s:?}"),
-            ParseError::InvalidDomain => write!(f, "invalid domain"),
-            ParseError::UnknownAction => write!(f, "unknown action (newer peer?)"),
-            ParseError::UnsupportedVersion(v) => {
-                write!(
-                    f,
-                    "unsupported format version {v} (this monitor reads {WIRE_VERSION})"
-                )
-            }
-            ParseError::TimestampOutOfRange(ts) => {
-                write!(
-                    f,
-                    "timestamp {ts} more than {MAX_CLOCK_SKEW_SECS}s from local clock"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for ParseError {}
 
 /// Normalize a peer-supplied domain: LDH labels (underscore allowed, for
 /// names like `_dmarc`), 1–63 bytes each, 253 bytes overall, lowercased.
@@ -590,6 +571,47 @@ mod tests {
             reasons: StatBlockReason::ABP_RULE.bits(),
         })
         .unwrap()
+    }
+
+    // --- ParseError ---
+
+    /// Pins the messages, which reach the logs through `RejectLog`.
+    #[test]
+    fn parse_error_messages() {
+        let malformed = serde_json::from_str::<WireEvent>("{").unwrap_err();
+        let malformed_text = format!("malformed event: {malformed}");
+        let cases = [
+            (ParseError::Malformed(malformed), malformed_text),
+            (
+                ParseError::InvalidClientIp("10.0.0\n".to_string()),
+                r#"invalid client_ip "10.0.0\n""#.to_string(),
+            ),
+            (ParseError::InvalidDomain, "invalid domain".to_string()),
+            (
+                ParseError::TimestampOutOfRange(5),
+                format!("timestamp 5 more than {MAX_CLOCK_SKEW_SECS}s from local clock"),
+            ),
+            (
+                ParseError::UnknownAction,
+                "unknown action (newer peer?)".to_string(),
+            ),
+            (
+                ParseError::UnsupportedVersion(2),
+                format!("unsupported format version 2 (this monitor reads {WIRE_VERSION})"),
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    /// The JSON error stays reachable as the source, for error reporters.
+    #[test]
+    fn malformed_keeps_its_source() {
+        use std::error::Error as _;
+        let error = ParseError::Malformed(serde_json::from_str::<WireEvent>("{").unwrap_err());
+        assert!(error.source().is_some());
+        assert!(ParseError::InvalidDomain.source().is_none());
     }
 
     // --- Wire format compatibility ---
