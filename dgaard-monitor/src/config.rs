@@ -1,9 +1,10 @@
-// Fields are declared for future use by service implementations.
-#![allow(dead_code)]
+use std::ops::RangeInclusive;
 
 use toml_span::{Span, value::ValueInner};
 
 use thiserror::Error;
+
+use dgaard_monitor_core::util::ACTION_NAMES;
 
 pub use dgaard_monitor_core::config::{ForwardFormat, ForwardingConfig};
 
@@ -39,18 +40,107 @@ pub use dgaard_monitor_nats::config::NatsConfig;
 #[derive(Debug, Default)]
 pub struct NatsConfig;
 
+/// Valid TCP ports for the REST modules (0 would bind a random port).
+#[cfg(feature = "rest")]
+const PORT_RANGE: RangeInclusive<i64> = 1..=65_535;
+/// TUI refresh interval, in milliseconds.
+#[cfg(feature = "tui")]
+const TICK_MS_RANGE: RangeInclusive<i64> = 10..=60_000;
+const RETENTION_RANGE: RangeInclusive<i64> = 0..=u32::MAX as i64;
+#[cfg(feature = "rest")]
+const HISTORY_SIZE_RANGE: RangeInclusive<i64> = 1..=1_000_000;
+#[cfg(feature = "rest")]
+const MIN_OBSERVATIONS_RANGE: RangeInclusive<i64> = 2..=1_000_000;
+
+/// 1-based position in the config file, derived from a byte span.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Location {
+    pub line: usize,
+    pub column: usize,
+}
+
+impl Location {
+    fn of(content: &str, offset: usize) -> Self {
+        let before = content.get(..offset).unwrap_or(content);
+        Self {
+            line: before.matches('\n').count() + 1,
+            column: before
+                .rsplit('\n')
+                .next()
+                .map_or(0, |line| line.chars().count())
+                + 1,
+        }
+    }
+}
+
+/// ` at line L, column C`, or nothing when the position is unknown.
+fn at(location: &Option<Location>) -> String {
+    location.map_or_else(String::new, |loc| {
+        format!(" at line {}, column {}", loc.line, loc.column)
+    })
+}
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("failed to read config file: {0}")]
     Io(#[from] std::io::Error),
     #[error("TOML syntax error: {0}")]
     Parse(String),
-    #[error("invalid type for key '{key}': expected {expected} at {span:?}")]
+    #[error("invalid type for key '{key}': expected {expected}{}", at(.location))]
     InvalidType {
         key: String,
         expected: &'static str,
         span: Span,
+        location: Option<Location>,
     },
+    #[error("invalid value for key '{key}': {message}{}", at(.location))]
+    InvalidValue {
+        key: String,
+        message: String,
+        span: Span,
+        location: Option<Location>,
+    },
+    /// A key or section the parser does not know, most likely a typo that
+    /// would otherwise fall back silently to the default.
+    #[error("unknown key '{key}'{}", at(.location))]
+    UnknownKey {
+        key: String,
+        span: Span,
+        location: Option<Location>,
+    },
+}
+
+impl ConfigError {
+    fn invalid_type(key: &str, expected: &'static str, span: Span) -> Self {
+        Self::InvalidType {
+            key: key.to_string(),
+            expected,
+            span,
+            location: None,
+        }
+    }
+
+    fn invalid_value(key: &str, message: String, span: Span) -> Self {
+        Self::InvalidValue {
+            key: key.to_string(),
+            message,
+            span,
+            location: None,
+        }
+    }
+
+    /// Fill in the line and column from the span.
+    fn locate(mut self, content: &str) -> Self {
+        match &mut self {
+            Self::InvalidType { span, location, .. }
+            | Self::InvalidValue { span, location, .. }
+            | Self::UnknownKey { span, location, .. } => {
+                *location = Some(Location::of(content, span.start));
+            }
+            Self::Io(_) | Self::Parse(_) => {}
+        }
+        self
+    }
 }
 
 #[derive(Debug, Default)]
@@ -65,6 +155,9 @@ pub struct Config {
     pub mcp: McpConfig,
     pub web: WebConfig,
     pub nats: NatsConfig,
+    /// Non-fatal findings to report at startup, e.g. a section for a
+    /// feature this binary was built without.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -75,6 +168,8 @@ pub struct InputConfig {
     /// When set, the monitor parses `[[security.custom_flags]]` from this file
     /// to resolve custom bit indices (16–31) to their configured `code` labels.
     /// Bits with no matching entry render as `CUSTOM_BIT_<n>`.
+    // Parsed but not used yet: see review finding F1.
+    #[allow(dead_code)]
     pub engine_config_path: Option<String>,
 }
 
@@ -136,58 +231,71 @@ fn get_str<'a>(
     match table.get(key) {
         Some(v) => match v.as_ref() {
             ValueInner::String(s) => Ok(Some(s.as_ref())),
-            _ => Err(ConfigError::InvalidType {
-                key: key.to_string(),
-                expected: "string",
-                span: v.span,
-            }),
+            _ => Err(ConfigError::invalid_type(key, "string", v.span)),
         },
         None => Ok(None),
     }
 }
 
+#[cfg(any(feature = "rest", feature = "nats"))]
 fn get_bool(table: &toml_span::value::Table<'_>, key: &str) -> Result<Option<bool>, ConfigError> {
     match table.get(key) {
         Some(v) => match v.as_ref() {
             ValueInner::Boolean(b) => Ok(Some(*b)),
-            _ => Err(ConfigError::InvalidType {
-                key: key.to_string(),
-                expected: "boolean",
-                span: v.span,
-            }),
+            _ => Err(ConfigError::invalid_type(key, "boolean", v.span)),
         },
         None => Ok(None),
     }
 }
 
-fn get_integer(table: &toml_span::value::Table<'_>, key: &str) -> Result<Option<i64>, ConfigError> {
-    match table.get(key) {
-        Some(v) => match v.as_ref() {
-            ValueInner::Integer(i) => Ok(Some(*i)),
-            _ => Err(ConfigError::InvalidType {
-                key: key.to_string(),
-                expected: "integer",
-                span: v.span,
-            }),
-        },
-        None => Ok(None),
+/// Extract an optional integer, rejecting values outside `range` instead of
+/// truncating them (`port = 70000` used to become 4464), then convert it.
+fn get_int_in_range<T: TryFrom<i64>>(
+    table: &toml_span::value::Table<'_>,
+    key: &str,
+    range: RangeInclusive<i64>,
+) -> Result<Option<T>, ConfigError> {
+    let Some(v) = table.get(key) else {
+        return Ok(None);
+    };
+    let ValueInner::Integer(n) = v.as_ref() else {
+        return Err(ConfigError::invalid_type(key, "integer", v.span));
+    };
+    let out_of_range = || {
+        ConfigError::invalid_value(
+            key,
+            format!("{n} is out of range {}..={}", range.start(), range.end()),
+            v.span,
+        )
+    };
+    if !range.contains(n) {
+        return Err(out_of_range());
     }
+    T::try_from(*n).map(Some).map_err(|_| out_of_range())
 }
 
-/// Extract an optional float value from a table (also accepts integers as floats).
-fn get_float(table: &toml_span::value::Table<'_>, key: &str) -> Result<Option<f64>, ConfigError> {
-    match table.get(key) {
-        Some(v) => match v.as_ref() {
-            ValueInner::Float(f) => Ok(Some(*f)),
-            ValueInner::Integer(i) => Ok(Some(*i as f64)),
-            _ => Err(ConfigError::InvalidType {
-                key: key.to_string(),
-                expected: "float",
-                span: v.span,
-            }),
-        },
-        None => Ok(None),
+/// Extract an optional finite, strictly positive float (integers accepted).
+#[cfg(feature = "rest")]
+fn get_positive_float(
+    table: &toml_span::value::Table<'_>,
+    key: &str,
+) -> Result<Option<f64>, ConfigError> {
+    let Some(v) = table.get(key) else {
+        return Ok(None);
+    };
+    let value = match v.as_ref() {
+        ValueInner::Float(f) => *f,
+        ValueInner::Integer(i) => *i as f64,
+        _ => return Err(ConfigError::invalid_type(key, "float", v.span)),
+    };
+    if !value.is_finite() || value <= 0.0 {
+        return Err(ConfigError::invalid_value(
+            key,
+            format!("{value} must be a finite number greater than 0"),
+            v.span,
+        ));
     }
+    Ok(Some(value))
 }
 
 fn get_string_array(
@@ -202,21 +310,17 @@ fn get_string_array(
                     match item.as_ref() {
                         ValueInner::String(s) => result.push(s.to_string()),
                         _ => {
-                            return Err(ConfigError::InvalidType {
-                                key: format!("{}[]", key),
-                                expected: "string",
-                                span: item.span,
-                            });
+                            return Err(ConfigError::invalid_type(
+                                &format!("{key}[]"),
+                                "string",
+                                item.span,
+                            ));
                         }
                     }
                 }
                 Ok(Some(result))
             }
-            _ => Err(ConfigError::InvalidType {
-                key: key.to_string(),
-                expected: "array",
-                span: v.span,
-            }),
+            _ => Err(ConfigError::invalid_type(key, "array", v.span)),
         },
         None => Ok(None),
     }
@@ -229,13 +333,26 @@ fn get_table<'a>(
     match table.get(key) {
         Some(v) => match v.as_ref() {
             ValueInner::Table(t) => Ok(Some(t)),
-            _ => Err(ConfigError::InvalidType {
-                key: key.to_string(),
-                expected: "table",
-                span: v.span,
-            }),
+            _ => Err(ConfigError::invalid_type(key, "table", v.span)),
         },
         None => Ok(None),
+    }
+}
+
+/// Reject keys `section` does not define: a typo would otherwise be ignored
+/// and the default used without notice.
+fn check_keys(
+    table: &toml_span::value::Table<'_>,
+    section: &str,
+    known: &[&str],
+) -> Result<(), ConfigError> {
+    match table.keys().find(|key| !known.contains(&key.name.as_ref())) {
+        Some(key) => Err(ConfigError::UnknownKey {
+            key: format!("{section}.{}", key.name),
+            span: key.span,
+            location: None,
+        }),
+        None => Ok(()),
     }
 }
 
@@ -244,6 +361,7 @@ fn get_table<'a>(
 // ---------------------------------------------------------------------------
 
 fn parse_input(table: &toml_span::value::Table<'_>) -> Result<InputConfig, ConfigError> {
+    check_keys(table, "input", &["socket", "index", "engine_config_path"])?;
     let mut cfg = InputConfig::default();
     if let Some(s) = get_str(table, "socket")? {
         cfg.socket = s.to_string();
@@ -260,39 +378,40 @@ fn parse_input(table: &toml_span::value::Table<'_>) -> Result<InputConfig, Confi
 fn parse_persistence(
     table: &toml_span::value::Table<'_>,
 ) -> Result<PersistenceConfig, ConfigError> {
+    check_keys(
+        table,
+        "persistence",
+        &["db", "events_retention_hours", "aggregates_retention_days"],
+    )?;
     let mut cfg = PersistenceConfig::default();
     if let Some(s) = get_str(table, "db")? {
         cfg.db = s.to_string();
     }
-    if let Some(n) = get_integer(table, "events_retention_hours")? {
-        cfg.events_retention_hours = clamp_non_negative_u32(n, "events_retention_hours");
+    if let Some(n) = get_int_in_range(table, "events_retention_hours", RETENTION_RANGE)? {
+        cfg.events_retention_hours = n;
     }
-    if let Some(n) = get_integer(table, "aggregates_retention_days")? {
-        cfg.aggregates_retention_days = clamp_non_negative_u32(n, "aggregates_retention_days");
+    if let Some(n) = get_int_in_range(table, "aggregates_retention_days", RETENTION_RANGE)? {
+        cfg.aggregates_retention_days = n;
     }
     Ok(cfg)
 }
 
-/// Convert an i64 from TOML to u32 with explicit range validation. A
-/// negative value would otherwise wrap silently to a huge u32 (e.g. -1
-/// becomes 4_294_967_295) and effectively disable retention pruning.
-fn clamp_non_negative_u32(n: i64, key: &str) -> u32 {
-    if n < 0 {
-        eprintln!("config: {key} cannot be negative ({n}); treating as 0");
-        return 0;
-    }
-    if n > u32::MAX as i64 {
-        eprintln!("config: {key} exceeds u32::MAX ({n}); capping");
-        return u32::MAX;
-    }
-    n as u32
-}
-
 #[cfg(feature = "tui")]
 fn parse_tui(table: &toml_span::value::Table<'_>) -> Result<TuiConfig, ConfigError> {
+    check_keys(
+        table,
+        "tui",
+        &[
+            "tick_ms",
+            "key_quit",
+            "key_pause",
+            "key_scroll_up",
+            "key_scroll_down",
+        ],
+    )?;
     let mut cfg = TuiConfig::default();
-    if let Some(n) = get_integer(table, "tick_ms")? {
-        cfg.tick_ms = n as u64;
+    if let Some(n) = get_int_in_range(table, "tick_ms", TICK_MS_RANGE)? {
+        cfg.tick_ms = n;
     }
     if let Some(s) = get_str(table, "key_quit")? {
         cfg.key_quit = s.to_string();
@@ -310,6 +429,11 @@ fn parse_tui(table: &toml_span::value::Table<'_>) -> Result<TuiConfig, ConfigErr
 }
 
 fn parse_forwarding(table: &toml_span::value::Table<'_>) -> Result<ForwardingConfig, ConfigError> {
+    check_keys(
+        table,
+        "forwarding",
+        &["file", "template", "forward_url", "filter", "format"],
+    )?;
     let mut cfg = ForwardingConfig::default();
     if let Some(s) = get_str(table, "file")? {
         cfg.file = Some(s.to_string());
@@ -320,8 +444,23 @@ fn parse_forwarding(table: &toml_span::value::Table<'_>) -> Result<ForwardingCon
     if let Some(s) = get_str(table, "forward_url")? {
         cfg.forward_url = Some(s.to_string());
     }
-    if let Some(arr) = get_string_array(table, "filter")? {
-        cfg.filter = arr;
+    if let Some(entries) = get_string_array(table, "filter")? {
+        let span = table.get("filter").map_or_else(Span::default, |v| v.span);
+        cfg.filter = entries
+            .iter()
+            .map(|entry| {
+                canonical_action(entry).ok_or_else(|| {
+                    ConfigError::invalid_value(
+                        "filter",
+                        format!(
+                            "unknown action '{entry}'; expected one of {}",
+                            ACTION_NAMES.join(", ")
+                        ),
+                        span,
+                    )
+                })
+            })
+            .collect::<Result<_, _>>()?;
     }
     if let Some(s) = get_str(table, "format")? {
         cfg.format = match s {
@@ -341,8 +480,18 @@ fn parse_forwarding(table: &toml_span::value::Table<'_>) -> Result<ForwardingCon
     Ok(cfg)
 }
 
+/// Match a filter entry against the action names, ignoring case, and return
+/// the canonical spelling the forwarding sink compares with.
+fn canonical_action(entry: &str) -> Option<String> {
+    ACTION_NAMES
+        .iter()
+        .find(|name| name.eq_ignore_ascii_case(entry))
+        .map(|name| name.to_string())
+}
+
 #[cfg(feature = "rest")]
 fn parse_server(table: &toml_span::value::Table<'_>) -> Result<ServerConfig, ConfigError> {
+    check_keys(table, "server", &["listen", "token"])?;
     let mut cfg = ServerConfig::default();
     if let Some(s) = get_str(table, "listen")? {
         cfg.listen = s.to_string();
@@ -355,12 +504,13 @@ fn parse_server(table: &toml_span::value::Table<'_>) -> Result<ServerConfig, Con
 
 #[cfg(feature = "rest")]
 fn parse_api(table: &toml_span::value::Table<'_>) -> Result<ApiConfig, ConfigError> {
+    check_keys(table, "api", &["enabled", "port", "root_path"])?;
     let mut cfg = ApiConfig::default();
     if let Some(b) = get_bool(table, "enabled")? {
         cfg.enabled = b;
     }
-    if let Some(n) = get_integer(table, "port")? {
-        cfg.port = n as u16;
+    if let Some(n) = get_int_in_range(table, "port", PORT_RANGE)? {
+        cfg.port = n;
     }
     if let Some(s) = get_str(table, "root_path")? {
         cfg.root_path = s.to_string();
@@ -370,12 +520,13 @@ fn parse_api(table: &toml_span::value::Table<'_>) -> Result<ApiConfig, ConfigErr
 
 #[cfg(feature = "rest")]
 fn parse_websocket(table: &toml_span::value::Table<'_>) -> Result<WebSocketConfig, ConfigError> {
+    check_keys(table, "websocket", &["enabled", "port", "root_path"])?;
     let mut cfg = WebSocketConfig::default();
     if let Some(b) = get_bool(table, "enabled")? {
         cfg.enabled = b;
     }
-    if let Some(n) = get_integer(table, "port")? {
-        cfg.port = n as u16;
+    if let Some(n) = get_int_in_range(table, "port", PORT_RANGE)? {
+        cfg.port = n;
     }
     if let Some(s) = get_str(table, "root_path")? {
         cfg.root_path = s.to_string();
@@ -385,12 +536,13 @@ fn parse_websocket(table: &toml_span::value::Table<'_>) -> Result<WebSocketConfi
 
 #[cfg(feature = "rest")]
 fn parse_mcp(table: &toml_span::value::Table<'_>) -> Result<McpConfig, ConfigError> {
+    check_keys(table, "mcp", &["enabled", "port", "root_path"])?;
     let mut cfg = McpConfig::default();
     if let Some(b) = get_bool(table, "enabled")? {
         cfg.enabled = b;
     }
-    if let Some(n) = get_integer(table, "port")? {
-        cfg.port = n as u16;
+    if let Some(n) = get_int_in_range(table, "port", PORT_RANGE)? {
+        cfg.port = n;
     }
     if let Some(s) = get_str(table, "root_path")? {
         cfg.root_path = s.to_string();
@@ -400,6 +552,11 @@ fn parse_mcp(table: &toml_span::value::Table<'_>) -> Result<McpConfig, ConfigErr
 
 #[cfg(feature = "nats")]
 fn parse_nats(table: &toml_span::value::Table<'_>) -> Result<NatsConfig, ConfigError> {
+    check_keys(
+        table,
+        "nats",
+        &["enabled", "url", "publish_subject", "subscribe_subject"],
+    )?;
     let mut cfg = NatsConfig::default();
     if let Some(b) = get_bool(table, "enabled")? {
         cfg.enabled = b;
@@ -418,20 +575,32 @@ fn parse_nats(table: &toml_span::value::Table<'_>) -> Result<NatsConfig, ConfigE
 
 #[cfg(feature = "rest")]
 fn parse_web(table: &toml_span::value::Table<'_>) -> Result<WebConfig, ConfigError> {
+    check_keys(
+        table,
+        "web",
+        &[
+            "enabled",
+            "port",
+            "history_size",
+            "beaconing_min_observations",
+            "beaconing_cov_threshold",
+        ],
+    )?;
     let mut cfg = WebConfig::default();
     if let Some(b) = get_bool(table, "enabled")? {
         cfg.enabled = b;
     }
-    if let Some(n) = get_integer(table, "port")? {
-        cfg.port = n as u16;
+    if let Some(n) = get_int_in_range(table, "port", PORT_RANGE)? {
+        cfg.port = n;
     }
-    if let Some(n) = get_integer(table, "history_size")? {
-        cfg.history_size = n as usize;
+    if let Some(n) = get_int_in_range(table, "history_size", HISTORY_SIZE_RANGE)? {
+        cfg.history_size = n;
     }
-    if let Some(n) = get_integer(table, "beaconing_min_observations")? {
-        cfg.beaconing_min_observations = n as usize;
+    if let Some(n) = get_int_in_range(table, "beaconing_min_observations", MIN_OBSERVATIONS_RANGE)?
+    {
+        cfg.beaconing_min_observations = n;
     }
-    if let Some(f) = get_float(table, "beaconing_cov_threshold")? {
+    if let Some(f) = get_positive_float(table, "beaconing_cov_threshold")? {
         cfg.beaconing_cov_threshold = f;
     }
     Ok(cfg)
@@ -441,22 +610,55 @@ fn parse_web(table: &toml_span::value::Table<'_>) -> Result<WebConfig, ConfigErr
 // Config implementation
 // ---------------------------------------------------------------------------
 
+/// Sections that exist only with a cargo feature: (section, feature, compiled in).
+const FEATURE_SECTIONS: [(&str, &str, bool); 7] = [
+    ("tui", "tui", cfg!(feature = "tui")),
+    ("server", "rest", cfg!(feature = "rest")),
+    ("api", "rest", cfg!(feature = "rest")),
+    ("websocket", "rest", cfg!(feature = "rest")),
+    ("mcp", "rest", cfg!(feature = "rest")),
+    ("web", "rest", cfg!(feature = "rest")),
+    ("nats", "nats", cfg!(feature = "nats")),
+];
+
 impl Config {
+    /// Parse a config file's content. Errors carry the line and column.
     pub fn parse(content: &str) -> Result<Self, ConfigError> {
+        Self::parse_root(content).map_err(|e| e.locate(content))
+    }
+
+    fn parse_root(content: &str) -> Result<Self, ConfigError> {
         let mut cfg = Self::default();
 
-        let value = toml_span::parse(content).map_err(|e| ConfigError::Parse(e.to_string()))?;
+        let value = toml_span::parse(content).map_err(|e| {
+            let location = Location::of(content, e.span.start);
+            ConfigError::Parse(format!("{e}{}", at(&Some(location))))
+        })?;
 
         let root = match value.as_ref() {
             ValueInner::Table(t) => t,
-            _ => {
-                return Err(ConfigError::InvalidType {
-                    key: "root".to_string(),
-                    expected: "table",
-                    span: value.span,
+            _ => return Err(ConfigError::invalid_type("root", "table", value.span)),
+        };
+
+        for key in root.keys() {
+            let name = key.name.as_ref();
+            if let Some((_, feature, enabled)) = FEATURE_SECTIONS
+                .iter()
+                .find(|(section, _, _)| *section == name)
+            {
+                if !enabled {
+                    cfg.warnings.push(format!(
+                        "section [{name}] ignored: this binary was built without the `{feature}` feature"
+                    ));
+                }
+            } else if !["input", "persistence", "forwarding"].contains(&name) {
+                return Err(ConfigError::UnknownKey {
+                    key: name.to_string(),
+                    span: key.span,
+                    location: None,
                 });
             }
-        };
+        }
 
         if let Some(t) = get_table(root, "input")? {
             cfg.input = parse_input(t)?;
@@ -509,28 +711,196 @@ impl Config {
 mod tests {
     use super::*;
 
+    /// Parse `content` and return the error, panicking if it parses.
+    fn parse_err(content: &str) -> ConfigError {
+        match Config::parse(content) {
+            Ok(cfg) => panic!("expected an error, parsed {cfg:?}"),
+            Err(e) => e,
+        }
+    }
+
+    // --- Ranges ---
+
+    /// Regression: negative retention used to be clamped to 0 silently.
     #[test]
-    fn clamp_non_negative_u32_handles_negative_zero_and_overflow() {
-        assert_eq!(clamp_non_negative_u32(0, "k"), 0);
-        assert_eq!(clamp_non_negative_u32(42, "k"), 42);
-        assert_eq!(clamp_non_negative_u32(-1, "k"), 0);
-        assert_eq!(clamp_non_negative_u32(i64::MIN, "k"), 0);
-        assert_eq!(clamp_non_negative_u32(u32::MAX as i64, "k"), u32::MAX);
-        assert_eq!(clamp_non_negative_u32(u32::MAX as i64 + 1, "k"), u32::MAX);
-        assert_eq!(clamp_non_negative_u32(i64::MAX, "k"), u32::MAX);
+    fn negative_retention_is_rejected() {
+        let err = parse_err("[persistence]\nevents_retention_hours = -1\n");
+        assert!(matches!(err, ConfigError::InvalidValue { .. }), "{err}");
+        let err = parse_err("[persistence]\naggregates_retention_days = 4294967296\n");
+        assert!(matches!(err, ConfigError::InvalidValue { .. }), "{err}");
     }
 
     #[test]
-    fn negative_retention_clamps_to_zero_not_wraparound() {
-        // Regression: i64::MIN previously wrapped to u32::MAX silently.
-        let f = write_temp(
-            "[persistence]\n\
-             events_retention_hours = -1\n\
-             aggregates_retention_days = -7\n",
-        );
-        let cfg = Config::load(f.path().to_str().unwrap()).unwrap();
+    fn retention_accepts_its_full_range() {
+        let cfg = Config::parse(
+            "[persistence]\nevents_retention_hours = 0\naggregates_retention_days = 4294967295\n",
+        )
+        .unwrap();
         assert_eq!(cfg.persistence.events_retention_hours, 0);
-        assert_eq!(cfg.persistence.aggregates_retention_days, 0);
+        assert_eq!(cfg.persistence.aggregates_retention_days, u32::MAX);
+    }
+
+    /// Regression: `port = 70000` used to wrap to 4464 and `-1` to 65535.
+    #[cfg(feature = "rest")]
+    #[test]
+    fn out_of_range_ports_are_rejected() {
+        for section in ["api", "websocket", "mcp", "web"] {
+            for port in ["70000", "65536", "0", "-1"] {
+                let err = parse_err(&format!("[{section}]\nport = {port}\n"));
+                assert!(
+                    matches!(err, ConfigError::InvalidValue { .. }),
+                    "[{section}] port = {port}: {err}"
+                );
+            }
+            let cfg = Config::parse(&format!("[{section}]\nport = 65535\n")).unwrap();
+            let port = match section {
+                "api" => cfg.api.port,
+                "websocket" => cfg.websocket.port,
+                "mcp" => cfg.mcp.port,
+                _ => cfg.web.port,
+            };
+            assert_eq!(port, 65535);
+        }
+    }
+
+    /// Regression: `tick_ms = 0` made the TUI panic in `tokio::time::interval`.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn zero_or_negative_tick_is_rejected() {
+        for tick in ["0", "-5", "9", "60001"] {
+            let err = parse_err(&format!("[tui]\ntick_ms = {tick}\n"));
+            assert!(
+                matches!(err, ConfigError::InvalidValue { .. }),
+                "{tick}: {err}"
+            );
+        }
+        assert_eq!(
+            Config::parse("[tui]\ntick_ms = 10\n").unwrap().tui.tick_ms,
+            10
+        );
+    }
+
+    #[cfg(feature = "rest")]
+    #[test]
+    fn web_sizes_and_threshold_are_validated() {
+        for bad in [
+            "history_size = -1",
+            "history_size = 0",
+            "beaconing_min_observations = -3",
+            "beaconing_min_observations = 1",
+            "beaconing_cov_threshold = nan",
+            "beaconing_cov_threshold = inf",
+            "beaconing_cov_threshold = 0.0",
+            "beaconing_cov_threshold = -0.5",
+        ] {
+            let err = parse_err(&format!("[web]\n{bad}\n"));
+            assert!(
+                matches!(err, ConfigError::InvalidValue { .. }),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrong_type_is_still_an_invalid_type() {
+        let err = parse_err("[persistence]\nevents_retention_hours = \"72\"\n");
+        assert!(matches!(err, ConfigError::InvalidType { .. }), "{err}");
+    }
+
+    // --- Unknown keys and sections ---
+
+    /// Regression: a typo like `[persistence]` fell back to the defaults.
+    #[test]
+    fn unknown_section_is_rejected() {
+        let err = parse_err("[persistance]\ndb = \"/tmp/x.sqlite\"\n");
+        match err {
+            ConfigError::UnknownKey { key, .. } => assert_eq!(key, "persistance"),
+            other => panic!("expected UnknownKey, got {other}"),
+        }
+    }
+
+    #[test]
+    fn unknown_key_in_section_is_rejected() {
+        let err = parse_err("[persistence]\nevents_retention_hour = 24\n");
+        match err {
+            ConfigError::UnknownKey { key, .. } => {
+                assert_eq!(key, "persistence.events_retention_hour");
+            }
+            other => panic!("expected UnknownKey, got {other}"),
+        }
+        let err = parse_err("[forwarding]\nfilters = [\"Blocked\"]\n");
+        assert!(matches!(err, ConfigError::UnknownKey { .. }), "{err}");
+    }
+
+    #[test]
+    fn known_sections_produce_no_warning_when_compiled_in() {
+        let cfg = Config::parse("[input]\n[persistence]\n[forwarding]\n").unwrap();
+        assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
+    }
+
+    /// A section for a feature this binary lacks is reported, not silently
+    /// ignored (and not an error: packagers write every section).
+    #[cfg(not(feature = "nats"))]
+    #[test]
+    fn section_of_missing_feature_is_a_warning() {
+        let cfg = Config::parse("[nats]\nenabled = true\n").unwrap();
+        assert_eq!(cfg.warnings.len(), 1);
+        assert!(cfg.warnings[0].contains("[nats]"), "{:?}", cfg.warnings);
+        assert!(
+            cfg.warnings[0].contains("`nats` feature"),
+            "{:?}",
+            cfg.warnings
+        );
+    }
+
+    #[cfg(feature = "nats")]
+    #[test]
+    fn section_of_compiled_feature_is_no_warning() {
+        let cfg = Config::parse("[nats]\nenabled = true\n").unwrap();
+        assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
+    }
+
+    // --- forwarding.filter ---
+
+    /// Regression: `"blocked"` was accepted but never matched anything.
+    #[test]
+    fn filter_is_case_insensitive_and_canonicalized() {
+        let cfg = Config::parse(
+            "[forwarding]\nfilter = [\"blocked\", \"HIGHLYSUSPICIOUS\", \"override\", \"DnssecBogus\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.forwarding.filter,
+            ["Blocked", "HighlySuspicious", "Override", "DnssecBogus"]
+        );
+    }
+
+    #[test]
+    fn unknown_filter_action_is_rejected() {
+        let err = parse_err("[forwarding]\nfilter = [\"Blocked\", \"Blockd\"]\n");
+        let message = err.to_string();
+        assert!(matches!(err, ConfigError::InvalidValue { .. }), "{message}");
+        assert!(message.contains("'Blockd'"), "{message}");
+        assert!(message.contains("UpstreamError"), "{message}");
+    }
+
+    // --- Error locations ---
+
+    #[test]
+    fn errors_report_line_and_column() {
+        let err =
+            parse_err("[input]\nsocket = \"/s\"\n\n[persistence]\n  events_retention_hours = -1\n");
+        assert!(err.to_string().ends_with("at line 5, column 28"), "{err}");
+        let err = parse_err("[input]\nsockett = \"/s\"\n");
+        assert!(err.to_string().ends_with("at line 2, column 1"), "{err}");
+    }
+
+    #[test]
+    fn syntax_errors_report_line_and_column() {
+        let err = parse_err("[input]\nsocket = \n");
+        let message = err.to_string();
+        assert!(matches!(err, ConfigError::Parse(_)), "{message}");
+        assert!(message.contains("at line 2"), "{message}");
     }
 
     fn write_temp(content: &str) -> tempfile::NamedTempFile {
@@ -594,6 +964,7 @@ aggregates_retention_days = 30
 
     // --- TuiConfig ---
 
+    #[cfg(feature = "tui")]
     #[test]
     fn test_tui_defaults() {
         let f = write_temp("[input]\n");
@@ -605,6 +976,7 @@ aggregates_retention_days = 30
         assert_eq!(cfg.tui.key_scroll_down, "down");
     }
 
+    #[cfg(feature = "tui")]
     #[test]
     fn test_tui_custom_tick() {
         let f = write_temp(
@@ -718,6 +1090,7 @@ forward_url = "https://soar.internal/api/v1/dns-alert"
 
     // --- ServerConfig ---
 
+    #[cfg(feature = "rest")]
     #[test]
     fn test_server_defaults() {
         let f = write_temp("[input]\n");
@@ -726,6 +1099,7 @@ forward_url = "https://soar.internal/api/v1/dns-alert"
         assert_eq!(cfg.server.token, "changeme");
     }
 
+    #[cfg(feature = "rest")]
     #[test]
     fn test_server_custom_values() {
         let f = write_temp(
@@ -742,6 +1116,7 @@ token  = "s3cr3t"
 
     // --- Module sections ---
 
+    #[cfg(feature = "rest")]
     #[test]
     fn test_modules_disabled_by_default() {
         let f = write_temp("[input]\n");
@@ -757,6 +1132,7 @@ token  = "s3cr3t"
         assert_eq!(cfg.web.port, 8083);
     }
 
+    #[cfg(feature = "rest")]
     #[test]
     fn test_api_custom_values() {
         let f = write_temp(
@@ -773,6 +1149,7 @@ root_path = "/api/v1"
         assert_eq!(cfg.api.root_path, "/api/v1");
     }
 
+    #[cfg(feature = "rest")]
     #[test]
     fn test_websocket_and_mcp_independent() {
         let f = write_temp(
@@ -795,6 +1172,7 @@ port    = 9082
 
     // --- WebConfig ---
 
+    #[cfg(feature = "rest")]
     #[test]
     fn test_web_defaults() {
         let f = write_temp("[input]\n");
@@ -806,6 +1184,7 @@ port    = 9082
         assert!((cfg.web.beaconing_cov_threshold - 0.15).abs() < 1e-9);
     }
 
+    #[cfg(feature = "rest")]
     #[test]
     fn test_web_custom_values() {
         let f = write_temp(
@@ -885,10 +1264,19 @@ subscribe_subject = "upstream.events"
 
     /// Lock the shipped example TOML to the parser: any drift between
     /// `dgaard-monitor.example.toml` and the section/field schema fails CI.
+    #[cfg(feature = "rest")]
     #[test]
     fn example_file_parses_and_matches_defaults() {
         let example = include_str!("../dgaard-monitor.example.toml");
         let cfg = Config::parse(example).expect("example file must parse");
+        // Only a section for a feature this build lacks may warn.
+        assert!(
+            cfg.warnings
+                .iter()
+                .all(|w| w.contains("[nats]") && !cfg!(feature = "nats")),
+            "{:?}",
+            cfg.warnings
+        );
 
         // Server defaults inherited by every REST module.
         assert_eq!(cfg.server.listen, "127.0.0.1");

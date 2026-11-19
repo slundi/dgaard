@@ -31,6 +31,19 @@ pub fn parse_client_ip(s: &str) -> Option<[u8; 16]> {
     })
 }
 
+/// Every name [`action_name`] can return, e.g. for validating a filter.
+pub const ACTION_NAMES: [&str; 9] = [
+    "Allowed",
+    "Proxied",
+    "Blocked",
+    "Suspicious",
+    "HighlySuspicious",
+    "Override",
+    "Cached",
+    "UpstreamError",
+    "DnssecBogus",
+];
+
 pub fn action_name(action: &StatAction) -> &'static str {
     match action {
         StatAction::Allowed => "Allowed",
@@ -221,6 +234,26 @@ mod tests {
     fn parse_invalid_ip_returns_none() {
         assert!(parse_client_ip("not-an-ip").is_none());
         assert!(parse_client_ip("999.0.0.1").is_none());
+    }
+
+    // ── ACTION_NAMES ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn action_names_cover_every_action() {
+        let reason = StatBlockReason::empty();
+        let actions = [
+            StatAction::Allowed,
+            StatAction::Proxied,
+            StatAction::Blocked(reason),
+            StatAction::Suspicious(reason),
+            StatAction::HighlySuspicious(reason),
+            StatAction::AllowedWithOverride,
+            StatAction::Cached,
+            StatAction::Error(StatError::Upstream),
+            StatAction::Error(StatError::DnssecBogus),
+        ];
+        let names: Vec<&str> = actions.iter().map(action_name).collect();
+        assert_eq!(names, ACTION_NAMES);
     }
 
     // ── reason_labels ─────────────────────────────────────────────────────────

@@ -247,6 +247,10 @@ in
             "Blocked"
             "Suspicious"
             "HighlySuspicious"
+            "Override"
+            "Cached"
+            "UpstreamError"
+            "DnssecBogus"
           ]
         );
         default = [ ];

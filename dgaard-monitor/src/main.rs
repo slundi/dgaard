@@ -34,6 +34,9 @@ async fn main() {
     };
     // CLI path flags (socket, index, db) win over the config.
     opts.apply_overrides(&mut cfg);
+    for warning in &cfg.warnings {
+        eprintln!("Warning: config: {warning}");
+    }
 
     // Destructure config so each task can take ownership of its section.
     let config::Config {
@@ -52,6 +55,7 @@ async fn main() {
         mcp: mcp_cfg,
         web: web_cfg,
         nats: nats_cfg,
+        warnings: _,
     } = cfg;
     #[cfg(not(feature = "tui"))]
     let _ = tui_cfg;

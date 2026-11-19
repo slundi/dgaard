@@ -73,7 +73,8 @@ pub async fn run(config: TuiConfig, state: Arc<AppState>, mut shutdown: watch::R
         }
     });
 
-    let mut tick = tokio::time::interval(Duration::from_millis(config.tick_ms));
+    // `interval` panics on a zero period; the config parser rejects it too.
+    let mut tick = tokio::time::interval(Duration::from_millis(config.tick_ms.max(1)));
 
     'main: loop {
         tokio::select! {

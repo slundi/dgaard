@@ -1,6 +1,9 @@
 # dgaard-monitor — example configuration
 # Copy to dgaard-monitor.toml and adjust to your environment.
 # Pass to the binary with:  dgaard-monitor -c /path/to/dgaard-monitor.toml
+#
+# Unknown sections or keys and out-of-range values are startup errors, so a
+# typo never falls back silently to a default.
 
 # ---------------------------------------------------------------------------
 # Input — where to read events from
@@ -55,7 +58,9 @@ template = "{timestamp} {client_ip} {action} {domain}"
 # forward_url = "https://soar.internal/api/v1/dns-alert"
 
 # Which action variants to forward.  Empty list = forward all events.
-# Valid values: "Allowed", "Proxied", "Blocked", "Suspicious", "HighlySuspicious"
+# Valid values (case-insensitive): "Allowed", "Proxied", "Blocked",
+# "Suspicious", "HighlySuspicious", "Override", "Cached", "UpstreamError",
+# "DnssecBogus". An unknown name is a startup error.
 filter = ["Blocked", "Suspicious", "HighlySuspicious"]
 
 # ---------------------------------------------------------------------------
