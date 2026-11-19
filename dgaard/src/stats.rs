@@ -122,6 +122,18 @@ impl StatsSender {
     ///
     /// Events are dropped silently if the channel is full (non-blocking).
     pub fn send_event(&self, domain: &str, client_addr: std::net::SocketAddr, action: StatAction) {
+        self.send_answered(domain, client_addr, action, None);
+    }
+
+    /// Like [`send_event`](Self::send_event), for a query whose answer is
+    /// hosted in `country` (ISO 3166-1 alpha-2, from GeoIP).
+    pub fn send_answered(
+        &self,
+        domain: &str,
+        client_addr: std::net::SocketAddr,
+        action: StatAction,
+        country: Option<[u8; 2]>,
+    ) {
         debug_print!(
             "Send DNS query for {} from {}: {:?}",
             domain,
@@ -147,7 +159,7 @@ impl StatsSender {
         }
 
         // Send the event
-        let event = StatEvent::new(hash, client_addr, action);
+        let event = StatEvent::new(hash, client_addr, action).with_country(country);
         if self.tx.try_send(StatMessage::Event(event)).is_err() {
             crate::STATS_COUNTERS.increment_stats_dropped();
         }
@@ -471,6 +483,26 @@ mod tests {
         // Then the Event
         let msg2 = receiver.recv().await.unwrap();
         assert!(matches!(msg2, StatMessage::Event(_)));
+    }
+
+    #[tokio::test]
+    async fn test_send_answered_carries_the_country() {
+        init_test_seed();
+        let (sender, mut receiver) = channel();
+        let addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        sender.send_answered("example.fr", addr, StatAction::Cached, Some(*b"FR"));
+        sender.send_event("example.fr", addr, StatAction::Allowed);
+
+        let _mapping = receiver.recv().await.unwrap();
+        let Some(StatMessage::Event(tagged)) = receiver.recv().await else {
+            panic!("event expected");
+        };
+        assert_eq!(tagged.country, Some(*b"FR"));
+        assert_eq!(tagged.action, StatAction::Cached);
+        let Some(StatMessage::Event(plain)) = receiver.recv().await else {
+            panic!("event expected");
+        };
+        assert_eq!(plain.country, None);
     }
 
     #[tokio::test]

@@ -678,6 +678,7 @@ mod tests {
 
     fn event_from(client: [u8; 4], domain_hash: u64, action: StatAction) -> StatEvent {
         StatEvent {
+            country: None,
             timestamp: 0,
             domain_hash,
             client_ip: std::net::Ipv4Addr::from(client).to_ipv6_mapped().octets(),
@@ -980,6 +981,7 @@ mod tests {
         let mut clients = Vec::new();
 
         let event = StatEvent {
+            country: None,
             timestamp: 0,
             domain_hash: 99,
             client_ip: std::net::Ipv4Addr::new(10, 0, 0, 1)
@@ -998,6 +1000,7 @@ mod tests {
         let mut clients = Vec::new();
 
         let event = StatEvent {
+            country: None,
             timestamp: 0,
             domain_hash: 9999, // not in domain_map
             client_ip: [0u8; 16],

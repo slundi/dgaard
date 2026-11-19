@@ -216,7 +216,7 @@ pub async fn process_one(request: &PrefetchRequest, resolver: &Arc<dyn UpstreamR
             crate::STATS_COUNTERS.increment_prefetch_completed();
         }
         // forward_and_inspect already evicted the entry.
-        ForwardOutcome::Blocked(_) | ForwardOutcome::Bogus => {
+        ForwardOutcome::Blocked { .. } | ForwardOutcome::Bogus => {
             debug_print!("Prefetch rejected refreshed answer: {}", query.domain);
             crate::STATS_COUNTERS.increment_prefetch_failed();
         }

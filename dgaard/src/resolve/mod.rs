@@ -3,8 +3,9 @@ pub use dgaard_engine::resolve::ResolveResult;
 
 use dgaard_engine::model::InspectedAnswer;
 use dgaard_engine::resolve::{
-    check_qclass as engine_check_qclass, check_qtype as engine_check_qtype,
-    resolve_with_score as engine_resolve, score_answer as engine_score_answer,
+    answer_country as engine_answer_country, check_qclass as engine_check_qclass,
+    check_qtype as engine_check_qtype, resolve_with_score as engine_resolve,
+    score_answer as engine_score_answer,
 };
 
 use crate::{CONFIG, CURRENT_ENGINE};
@@ -37,6 +38,20 @@ pub fn score_answer(score: &mut SuspicionScore, domain: &str, answer: &Inspected
     let filter = CURRENT_ENGINE.load();
     let config = CONFIG.load();
     engine_score_answer(score, domain, answer, &filter, &config);
+}
+
+/// Country hosting `answer` (GeoIP of its first known address), when the
+/// GeoIP database is loaded.
+pub fn answer_country(answer: &InspectedAnswer) -> Option<[u8; 2]> {
+    engine_answer_country(answer, &CURRENT_ENGINE.load())
+}
+
+/// Country hosting the DNS response `bytes`; parses them only when the GeoIP
+/// database is loaded, since cache hits are most of the traffic.
+pub fn response_country(bytes: &[u8]) -> Option<[u8; 2]> {
+    let filter = CURRENT_ENGINE.load();
+    filter.geoip_reader.as_ref()?;
+    engine_answer_country(&InspectedAnswer::from_response(bytes)?, &filter)
 }
 
 #[cfg(test)]
@@ -278,6 +293,15 @@ pub mod tests {
             action,
             Action::Block(BlockReason::StaticBlacklist(_))
         ));
+    }
+
+    #[test]
+    fn test_response_country_without_geoip_database() {
+        let _guard = init_test_env();
+        CURRENT_ENGINE.store(Arc::new(create_test_engine(&[], &[], &[])));
+        // Without a database the bytes are not even parsed: garbage is fine.
+        assert_eq!(response_country(&[0xff; 12]), None);
+        assert_eq!(response_country(&[]), None);
     }
 
     #[test]

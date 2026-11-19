@@ -15,7 +15,7 @@ pub use matcher::{is_blocked, is_nrd, is_suffix_blocked, is_whitelisted};
 pub use patterns::{is_regex_blocked, is_wildcard_pattern_blocked};
 pub use ptr_leak::is_ptr_leak_domain;
 pub use qtype::{check_qclass, check_qtype};
-pub use scoring::{compute_score, score_answer};
+pub use scoring::{answer_country, compute_score, score_answer};
 pub use special_use::is_special_use_domain;
 
 use std::borrow::Cow;

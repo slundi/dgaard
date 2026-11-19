@@ -164,6 +164,11 @@ impl StatMessage {
                         buf.push(kind.code());
                     }
                 }
+                // Optional trailer, read only by readers that know it: older
+                // ones stop after the action fields and ignore it.
+                if let Some(country) = event.country {
+                    buf.extend_from_slice(&country);
+                }
             }
         }
 
@@ -238,17 +243,44 @@ impl StatMessage {
                     7 => StatAction::Error(StatError::from_code(*payload.get(33)?)?),
                     _ => return None,
                 };
+                let country = payload
+                    .get(33 + action_extra_len(&action)..)
+                    .and_then(|trailer| trailer.get(..2))
+                    .and_then(|code| std::str::from_utf8(code).ok())
+                    .and_then(country_code);
 
                 Some(StatMessage::Event(StatEvent {
                     timestamp,
                     domain_hash,
                     client_ip,
                     action,
+                    country,
                 }))
             }
             _ => None,
         }
     }
+}
+
+/// Bytes after the action byte that belong to the action: the reason
+/// bitmask (4) or the error kind (1).
+fn action_extra_len(action: &StatAction) -> usize {
+    match action {
+        StatAction::Blocked(_) | StatAction::Suspicious(_) | StatAction::HighlySuspicious(_) => 4,
+        StatAction::Error(_) => 1,
+        StatAction::Allowed
+        | StatAction::Proxied
+        | StatAction::AllowedWithOverride
+        | StatAction::Cached => 0,
+    }
+}
+
+/// An ISO 3166-1 alpha-2 code as two uppercase ASCII letters (`"fr"` →
+/// `*b"FR"`); `None` for anything else.
+pub fn country_code(code: &str) -> Option<[u8; 2]> {
+    let [first, second] = <[u8; 2]>::try_from(code.as_bytes()).ok()?;
+    (first.is_ascii_alphabetic() && second.is_ascii_alphabetic())
+        .then(|| [first.to_ascii_uppercase(), second.to_ascii_uppercase()])
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -257,9 +289,17 @@ pub struct StatEvent {
     pub domain_hash: u64,
     pub client_ip: [u8; 16],
     pub action: StatAction,
+    /// ISO 3166-1 alpha-2 country hosting the answer (GeoIP of its first
+    /// address), when dgaard's GeoIP database is loaded and knows it.
+    pub country: Option<[u8; 2]>,
 }
 
 impl StatEvent {
+    /// The same event, tagged with the country hosting the answer.
+    pub fn with_country(self, country: Option<[u8; 2]>) -> Self {
+        Self { country, ..self }
+    }
+
     pub fn new(domain_hash: u64, client_addr: SocketAddr, action: StatAction) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -276,6 +316,7 @@ impl StatEvent {
             domain_hash,
             client_ip,
             action,
+            country: None,
         }
     }
 }
@@ -442,6 +483,7 @@ mod tests {
     #[test]
     fn stat_message_event_allowed_round_trip() {
         let event = StatEvent {
+            country: None,
             timestamp: 1_700_000_000,
             domain_hash: 42,
             client_ip: Ipv4Addr::new(192, 168, 1, 1).to_ipv6_mapped().octets(),
@@ -456,6 +498,7 @@ mod tests {
     #[test]
     fn stat_message_event_proxied_round_trip() {
         let event = StatEvent {
+            country: None,
             timestamp: 0,
             domain_hash: 1,
             client_ip: [0u8; 16],
@@ -469,6 +512,7 @@ mod tests {
     #[test]
     fn stat_message_event_blocked_round_trip() {
         let event = StatEvent {
+            country: None,
             timestamp: 9999,
             domain_hash: 77,
             client_ip: [0u8; 16],
@@ -482,6 +526,7 @@ mod tests {
     #[test]
     fn stat_message_event_suspicious_round_trip() {
         let event = StatEvent {
+            country: None,
             timestamp: 1,
             domain_hash: 2,
             client_ip: [0u8; 16],
@@ -495,6 +540,7 @@ mod tests {
     #[test]
     fn stat_message_event_highly_suspicious_round_trip() {
         let event = StatEvent {
+            country: None,
             timestamp: 1,
             domain_hash: 2,
             client_ip: [0u8; 16],
@@ -519,6 +565,7 @@ mod tests {
 
     fn bare_event(action: StatAction) -> StatMessage {
         StatMessage::Event(StatEvent {
+            country: None,
             timestamp: 1,
             domain_hash: 2,
             client_ip: [0; 16],
@@ -606,6 +653,7 @@ mod tests {
         // Custom flag bit 20 — sits in the upper half of the u32 field.
         let custom_reason = StatBlockReason::from_bits_retain(1u32 << 20);
         let event = StatEvent {
+            country: None,
             timestamp: 5000,
             domain_hash: 99,
             client_ip: [0u8; 16],
@@ -623,6 +671,7 @@ mod tests {
         let reason =
             StatBlockReason::STATIC_BLACKLIST | StatBlockReason::from_bits_retain(1u32 << 25);
         let event = StatEvent {
+            country: None,
             timestamp: 1,
             domain_hash: 2,
             client_ip: [0u8; 16],
@@ -647,6 +696,7 @@ mod tests {
     fn stat_message_reason_field_is_4_bytes() {
         // Blocked event layout: 2(len) + 1(type) + 8(ts) + 8(hash) + 16(ip) + 1(action) + 4(reason) = 40
         let msg = StatMessage::Event(StatEvent {
+            country: None,
             timestamp: 0,
             domain_hash: 0,
             client_ip: [0u8; 16],
@@ -669,6 +719,7 @@ mod tests {
     #[test]
     fn stat_message_event_allowed_with_override_round_trip() {
         let event = StatEvent {
+            country: None,
             timestamp: 1_700_000_001,
             domain_hash: 99,
             client_ip: [0u8; 16],
@@ -677,5 +728,90 @@ mod tests {
         let msg = StatMessage::Event(event);
         let bytes = msg.serialize();
         assert_eq!(StatMessage::deserialize(&bytes), Some(msg));
+    }
+
+    // ── country trailer ───────────────────────────────────────────────────────
+
+    fn event_with(action: StatAction, country: Option<[u8; 2]>) -> StatMessage {
+        StatMessage::Event(StatEvent {
+            timestamp: 1_700_000_000,
+            domain_hash: 0xabcd,
+            client_ip: [7u8; 16],
+            action,
+            country,
+        })
+    }
+
+    #[test]
+    fn country_code_accepts_two_letters_only() {
+        assert_eq!(country_code("FR"), Some(*b"FR"));
+        assert_eq!(country_code("fr"), Some(*b"FR"));
+        for bad in ["", "F", "FRA", "F1", "1R", "é", "  "] {
+            assert_eq!(country_code(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn stat_message_country_round_trip_for_every_action_shape() {
+        // No extra bytes, a 4-byte reason, a 1-byte error kind: the trailer
+        // must sit after each.
+        for action in [
+            StatAction::Allowed,
+            StatAction::Cached,
+            StatAction::Blocked(StatBlockReason::ABP_RULE),
+            StatAction::HighlySuspicious(StatBlockReason::from_bits_retain(1 << 31)),
+            StatAction::Error(StatError::Upstream),
+        ] {
+            let msg = event_with(action, Some(*b"DE"));
+            assert_eq!(
+                StatMessage::deserialize(&msg.serialize()),
+                Some(msg),
+                "{action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stat_message_country_is_a_two_byte_trailer() {
+        let without = event_with(StatAction::Allowed, None).serialize();
+        let with = event_with(StatAction::Allowed, Some(*b"JP")).serialize();
+        assert_eq!(with.len(), without.len() + 2);
+        assert_eq!(&with[with.len() - 2..], b"JP");
+        // The length prefix covers it.
+        assert_eq!(
+            u16::from_le_bytes([with[0], with[1]]) as usize,
+            with.len() - 2
+        );
+        assert_eq!(&with[2..without.len()], &without[2..]);
+    }
+
+    #[test]
+    fn stat_message_without_trailer_has_no_country() {
+        let bytes = event_with(StatAction::Blocked(StatBlockReason::NRD_LIST), None).serialize();
+        let Some(StatMessage::Event(event)) = StatMessage::deserialize(&bytes) else {
+            panic!("event expected");
+        };
+        assert_eq!(event.country, None);
+    }
+
+    #[test]
+    fn stat_message_invalid_trailer_is_ignored() {
+        let mut bytes = event_with(StatAction::Proxied, Some(*b"FR")).serialize();
+        let end = bytes.len();
+        bytes[end - 2..].copy_from_slice(b"4\x00");
+        let Some(StatMessage::Event(event)) = StatMessage::deserialize(&bytes) else {
+            panic!("the event itself is valid");
+        };
+        assert_eq!(event.country, None);
+        assert_eq!(event.action, StatAction::Proxied);
+    }
+
+    #[test]
+    fn stat_event_with_country_sets_only_the_country() {
+        let addr: SocketAddr = "10.0.0.1:53".parse().unwrap();
+        let plain = StatEvent::new(5, addr, StatAction::Cached);
+        let tagged = plain.clone().with_country(Some(*b"NL"));
+        assert_eq!(tagged.country, Some(*b"NL"));
+        assert_eq!(tagged.with_country(None), plain);
     }
 }

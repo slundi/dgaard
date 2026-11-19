@@ -519,6 +519,10 @@ enabled = false
 # `suspicious_country_score` points to the domain's suspicion total.
 # The database is opened with mmap to minimise RAM usage on OpenWrt.
 #
+# When enabled, every answered query's stats event also carries the country of
+# its first address, shown by dgaard-monitor (country column / flags). Leave
+# `suspicious_countries` empty to get the countries without any scoring.
+#
 # Free database: https://www.maxmind.com/en/geolite-free-ip-geolocation-data
 # Alternatives:  https://db-ip.com/db/  |  https://www.ip2location.com/database
 [security.geo_ip]

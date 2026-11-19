@@ -22,7 +22,7 @@ use crate::dns::packet::{DnsPacket, Incoming, Transport};
 use crate::dns::resolver::UPSTREAM_RESOLVER;
 use crate::dnssec::DnssecStatus;
 use crate::model::{Action, StatAction, StatBlockReason, StatError, SuspicionScore};
-use crate::resolve::{check_qclass, check_qtype, resolve_with_score, score_answer};
+use crate::resolve::{answer_country, check_qclass, check_qtype, resolve_with_score, score_answer};
 use crate::{CONFIG, STATS_COUNTERS, STATS_SENDER};
 
 /// Resolve a clean query via the configured backend.
@@ -119,12 +119,17 @@ pub(crate) fn block_before_upstream(
 /// Outcome of [`forward_and_inspect`].
 pub(crate) enum ForwardOutcome {
     /// The answer passed every check; it was cached when it carries a TTL.
+    /// `country` hosts the answer (GeoIP), for the stats event.
     Serve {
         bytes: Vec<u8>,
         stat_action: StatAction,
+        country: Option<[u8; 2]>,
     },
     /// Answer inspection pushed the score over the threshold: NXDOMAIN.
-    Blocked(StatAction),
+    Blocked {
+        stat_action: StatAction,
+        country: Option<[u8; 2]>,
+    },
     /// DNSSEC validation failed with `action = "block"`: SERVFAIL.
     Bogus,
     /// The upstream resolution failed: SERVFAIL.
@@ -204,10 +209,14 @@ pub(crate) async fn forward_and_inspect(
     if let Some(answer) = &inspected {
         score_answer(&mut score, &packet.domain, answer);
     }
+    let country = inspected.as_ref().and_then(answer_country);
     let (is_blocked, stat_action) = classify_score(&score, &cfg.security.scoring, pass_action);
     if is_blocked {
         evict_cached(packet);
-        return ForwardOutcome::Blocked(stat_action);
+        return ForwardOutcome::Blocked {
+            stat_action,
+            country,
+        };
     }
 
     if cfg.server.uses_hot_cache()
@@ -225,6 +234,7 @@ pub(crate) async fn forward_and_inspect(
     ForwardOutcome::Serve {
         bytes: upstream_bytes,
         stat_action,
+        country,
     }
 }
 
@@ -345,7 +355,8 @@ pub(crate) async fn answer_query(
         // Cache hits are often most of the traffic: they must show up
         // in the summary, the monitors and per-client logs too.
         if let Some(sender) = STATS_SENDER.get() {
-            sender.send_event(&dns_packet.domain, peer, StatAction::Cached);
+            let country = crate::resolve::response_country(&cached);
+            sender.send_answered(&dns_packet.domain, peer, StatAction::Cached, country);
         }
         if crate::behavior::is_nxdomain(&cached) {
             note_nxdomain(peer, now);
@@ -397,6 +408,8 @@ pub(crate) async fn answer_query(
         return Some(DnsPacket::build_nxdomain_response(&dns_packet.message));
     }
 
+    // The country hosting the answer, when dgaard's GeoIP database knows it.
+    let mut country = None;
     let (response, stat_action) = match &action {
         Action::Allow | Action::ProxyToUpstream => {
             let allowed = matches!(action, Action::Allow);
@@ -407,7 +420,12 @@ pub(crate) async fn answer_query(
             };
             let upstream = resolve_via_upstream(&dns_packet);
             match forward_and_inspect(&dns_packet, upstream, score, pass_action, &cfg_snap).await {
-                ForwardOutcome::Serve { bytes, stat_action } => {
+                ForwardOutcome::Serve {
+                    bytes,
+                    stat_action,
+                    country: answer_country,
+                } => {
+                    country = answer_country;
                     if allowed {
                         STATS_COUNTERS.increment_allowed();
                     } else {
@@ -418,7 +436,11 @@ pub(crate) async fn answer_query(
                     }
                     (bytes, Some(stat_action))
                 }
-                ForwardOutcome::Blocked(stat_action) => {
+                ForwardOutcome::Blocked {
+                    stat_action,
+                    country: answer_country,
+                } => {
+                    country = answer_country;
                     STATS_COUNTERS.increment_blocked();
                     (
                         DnsPacket::build_nxdomain_response(&dns_packet.message),
@@ -482,7 +504,7 @@ pub(crate) async fn answer_query(
     if let Some(stat_action) = stat_action
         && let Some(sender) = STATS_SENDER.get()
     {
-        sender.send_event(&dns_packet.domain, peer, stat_action);
+        sender.send_answered(&dns_packet.domain, peer, stat_action, country);
     }
 
     Some(response)

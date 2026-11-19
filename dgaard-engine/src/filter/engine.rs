@@ -364,15 +364,30 @@ impl FilterEngine {
 
     #[cfg(feature = "geoip")]
     fn geoip_country_suspicious(&self, ip: IpAddr) -> Option<String> {
+        let code = self.geoip_country(ip)?;
+        let code = std::str::from_utf8(&code).ok()?;
+        self.suspicious_country_codes
+            .contains(code)
+            .then(|| code.to_string())
+    }
+
+    /// ISO 3166-1 alpha-2 country of `ip` in the GeoIP database, whether
+    /// suspicious or not; `None` without a database or for an unknown IP.
+    #[cfg(feature = "geoip")]
+    pub fn geoip_country(&self, ip: IpAddr) -> Option<[u8; 2]> {
         let reader = self.geoip_reader.as_ref()?;
-        let result = reader.lookup(ip).ok()?;
-        let record = result.decode::<maxminddb::geoip2::Country>().ok()??;
-        let iso_code = record.country.iso_code?;
-        if self.suspicious_country_codes.contains(iso_code) {
-            Some(iso_code.to_string())
-        } else {
-            None
-        }
+        let record = reader
+            .lookup(ip)
+            .ok()?
+            .decode::<maxminddb::geoip2::Country>()
+            .ok()??;
+        crate::model::country_code(record.country.iso_code?)
+    }
+
+    /// Always `None`: built without the `geoip` feature.
+    #[cfg(not(feature = "geoip"))]
+    pub fn geoip_country(&self, _ip: std::net::IpAddr) -> Option<[u8; 2]> {
+        None
     }
 
     /// Return `true` if `ip` falls within any configured blocked ASN IPv4 range.

@@ -9,6 +9,8 @@ use crate::dga::entropy::{
 use crate::dga::structure::effective_sld;
 use crate::filter::engine::FilterEngine;
 use crate::model::{BlockReason, InspectedAnswer, SuspicionScore, score_points};
+use std::net::IpAddr;
+
 use twox_hash::XxHash64;
 
 /// Maximum domain length before adding suspicion points.
@@ -131,6 +133,16 @@ pub fn compute_score(domain: &str, filter: &FilterEngine, config: &Config) -> Su
     }
 
     score
+}
+
+/// Country hosting the answer: that of the first A record, then AAAA record,
+/// found in the GeoIP database.  `None` without a database (or the `geoip`
+/// feature), or when no address is known.
+pub fn answer_country(answer: &InspectedAnswer, filter: &FilterEngine) -> Option<[u8; 2]> {
+    filter.geoip_reader.as_ref()?;
+    let v4 = answer.a_records.iter().map(|ip| IpAddr::V4(*ip));
+    let v6 = answer.aaaa_records.iter().map(|ip| IpAddr::V6(*ip));
+    v4.chain(v6).find_map(|ip| filter.geoip_country(ip))
 }
 
 /// Apply suspicion scoring from the parsed DNS answer to `domain`.
@@ -620,6 +632,16 @@ mod tests {
             txt_records: txt_payloads.iter().map(|b| b.to_vec()).collect(),
             min_ttl: None,
         }
+    }
+
+    #[test]
+    fn test_answer_country_without_geoip_database() {
+        // No MMDB loaded (and none in the default build): no country, even
+        // for an answer full of public addresses.
+        let engine = init_test_engine();
+        assert!(engine.geoip_reader.is_none());
+        assert_eq!(answer_country(&make_answer(2, 2, 0, &[]), &engine), None);
+        assert_eq!(answer_country(&make_answer(0, 0, 0, &[]), &engine), None);
     }
 
     #[test]
