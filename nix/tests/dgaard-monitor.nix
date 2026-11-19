@@ -160,6 +160,7 @@ pkgs.runCommand "test-dgaard-monitor-module" { nativeBuildInputs = [ pkgs.ripgre
   # [tui] defaults
   rg -qF 'tick_ms = 250'   ${toml cfgDefaults}
   rg -qF 'key_quit = "q"'  ${toml cfgDefaults}
+  rg -qF 'country_display = "code"' ${toml cfgDefaults}
   # [forwarding] defaults
   rg -qF 'format = "template"' ${toml cfgDefaults}
   # [server] defaults, shared by every REST module

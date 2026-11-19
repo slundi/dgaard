@@ -9,6 +9,8 @@ use dgaard_monitor_core::util::ACTION_NAMES;
 pub use dgaard_monitor_core::config::{ForwardFormat, ForwardingConfig};
 
 #[cfg(feature = "tui")]
+use dgaard_monitor_tui::config::CountryDisplay;
+#[cfg(feature = "tui")]
 pub use dgaard_monitor_tui::config::TuiConfig;
 #[cfg(not(feature = "tui"))]
 #[derive(Debug, Default, PartialEq)]
@@ -408,6 +410,7 @@ const SECTION_KEYS: &[(&str, &[&str])] = &[
             "key_pause",
             "key_scroll_up",
             "key_scroll_down",
+            "country_display",
         ],
     ),
     (
@@ -528,6 +531,17 @@ fn parse_tui(table: &toml_span::value::Table<'_>) -> Result<TuiConfig, ConfigErr
     }
     if let Some(s) = get_str(table, "key_scroll_down")? {
         cfg.key_scroll_down = s.to_string();
+    }
+    if let Some(s) = get_str(table, "country_display")? {
+        cfg.country_display = match s {
+            "code" => CountryDisplay::Code,
+            "emoji" => CountryDisplay::Emoji,
+            other => {
+                return Err(ConfigError::Parse(format!(
+                    "invalid value '{other}' for tui.country_display; expected code or emoji"
+                )));
+            }
+        };
     }
     Ok(cfg)
 }
@@ -1188,6 +1202,26 @@ aggregates_retention_days = 30
         assert_eq!(cfg.tui.key_pause, "space");
         assert_eq!(cfg.tui.key_scroll_up, "up");
         assert_eq!(cfg.tui.key_scroll_down, "down");
+        assert_eq!(cfg.tui.country_display, CountryDisplay::Code);
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn test_tui_country_display() {
+        for (value, expected) in [
+            ("code", CountryDisplay::Code),
+            ("emoji", CountryDisplay::Emoji),
+        ] {
+            let cfg = Config::parse(&format!("[tui]\ncountry_display = \"{value}\"\n")).unwrap();
+            assert_eq!(cfg.tui.country_display, expected, "{value}");
+        }
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn test_tui_country_display_rejects_unknown_value() {
+        let err = parse_err("[tui]\ncountry_display = \"flag\"\n");
+        assert!(err.to_string().contains("country_display"), "{err}");
     }
 
     #[cfg(feature = "tui")]

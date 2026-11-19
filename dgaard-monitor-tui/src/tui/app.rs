@@ -5,7 +5,7 @@
 //! filter string — so that each rendering function only needs a shared
 //! reference and never touches `AppState` directly for display decisions.
 
-use crate::config::TuiConfig;
+use crate::config::{CountryDisplay, TuiConfig};
 use crate::tui::keys::{Action, KeyMap};
 use crate::tui::tabs::Tab;
 
@@ -38,6 +38,8 @@ pub struct TuiApp {
     pub filter: Option<String>,
     /// Resolved key bindings derived from `TuiConfig` at startup.
     pub keymap: KeyMap,
+    /// How hosting countries are shown; starts from the config, `e` toggles.
+    pub country_display: CountryDisplay,
 }
 
 impl TuiApp {
@@ -49,6 +51,7 @@ impl TuiApp {
             frozen: false,
             filter: None,
             keymap: KeyMap::from_config(config),
+            country_display: config.country_display,
         }
     }
 
@@ -70,6 +73,7 @@ impl TuiApp {
             // The tab state itself is cleared by the caller; the scroll offset
             // would point past the end of the emptied lists.
             Action::ClearStats => self.scroll = 0,
+            Action::ToggleCountry => self.country_display = self.country_display.toggle(),
             Action::Tab1 | Action::Tab2 | Action::Tab3 | Action::Tab4 | Action::Tab5 => {
                 if let Some(tab) = tab_for_action(action) {
                     self.active_tab = tab;
@@ -179,6 +183,20 @@ mod tests {
         assert_eq!(app.scroll, 0);
         app.apply(Action::PageUp);
         assert_eq!(app.scroll, 0);
+    }
+
+    #[test]
+    fn test_country_display_from_config_and_toggle() {
+        let config = TuiConfig {
+            country_display: CountryDisplay::Emoji,
+            ..TuiConfig::default()
+        };
+        let mut app = TuiApp::new(&config);
+        assert_eq!(app.country_display, CountryDisplay::Emoji);
+        app.apply(Action::ToggleCountry);
+        assert_eq!(app.country_display, CountryDisplay::Code);
+        app.apply(Action::ToggleCountry);
+        assert_eq!(app.country_display, CountryDisplay::Emoji);
     }
 
     #[test]

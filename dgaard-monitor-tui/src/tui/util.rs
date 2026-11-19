@@ -1,6 +1,26 @@
 use dgaard_monitor_core::protocol::{StatAction, StatError};
 use dgaard_monitor_core::util::custom_bit_label;
 
+use crate::config::CountryDisplay;
+
+// ── Country ───────────────────────────────────────────────────────────────────
+
+/// Show the country hosting a domain: its alpha-2 code (`FR`) or flag emoji
+/// (🇫🇷, a pair of regional indicator letters); empty when unknown.
+pub fn format_country(country: Option<[u8; 2]>, display: CountryDisplay) -> String {
+    let Some(code) = country else {
+        return String::new();
+    };
+    match display {
+        CountryDisplay::Code => code.iter().map(|&letter| char::from(letter)).collect(),
+        // 🇦 is U+1F1E6; the protocol only lets uppercase ASCII letters through.
+        CountryDisplay::Emoji => code
+            .iter()
+            .filter_map(|&letter| char::from_u32(0x1F1E6 + u32::from(letter - b'A')))
+            .collect(),
+    }
+}
+
 // ── Flag labels ───────────────────────────────────────────────────────────────
 
 /// Number of `StatBlockReason` bits: 0–15 built in, 16–31 custom.
@@ -94,6 +114,34 @@ mod tests {
     use dgaard_monitor_core::protocol::{StatAction, StatBlockReason};
 
     use super::*;
+
+    // --- format_country ---
+
+    #[test]
+    fn test_format_country_code() {
+        assert_eq!(format_country(Some(*b"FR"), CountryDisplay::Code), "FR");
+    }
+
+    #[test]
+    fn test_format_country_emoji() {
+        assert_eq!(format_country(Some(*b"FR"), CountryDisplay::Emoji), "🇫🇷");
+        assert_eq!(format_country(Some(*b"US"), CountryDisplay::Emoji), "🇺🇸");
+    }
+
+    #[test]
+    fn test_format_country_unknown_is_empty() {
+        assert_eq!(format_country(None, CountryDisplay::Code), "");
+        assert_eq!(format_country(None, CountryDisplay::Emoji), "");
+    }
+
+    #[test]
+    fn test_format_country_fits_the_column() {
+        // Two cells either way: the Queries column is sized for it.
+        for display in [CountryDisplay::Code, CountryDisplay::Emoji] {
+            let text = format_country(Some(*b"DE"), display);
+            assert_eq!(ratatui::text::Span::raw(text).width(), 2, "{display:?}");
+        }
+    }
 
     // --- flag_label ---
 

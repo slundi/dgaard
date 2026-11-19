@@ -291,6 +291,7 @@ mod tests {
         assert!(app.wait_for_subscribers(1, Duration::from_secs(5)).await);
 
         app.record_event(StatEvent {
+            country: None,
             timestamp: 1,
             domain_hash: 1,
             client_ip: std::net::Ipv4Addr::new(10, 0, 0, 1)
@@ -767,6 +768,7 @@ mod tests {
         let web = make_web_state();
         // Inject an event directly into timeline buckets via push_event
         web.push_event(dgaard_monitor_core::util::EventRecord {
+            country: None,
             timestamp: 300,
             domain: None,
             domain_hash: "0000000000000001".to_string(),

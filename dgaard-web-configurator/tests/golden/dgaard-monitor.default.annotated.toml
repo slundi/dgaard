@@ -79,6 +79,10 @@ key_scroll_up = "up"
 # Key binding: scroll down.
 key_scroll_down = "down"
 
+# Country hosting each domain in the Queries tab: alpha-2 code (FR) or flag emoji.
+# The `e` key toggles it at runtime. Countries come from dgaard [security.geo_ip].
+country_display = "code"
+
 # -----------------------------------------------------------------------------
 # [forwarding] — Forwarding
 # -----------------------------------------------------------------------------

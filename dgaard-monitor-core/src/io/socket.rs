@@ -300,6 +300,7 @@ mod tests {
         let (client, mut server) = make_connected_pair().await;
 
         let event = StatEvent {
+            country: None,
             timestamp: 12345,
             domain_hash: 0xabcdef,
             client_ip: [10, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -354,6 +355,7 @@ mod tests {
         // and the following frame still decodes.
         let (client, mut server) = make_connected_pair().await;
         let mut unknown = StatMessage::Event(StatEvent {
+            country: None,
             timestamp: 1,
             domain_hash: 2,
             client_ip: [0; 16],
@@ -502,6 +504,7 @@ mod tests {
             domain: "one.test".to_string(),
         };
         let event = StatMessage::Event(StatEvent {
+            country: None,
             timestamp: 1,
             domain_hash: 7,
             client_ip: [0; 16],
@@ -610,6 +613,7 @@ mod tests {
 
         let (mut stream, _) = listener.accept().await.unwrap();
         let event = StatMessage::Event(StatEvent {
+            country: None,
             timestamp: 1,
             domain_hash: 7,
             client_ip: [0; 16],
@@ -647,6 +651,7 @@ mod tests {
 
         let (mut stream, _) = listener.accept().await.unwrap();
         let event = StatMessage::Event(StatEvent {
+            country: None,
             timestamp: 1,
             domain_hash: 7,
             client_ip: [0; 16],

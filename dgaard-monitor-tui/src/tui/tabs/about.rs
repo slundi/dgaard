@@ -147,6 +147,10 @@ pub fn key_bindings(keymap: &KeyMap) -> Vec<KeyBinding> {
             key: "f".to_string(),
         },
         KeyBinding {
+            action: "Country code/flag",
+            key: "e".to_string(),
+        },
+        KeyBinding {
             action: "Zoom (Timelines)",
             key: "t".to_string(),
         },
@@ -229,8 +233,8 @@ mod tests {
     #[test]
     fn test_key_bindings_count() {
         // 5 direct-tab + 2 cycle nav + 4 configurable + ctrl+c + 4 paging + 4 view
-        // + filter, zoom, sort = 23
-        assert_eq!(key_bindings(&default_keymap()).len(), 23);
+        // + filter, country, zoom, sort = 24
+        assert_eq!(key_bindings(&default_keymap()).len(), 24);
     }
 
     #[test]
@@ -322,6 +326,7 @@ mod tests {
             ("First row", Action::ScrollTop),
             ("Last row", Action::ScrollBottom),
             ("Zoom (Timelines)", Action::Zoom),
+            ("Country code/flag", Action::ToggleCountry),
             ("Cycle sort", Action::Sort),
         ];
         for (label, action) in cases {

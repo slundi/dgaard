@@ -179,6 +179,9 @@ pub struct EventRecord {
     pub flags: Option<u32>,
     /// Human-readable labels for each set bit in `flags`.
     pub flags_labels: Vec<String>,
+    /// ISO 3166-1 alpha-2 country hosting the answer; omitted when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
 }
 
 /// Build an [`EventRecord`] from a raw event and the current domain map snapshot.
@@ -193,6 +196,9 @@ pub fn event_to_record(event: &StatEvent, domain_map: &HashMap<u64, String>) -> 
         action: action_name(&event.action).to_string(),
         flags: reason.map(|r| r.bits()),
         flags_labels: reason.map_or_else(Vec::new, reason_labels),
+        country: event
+            .country
+            .map(|code| String::from_utf8_lossy(&code).into_owned()),
     }
 }
 
@@ -333,6 +339,7 @@ mod tests {
     #[test]
     fn event_to_record_allowed() {
         let event = StatEvent {
+            country: None,
             timestamp: 1000,
             domain_hash: 0xaabbcc,
             client_ip: ipv4(10, 0, 0, 1),
@@ -353,6 +360,7 @@ mod tests {
     #[test]
     fn event_to_record_blocked_with_flags() {
         let event = StatEvent {
+            country: None,
             timestamp: 2000,
             domain_hash: 0xdeadbeef,
             client_ip: ipv4(192, 168, 1, 1),
@@ -369,6 +377,7 @@ mod tests {
     #[test]
     fn event_to_record_unknown_domain_is_null() {
         let event = StatEvent {
+            country: None,
             timestamp: 0,
             domain_hash: 0xffffffff,
             client_ip: ipv4(1, 1, 1, 1),
@@ -377,5 +386,36 @@ mod tests {
         let rec = event_to_record(&event, &HashMap::new());
         assert!(rec.domain.is_none());
         assert_eq!(rec.domain_hash, format!("{:016x}", 0xffffffff_u64));
+    }
+
+    #[test]
+    fn event_to_record_country() {
+        let event = StatEvent {
+            country: Some(*b"FR"),
+            timestamp: 0,
+            domain_hash: 1,
+            client_ip: ipv4(1, 1, 1, 1),
+            action: StatAction::Cached,
+        };
+        let rec = event_to_record(&event, &HashMap::new());
+        assert_eq!(rec.country.as_deref(), Some("FR"));
+        let json = serde_json::to_string(&rec).unwrap();
+        assert!(json.contains(r#""country":"FR""#), "{json}");
+    }
+
+    #[test]
+    fn event_to_record_unknown_country_is_left_out() {
+        let event = StatEvent {
+            country: None,
+            timestamp: 0,
+            domain_hash: 1,
+            client_ip: ipv4(1, 1, 1, 1),
+            action: StatAction::Allowed,
+        };
+        let json = serde_json::to_string(&event_to_record(&event, &HashMap::new())).unwrap();
+        assert!(!json.contains("country"), "{json}");
+        // Records stored before the field existed still parse.
+        let old: EventRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(old.country, None);
     }
 }

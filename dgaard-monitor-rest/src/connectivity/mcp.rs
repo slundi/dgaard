@@ -218,6 +218,7 @@ mod tests {
 
     fn event(ts: u64, hash: u64, action: StatAction) -> StatEvent {
         StatEvent {
+            country: None,
             timestamp: ts,
             domain_hash: hash,
             client_ip: ipv4(10, 0, 0, 1),

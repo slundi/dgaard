@@ -417,6 +417,7 @@ mod tests {
 
     fn make_event(hash: u64, ip: [u8; 16], action: StatAction) -> StatEvent {
         StatEvent {
+            country: None,
             timestamp: 0,
             domain_hash: hash,
             client_ip: ip,

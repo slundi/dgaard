@@ -138,6 +138,7 @@ mod tests {
 
     fn allowed_event(ts: u64, hash: u64, ip: [u8; 16]) -> StatEvent {
         StatEvent {
+            country: None,
             timestamp: ts,
             domain_hash: hash,
             client_ip: ip,
@@ -147,6 +148,7 @@ mod tests {
 
     fn blocked_event(ts: u64, hash: u64, ip: [u8; 16], r: StatBlockReason) -> StatEvent {
         StatEvent {
+            country: None,
             timestamp: ts,
             domain_hash: hash,
             client_ip: ip,

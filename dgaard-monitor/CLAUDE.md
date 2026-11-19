@@ -27,10 +27,13 @@ Default features: `tui`, `rest`. The monitor does not depend on `dgaard-engine`
    directory** (dgaard replaces the file with `rename(2)`).
 2. **Socket** (`io/socket.rs::run_reader`): frames are
    `[len: u16 LE][type: u8][payload]`, `len` ≤ `MAX_FRAME_PAYLOAD` (4096).
-   Type `0x00` = `DomainMapping { hash: u64, domain }`, `0x01` = `Event`. A
-   complete frame the monitor does not understand is skipped, never a reason
-   to reconnect. Reconnects use `Backoff` (100 ms → 30 s, jitter). The peer's
-   UID is checked before reading (`PeerPolicy`, `[input] peer_uid`).
+   Type `0x00` = `DomainMapping { hash: u64, domain }`, `0x01` = `Event`; an
+   event may end with a 2-byte ASCII country (GeoIP of the answer, sent when
+   dgaard's `[security.geo_ip]` is on). Readers ignore trailing bytes they do
+   not know, so new fields go at the end. A complete frame the monitor does
+   not understand is skipped, never a reason to reconnect. Reconnects use
+   `Backoff` (100 ms → 30 s, jitter). The peer's UID is checked before
+   reading (`PeerPolicy`, `[input] peer_uid`).
 3. **State** (`state.rs::AppState`): `domain_map` merges three sources with
    this precedence: socket mappings > host index > NATS peers (capped,
    never rename a known hash). Two broadcast buses: `subscribe()` (every

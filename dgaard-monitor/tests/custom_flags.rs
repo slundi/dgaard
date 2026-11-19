@@ -71,6 +71,7 @@ fn custom_bits_are_labelled_from_the_engine_config() {
         }
     };
     let event = StatMessage::Event(StatEvent {
+        country: None,
         timestamp: 1_700_000_000,
         domain_hash: 7,
         client_ip: [0; 16],

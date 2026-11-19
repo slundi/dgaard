@@ -89,6 +89,7 @@ mod tests {
 
     fn allowed(timestamp: u64) -> StatEvent {
         StatEvent {
+            country: None,
             timestamp,
             domain_hash: 0xbeef,
             client_ip: [0; 16],
@@ -338,5 +339,20 @@ mod tests {
         handle_key(&key(KeyCode::End), &mut app, &mut tabs);
         assert_eq!(tabs.timelines.scroll(), 20);
         assert_eq!(app.scroll, 0);
+    }
+
+    // --- country display ---
+
+    #[test]
+    fn test_e_toggles_country_display_on_any_tab() {
+        use crate::config::CountryDisplay;
+        let (mut app, mut tabs) = setup();
+        for tab in [Tab::Dashboard, Tab::Queries, Tab::About] {
+            app.active_tab = tab;
+            let before = app.country_display;
+            handle_key(&key(KeyCode::Char('e')), &mut app, &mut tabs);
+            assert_ne!(app.country_display, before, "{tab:?}");
+        }
+        assert_eq!(app.country_display, CountryDisplay::Emoji);
     }
 }

@@ -44,7 +44,10 @@
 > `#[expect(dead_code, reason = ...)]`, so the compiler flags each marker to remove once wired.
 
 - [x] Tab `About`: contains project name, version, repo URL `https://codeberg.org/slundi/dgaard`, license Apache 2, separator, key mapping
-- [ ] Country flags for hosted domains
+- [x] Country flags for hosted domains: `CC` column in the `Queries` tab, alpha-2 code or flag
+      emoji (`[tui] country_display`, `e` toggles). The country comes from dgaard's GeoIP lookup of
+      the answer (`[security.geo_ip]`, `geoip` build), so list-blocked domains, which never resolve,
+      have none.
 
 ## Phase 3: Analytics
 

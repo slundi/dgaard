@@ -50,10 +50,11 @@
 
 use std::collections::VecDeque;
 
+use crate::config::CountryDisplay;
 use crate::tui::scroll::{ScrollState, Scrollable, render_scrollbar};
 use crate::tui::util::{
     DomainColor, INDICATOR_ALLOWED, INDICATOR_BLOCKED, INDICATOR_ERROR, INDICATOR_PROXIED,
-    INDICATOR_SUSPICIOUS, REASON_BITS, flag_label,
+    INDICATOR_SUSPICIOUS, REASON_BITS, flag_label, format_country,
 };
 use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
 use dgaard_monitor_core::util::format_client_ip;
@@ -67,6 +68,8 @@ pub const MAX_ROWS: usize = 1_000;
 pub const COL_DATETIME: usize = 8;
 pub const COL_DOMAIN: usize = 30;
 pub const COL_CLIENT: usize = 17;
+/// Two cells: an alpha-2 code or a flag emoji.
+pub const COL_COUNTRY: usize = 2;
 
 // ── SortOrder ─────────────────────────────────────────────────────────────────
 
@@ -220,6 +223,8 @@ pub struct QueryRow {
     pub client_ip: String,
     /// Flags column string (`"Allowed"`, `"Blocked:Blacklist+AbpRule"`, …).
     pub flags: String,
+    /// Country hosting the answer, from dgaard's GeoIP (`None` when unknown).
+    pub country: Option<[u8; 2]>,
     /// Collapsed action kind — picks the indicator and the row style.
     pub action_kind: ActionKind,
     /// Raw bitmask for `FilterMode::ByFlags` matching (empty for Allowed/Proxied).
@@ -250,6 +255,7 @@ impl QueryRow {
             },
             client_ip: format_client_ip(&event.client_ip),
             flags: flags_label(&event.action),
+            country: event.country,
             action_kind,
             reasons,
         }
@@ -439,6 +445,7 @@ pub fn row_style(row: &QueryRow) -> ratatui::style::Style {
 pub fn render(
     state: &mut QueriesState,
     frozen: bool,
+    country_display: CountryDisplay,
     area: ratatui::layout::Rect,
     frame: &mut ratatui::Frame,
 ) {
@@ -469,6 +476,7 @@ pub fn render(
                 row.indicator.to_string(),
                 row.datetime.clone(),
                 row.domain.clone(),
+                format_country(row.country, country_display),
                 row.client_ip.clone(),
                 row.flags.clone(),
             ])
@@ -483,13 +491,14 @@ pub fn render(
                 Constraint::Length(1),
                 Constraint::Length(COL_DATETIME as u16),
                 Constraint::Min(COL_DOMAIN as u16),
+                Constraint::Length(COL_COUNTRY as u16),
                 Constraint::Length(COL_CLIENT as u16),
                 Constraint::Min(10),
             ],
         )
         .block(block)
         .header(
-            Row::new(["", "Time", "Domain", "Client IP", "Flags"])
+            Row::new(["", "Time", "Domain", "CC", "Client IP", "Flags"])
                 .style(Style::new().add_modifier(Modifier::BOLD)),
         ),
         area,
@@ -507,6 +516,7 @@ mod tests {
 
     fn ev(ts: u64, ip: [u8; 16], action: StatAction) -> StatEvent {
         StatEvent {
+            country: None,
             timestamp: ts,
             domain_hash: 0xdead,
             client_ip: ip,
@@ -1161,7 +1171,7 @@ mod tests {
         use ratatui::{Terminal, backend::TestBackend};
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
-            .draw(|frame| render(s, frozen, frame.area(), frame))
+            .draw(|frame| render(s, frozen, CountryDisplay::Code, frame.area(), frame))
             .unwrap();
         let buffer = terminal.backend().buffer();
         (0..height)
@@ -1229,6 +1239,67 @@ mod tests {
         }
     }
 
+    /// Draw one event from `country` in the given display mode; returns the
+    /// header and the row.
+    fn draw_country(country: Option<[u8; 2]>, display: CountryDisplay) -> (String, String) {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut s = QueriesState::default();
+        s.push_event(
+            &StatEvent {
+                country,
+                ..ev(0, ipv4(10, 0, 0, 9), StatAction::Allowed)
+            },
+            "example.fr",
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 6)).unwrap();
+        terminal
+            .draw(|frame| render(&mut s, false, display, frame.area(), frame))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let line = |row: u16| -> String {
+            (0..100)
+                .map(|column| buffer[(column, row)].symbol())
+                .collect()
+        };
+        (line(1), line(2))
+    }
+
+    #[test]
+    fn test_query_row_keeps_the_country() {
+        let event = StatEvent {
+            country: Some(*b"FR"),
+            ..ev(0, ipv4(1, 2, 3, 4), StatAction::Allowed)
+        };
+        assert_eq!(QueryRow::from_event(&event, "x.fr").country, Some(*b"FR"));
+    }
+
+    #[test]
+    fn test_render_country_code_column() {
+        let (header, row) = draw_country(Some(*b"FR"), CountryDisplay::Code);
+        assert!(header.contains("CC"), "{header}");
+        // Domain, country, then client.
+        let domain = row.find("example.fr").unwrap();
+        let country = row.find(" FR ").unwrap();
+        let client = row.find("10.0.0.9").unwrap();
+        assert!(domain < country && country < client, "{row}");
+    }
+
+    #[test]
+    fn test_render_country_flag_column() {
+        let (_, row) = draw_country(Some(*b"FR"), CountryDisplay::Emoji);
+        assert!(row.contains("🇫🇷"), "{row}");
+        assert!(!row.contains(" FR "), "{row}");
+    }
+
+    #[test]
+    fn test_render_unknown_country_is_blank() {
+        let (_, with) = draw_country(Some(*b"FR"), CountryDisplay::Code);
+        let (_, without) = draw_country(None, CountryDisplay::Code);
+        assert!(!without.contains(" FR "));
+        // The other columns stay where they are.
+        assert_eq!(with.find("10.0.0.9"), without.find("10.0.0.9"));
+    }
+
     #[test]
     fn test_render_scrollbar_only_when_list_overflows() {
         // The scrollbar replaces the right border column between the corners.
@@ -1274,7 +1345,7 @@ mod tests {
         );
         let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
         terminal
-            .draw(|frame| render(&mut s, false, frame.area(), frame))
+            .draw(|frame| render(&mut s, false, CountryDisplay::Code, frame.area(), frame))
             .unwrap();
         let buffer = terminal.backend().buffer();
         // Row 2: newest (highly suspicious); row 3: the plain block.

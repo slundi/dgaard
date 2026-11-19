@@ -57,6 +57,7 @@ mod tests {
 
     fn make_record(action: &str, client_ip: &str) -> EventRecord {
         EventRecord {
+            country: None,
             timestamp: 0,
             domain: None,
             domain_hash: "0000000000000000".to_string(),
@@ -175,6 +176,7 @@ mod tests {
         if let Some(db) = &web.db {
             db.insert_events(&[
                 EventRecord {
+                    country: None,
                     timestamp: 1000,
                     domain: Some("example.com".to_string()),
                     domain_hash: "0000000000000001".to_string(),
@@ -184,6 +186,7 @@ mod tests {
                     flags_labels: vec![],
                 },
                 EventRecord {
+                    country: None,
                     timestamp: 2000,
                     domain: Some("test.org".to_string()),
                     domain_hash: "0000000000000002".to_string(),

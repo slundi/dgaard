@@ -153,6 +153,13 @@ export const MONITOR_SCHEMA = {
           default: 'down',
           doc: 'Key binding: scroll down.',
         },
+        {
+          key: 'country_display',
+          type: 'enum',
+          values: ['code', 'emoji'],
+          default: 'code',
+          doc: 'Country hosting each domain in the Queries tab: alpha-2 code (FR) or flag emoji.\nThe `e` key toggles it at runtime. Countries come from dgaard [security.geo_ip].',
+        },
       ],
     },
     {

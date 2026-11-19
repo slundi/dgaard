@@ -104,6 +104,7 @@ mod tests {
 
     fn allowed(timestamp: u64) -> StatEvent {
         StatEvent {
+            country: None,
             timestamp,
             domain_hash: 0xbeef,
             client_ip: [0; 16],

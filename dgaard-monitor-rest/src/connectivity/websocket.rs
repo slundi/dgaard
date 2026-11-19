@@ -292,6 +292,7 @@ mod tests {
         use std::collections::HashMap;
 
         let event = StatEvent {
+            country: None,
             timestamp: 9000,
             domain_hash: 0xabcd1234,
             client_ip: ipv4(10, 20, 30, 40),
@@ -318,6 +319,7 @@ mod tests {
 
         state
             .record_event(StatEvent {
+                country: None,
                 timestamp: 42,
                 domain_hash: 1,
                 client_ip: ipv4(1, 2, 3, 4),

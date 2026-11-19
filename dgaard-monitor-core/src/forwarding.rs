@@ -545,6 +545,7 @@ mod tests {
 
     fn make_event(action: StatAction) -> StatEvent {
         StatEvent {
+            country: None,
             timestamp: 1_700_000_000,
             domain_hash: 0xdeadbeef,
             // IPv4-mapped, as dgaard sends it.

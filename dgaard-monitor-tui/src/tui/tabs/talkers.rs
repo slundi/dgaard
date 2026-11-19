@@ -603,6 +603,7 @@ mod tests {
 
     fn ev(ts: u64, ip: [u8; 16], action: StatAction) -> StatEvent {
         StatEvent {
+            country: None,
             timestamp: ts,
             domain_hash: 0xdead,
             client_ip: ip,

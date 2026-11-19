@@ -249,6 +249,7 @@ impl Database {
                 None => vec![],
             };
             results.push(EventRecord {
+                country: None,
                 timestamp,
                 domain_hash,
                 domain,
@@ -426,6 +427,7 @@ mod tests {
 
     fn rec(ts: u64, action: &str, client: &str) -> EventRecord {
         EventRecord {
+            country: None,
             timestamp: ts,
             domain: Some("example.com".to_string()),
             domain_hash: format!("{:016x}", ts),
@@ -701,6 +703,7 @@ mod tests {
         // 10 events into a 4-slot bus, so it misses the first 6.
         for timestamp in 0..10 {
             app.record_event(StatEvent {
+                country: None,
                 timestamp,
                 domain_hash: 1,
                 client_ip: [0; 16],

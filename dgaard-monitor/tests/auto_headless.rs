@@ -69,6 +69,7 @@ fn piped_stdout_runs_headless() {
         }
     };
     let event = StatMessage::Event(StatEvent {
+        country: None,
         timestamp: 1_700_000_000,
         domain_hash: 7,
         client_ip: [0; 16],

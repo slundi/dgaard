@@ -70,6 +70,7 @@ let
       key_pause = cfg.tui.keyPause;
       key_scroll_up = cfg.tui.keyScrollUp;
       key_scroll_down = cfg.tui.keyScrollDown;
+      country_display = cfg.tui.countryDisplay;
     };
 
     forwarding = {
@@ -274,6 +275,18 @@ in
         type = lib.types.str;
         default = "down";
         description = "Key binding for scroll down.";
+      };
+      countryDisplay = lib.mkOption {
+        type = lib.types.enum [
+          "code"
+          "emoji"
+        ];
+        default = "code";
+        description = ''
+          Country hosting each domain in the Queries tab: ISO alpha-2 code or
+          flag emoji (the `e` key toggles it at runtime). Countries come from
+          dgaard's `[security.geo_ip]`.
+        '';
       };
     };
 

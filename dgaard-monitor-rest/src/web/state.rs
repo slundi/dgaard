@@ -148,6 +148,7 @@ mod tests {
 
     fn make_record_action(ts: u64, action: &str) -> EventRecord {
         EventRecord {
+            country: None,
             timestamp: ts,
             domain: None,
             domain_hash: format!("{:016x}", ts),

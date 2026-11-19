@@ -16,7 +16,8 @@
 //!   "domain": "example.com",   // optional — when the publisher knows it
 //!   "client_ip": "192.168.1.1",
 //!   "action": "Blocked",
-//!   "reasons": 1               // optional bitmask of StatBlockReason
+//!   "reasons": 1,              // optional bitmask of StatBlockReason
+//!   "country": "FR"            // optional ISO 3166-1 alpha-2 hosting the answer
 //! }
 //! ```
 //! `action` is one of `Allowed`, `Proxied`, `Blocked`, `Suspicious`,
@@ -49,7 +50,9 @@ use tokio::sync::watch;
 
 use crate::config::{NatsConfig, validate_publish_subject, validate_subscribe_subject};
 use dgaard_monitor_core::io::socket::Backoff;
-use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
+use dgaard_monitor_core::protocol::{
+    StatAction, StatBlockReason, StatError, StatEvent, country_code,
+};
 use dgaard_monitor_core::state::{AppState, Sink};
 use dgaard_monitor_core::util::{format_client_ip, parse_client_ip};
 
@@ -90,6 +93,10 @@ pub struct WireEvent {
     /// associated reason (Allowed/Proxied).
     #[serde(default)]
     pub reasons: u32,
+    /// ISO 3166-1 alpha-2 country hosting the answer, when the publishing
+    /// daemon has GeoIP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -134,6 +141,9 @@ impl WireEvent {
             client_ip: format_client_ip(&event.client_ip),
             action,
             reasons,
+            country: event
+                .country
+                .map(|code| String::from_utf8_lossy(&code).into_owned()),
         }
     }
 
@@ -151,7 +161,12 @@ impl WireEvent {
             WireAction::Override => StatAction::AllowedWithOverride,
             WireAction::Unknown => return Err(ParseError::UnknownAction),
         };
+        let country = match &self.country {
+            Some(code) => Some(country_code(code).ok_or(ParseError::InvalidCountry)?),
+            None => None,
+        };
         Ok(StatEvent {
+            country,
             timestamp: self.ts,
             domain_hash: self.domain_hash,
             client_ip: parse_client_ip(&self.client_ip).ok_or_else(|| {
@@ -172,6 +187,9 @@ pub enum ParseError {
     /// Not echoed: the content is untrusted and may hold escape sequences.
     #[error("invalid domain")]
     InvalidDomain,
+    /// Not two letters; not echoed, like the domain.
+    #[error("invalid country")]
+    InvalidCountry,
     #[error("timestamp {0} more than {MAX_CLOCK_SKEW_SECS}s from local clock")]
     TimestampOutOfRange(u64),
     /// Sent by a newer peer: skipped, not an error in the event itself.
@@ -482,6 +500,7 @@ mod tests {
     #[test]
     fn from_event_allowed_has_zero_reasons() {
         let ev = StatEvent {
+            country: None,
             timestamp: 100,
             domain_hash: 42,
             client_ip: ipv4_bytes(1, 2, 3, 4),
@@ -498,6 +517,7 @@ mod tests {
     fn from_event_blocked_encodes_reason_bits() {
         let reason = StatBlockReason::STATIC_BLACKLIST | StatBlockReason::HIGH_ENTROPY;
         let ev = StatEvent {
+            country: None,
             timestamp: 1,
             domain_hash: 7,
             client_ip: ipv4_bytes(10, 0, 0, 5),
@@ -512,6 +532,7 @@ mod tests {
     #[test]
     fn wire_event_round_trips_through_event() {
         let original = StatEvent {
+            country: None,
             timestamp: 1234,
             domain_hash: 0xdeadbeef,
             client_ip: ipv4_bytes(10, 0, 0, 1),
@@ -525,6 +546,7 @@ mod tests {
     #[test]
     fn wire_event_round_trips_through_json() {
         let original = StatEvent {
+            country: None,
             timestamp: 999,
             domain_hash: 12,
             client_ip: ipv4_bytes(127, 0, 0, 1),
@@ -542,6 +564,7 @@ mod tests {
     #[test]
     fn into_event_rejects_bad_ip() {
         let bad = WireEvent {
+            country: None,
             v: WIRE_VERSION,
             ts: 0,
             domain_hash: 0,
@@ -562,6 +585,7 @@ mod tests {
 
     fn inbound(domain: Option<&str>, client_ip: &str, ts: u64) -> Vec<u8> {
         serde_json::to_vec(&WireEvent {
+            country: None,
             v: WIRE_VERSION,
             ts,
             domain_hash: 0x42,
@@ -621,6 +645,7 @@ mod tests {
     #[test]
     fn override_round_trips_losslessly() {
         let original = StatEvent {
+            country: None,
             timestamp: 1,
             domain_hash: 1,
             client_ip: ipv4_bytes(10, 0, 0, 1),
@@ -639,6 +664,7 @@ mod tests {
     fn published_events_carry_the_format_version() {
         let wire = WireEvent::from_event(
             &StatEvent {
+                country: None,
                 timestamp: 1,
                 domain_hash: 1,
                 client_ip: ipv4_bytes(10, 0, 0, 1),
@@ -675,6 +701,59 @@ mod tests {
         let payload = raw_inbound(r#""action":"Allowed""#);
         handle_inbound(&payload, &state, NOW).await.unwrap();
         assert_eq!(state.stats.read().await.total, 1);
+    }
+
+    // --- country ---
+
+    fn parse(fields: &str) -> Result<StatEvent, ParseError> {
+        let wire: WireEvent = serde_json::from_slice(&raw_inbound(fields)).unwrap();
+        validate_inbound(wire, NOW).map(|(event, _)| event)
+    }
+
+    #[test]
+    fn country_round_trips_through_json() {
+        let original = StatEvent {
+            timestamp: NOW,
+            domain_hash: 1,
+            client_ip: ipv4_bytes(10, 0, 0, 2),
+            action: StatAction::Cached,
+            country: Some(*b"CA"),
+        };
+        let json = serde_json::to_string(&WireEvent::from_event(&original, None)).unwrap();
+        assert!(json.contains(r#""country":"CA""#), "{json}");
+        let wire: WireEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(validate_inbound(wire, NOW).unwrap().0, original);
+    }
+
+    #[test]
+    fn unknown_country_is_left_out_of_the_json() {
+        let event = StatEvent {
+            timestamp: NOW,
+            domain_hash: 1,
+            client_ip: ipv4_bytes(10, 0, 0, 2),
+            action: StatAction::Allowed,
+            country: None,
+        };
+        let json = serde_json::to_string(&WireEvent::from_event(&event, None)).unwrap();
+        assert!(!json.contains("country"), "{json}");
+    }
+
+    #[test]
+    fn inbound_country_is_normalized() {
+        let event = parse(r#""action":"Allowed","country":"se""#).unwrap();
+        assert_eq!(event.country, Some(*b"SE"));
+        assert_eq!(parse(r#""action":"Allowed""#).unwrap().country, None);
+    }
+
+    #[test]
+    fn inbound_invalid_country_is_rejected() {
+        for country in [r#""""#, r#""FRA""#, r#""F1""#, r#""\u001b[""#] {
+            let err = parse(&format!(r#""action":"Allowed","country":{country}"#)).unwrap_err();
+            assert!(
+                matches!(err, ParseError::InvalidCountry),
+                "{country}: {err}"
+            );
+        }
     }
 
     #[tokio::test]

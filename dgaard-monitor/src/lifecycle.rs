@@ -189,6 +189,7 @@ mod tests {
         for timestamp in 0..3 {
             state
                 .record_event(StatEvent {
+                    country: None,
                     timestamp,
                     domain_hash: 1,
                     client_ip: [0; 16],

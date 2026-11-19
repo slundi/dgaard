@@ -131,9 +131,13 @@ fn render_frame(frame: &mut ratatui::Frame, app: &TuiApp, tab_states: &mut TabSt
         Tab::Dashboard => {
             tabs::dashboard::render(&tab_states.dashboard, app.scroll, body_area, frame)
         }
-        Tab::Queries => {
-            tabs::queries::render(&mut tab_states.queries, app.frozen, body_area, frame)
-        }
+        Tab::Queries => tabs::queries::render(
+            &mut tab_states.queries,
+            app.frozen,
+            app.country_display,
+            body_area,
+            frame,
+        ),
         Tab::Talkers => {
             tabs::talkers::render(&mut tab_states.talkers, app.frozen, body_area, frame)
         }

@@ -28,6 +28,7 @@ fn ipv4_bytes(a: u8, b: u8, c: u8, d: u8) -> [u8; 16] {
 
 fn sample_event() -> StatEvent {
     StatEvent {
+        country: None,
         timestamp: 1_700_000_000,
         domain_hash: 0xabc,
         client_ip: ipv4_bytes(10, 0, 0, 1),
@@ -114,6 +115,7 @@ async fn subscriber_injects_events_into_state() {
     }
 
     let wire = WireEvent {
+        country: None,
         v: WIRE_VERSION,
         ts: unix_now(),
         domain_hash: 0xdeadbeef,
@@ -172,6 +174,7 @@ async fn inbound_event_is_not_republished() {
     });
 
     let wire = WireEvent {
+        country: None,
         v: WIRE_VERSION,
         ts: unix_now(),
         domain_hash: 7,

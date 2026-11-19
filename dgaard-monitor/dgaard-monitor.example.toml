@@ -82,6 +82,11 @@ key_pause = "space"
 key_scroll_up = "up"
 key_scroll_down = "down"
 
+# Country hosting each domain in the Queries tab: "code" (FR) or "emoji"
+# (flag, needs a terminal that renders them). The `e` key toggles it at
+# runtime. Countries come from dgaard: enable its [security.geo_ip].
+country_display = "code"
+
 # ---------------------------------------------------------------------------
 # Forwarding — route enriched events to external sinks
 # ---------------------------------------------------------------------------

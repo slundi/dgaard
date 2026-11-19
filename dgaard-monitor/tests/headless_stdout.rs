@@ -88,6 +88,7 @@ filter = []
         domain: "one.test".to_string(),
     };
     let event = StatMessage::Event(StatEvent {
+        country: None,
         timestamp: 1_700_000_000,
         domain_hash: 7,
         client_ip: std::net::Ipv4Addr::new(10, 0, 0, 1)

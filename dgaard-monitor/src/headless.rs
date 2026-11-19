@@ -76,6 +76,7 @@ mod tests {
 
     fn event(domain_hash: u64) -> StatEvent {
         StatEvent {
+            country: None,
             timestamp: 1_700_000_000,
             domain_hash,
             client_ip: std::net::Ipv4Addr::new(10, 0, 0, 1)

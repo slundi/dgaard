@@ -574,6 +574,7 @@ mod tests {
 
     fn make_event(ts: u64, action: StatAction) -> StatEvent {
         StatEvent {
+            country: None,
             timestamp: ts,
             domain_hash: 0,
             client_ip: [192, 168, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -583,6 +584,7 @@ mod tests {
 
     fn make_event_ip(ts: u64, action: StatAction, ip: [u8; 16]) -> StatEvent {
         StatEvent {
+            country: None,
             timestamp: ts,
             domain_hash: 0,
             client_ip: ip,

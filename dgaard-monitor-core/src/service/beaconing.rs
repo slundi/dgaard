@@ -181,6 +181,7 @@ mod tests {
 
     fn event(ts: u64, client: &str, domain: &str, hash: &str) -> EventRecord {
         EventRecord {
+            country: None,
             timestamp: ts,
             domain: Some(domain.to_string()),
             domain_hash: hash.to_string(),
