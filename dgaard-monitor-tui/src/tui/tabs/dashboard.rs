@@ -4,20 +4,21 @@
 //! the key metrics (`global_stats`), the live feed and the flag distribution.
 //! The tab body only shows what the top bar does not:
 //!
-//!   ┌──────────────────────────────────────────────────────────────────────┐
-//!   │  Recent Domains (scroll)                                             │
-//!   │  ✔ example.com                                                       │
-//!   │  ✘ ads.tracker.net                                                   │
-//!   │  ...                                                                 │
-//!   ├──────────────────────────────────────────────────────────────────────┤
-//!   │  Blacklist                                                           │
-//!   │  234                                                                 │
-//!   │  87.3 %                                                              │
-//!   └──────────────────────────────────────────────────────────────────────┘
+//!   ┌ Recent Domains ─────────────────┐┌ Block Reasons ──────────────────────┐
+//!   │ ✔ example.com                   ││   ▄██▄   ■ Lists        180  76.9 % │
+//!   │ ✘ ads.tracker.net               ││  ██████  ■ Answer        31  13.2 % │
+//!   │ ...                             ││   ▀██▀   ■ Heuristics    23   9.8 % │
+//!   ├─────────────────────────────────┴┴─────────────────────────────────────┤
+//!   │  Blacklist                                                             │
+//!   │  234                                                                   │
+//!   │  87.3 %                                                                │
+//!   └────────────────────────────────────────────────────────────────────────┘
 //!
 //! Panels:
 //!   - Recent Domains (scrollable): last `MAX_RECENT_DOMAINS` domains,
 //!     colour-coded via `DomainColor`.
+//!   - Block Reasons: pie chart of blocked queries by `ReasonCategory`, each
+//!     query counted once, with a legend of counts and shares.
 //!   - Footer (3 lines): most-active blocking filter name, hit count,
 //!     percentage of all blocked events.
 
@@ -25,7 +26,7 @@ use std::collections::{HashSet, VecDeque};
 use std::time::Instant;
 
 use crate::tui::tabs::queries::{flags_label, format_timestamp};
-use crate::tui::util::{DomainColor, REASON_BITS, flag_label};
+use crate::tui::util::{DomainColor, REASON_BITS, ReasonCategory, flag_label};
 use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
 use dgaard_monitor_core::util::format_client_ip;
 
@@ -103,6 +104,18 @@ pub struct TopFilter {
     pub pct: f32,
 }
 
+// ── ReasonShare ───────────────────────────────────────────────────────────────
+
+/// One slice of the Block Reasons pie chart.
+#[derive(Debug, PartialEq)]
+pub struct ReasonShare {
+    pub category: ReasonCategory,
+    /// Blocking events counted in this category.
+    pub count: u64,
+    /// Share of all blocking events (0.0 – 100.0); the shares add up to 100.
+    pub pct: f32,
+}
+
 // ── DashboardState ────────────────────────────────────────────────────────────
 
 /// All mutable state owned by the Dashboard tab.
@@ -117,6 +130,8 @@ pub struct DashboardState {
     first_event: Option<Instant>,
     /// Hit count per `StatBlockReason` flag bit, custom bits included.
     flag_hits: [u64; REASON_BITS],
+    /// Blocking events per `ReasonCategory`, indexed by `ReasonCategory::index`.
+    category_hits: [u64; ReasonCategory::ALL.len()],
     /// Circular buffer of the most-recent domain entries, oldest at front.
     recent_domains: VecDeque<RecentDomainEntry>,
     /// Circular buffer of the most-recent live-feed rows, oldest at front.
@@ -131,6 +146,7 @@ impl DashboardState {
             total_blocked: 0,
             first_event: None,
             flag_hits: [0; REASON_BITS],
+            category_hits: [0; ReasonCategory::ALL.len()],
             recent_domains: VecDeque::new(),
             live_feed: VecDeque::new(),
         }
@@ -168,6 +184,7 @@ impl DashboardState {
                 _ => StatBlockReason::empty(),
             };
             self.record_flags(reasons);
+            self.category_hits[ReasonCategory::of(reasons).index()] += 1;
         }
 
         let display_domain = if domain.is_empty() {
@@ -293,6 +310,22 @@ impl DashboardState {
             })
             .collect()
     }
+
+    /// Blocking events per category, in `ReasonCategory::ALL` order, empty
+    /// categories left out.
+    pub fn reason_breakdown(&self) -> Vec<ReasonShare> {
+        ReasonCategory::ALL
+            .into_iter()
+            .filter_map(|category| {
+                let count = self.category_hits[category.index()];
+                (count > 0).then(|| ReasonShare {
+                    category,
+                    count,
+                    pct: count as f32 / self.total_blocked as f32 * 100.0,
+                })
+            })
+            .collect()
+    }
 }
 
 impl Default for DashboardState {
@@ -314,6 +347,22 @@ pub fn to_ratatui_color(color: DomainColor) -> ratatui::style::Color {
     }
 }
 
+/// Pie slice and legend colour of each `ReasonCategory`.
+pub fn category_color(category: ReasonCategory) -> ratatui::style::Color {
+    use ratatui::style::Color;
+    match category {
+        ReasonCategory::Lists => Color::Red,
+        ReasonCategory::Policy => Color::Magenta,
+        ReasonCategory::Answer => Color::Cyan,
+        ReasonCategory::Custom => Color::Blue,
+        ReasonCategory::Heuristics => Color::Yellow,
+        ReasonCategory::Unspecified => Color::DarkGray,
+    }
+}
+
+/// Columns of the Block Reasons legend: `■ Heuristics  1234567 100.0 %`.
+const LEGEND_WIDTH: u16 = 30;
+
 /// Render the Dashboard tab body into `area`.
 ///
 /// `scroll` is the vertical scroll offset for the Recent-Domains panel.
@@ -330,9 +379,13 @@ pub fn render(
         widgets::{Block, List, ListItem, ListState, Paragraph},
     };
 
-    // ── Layout: recent domains / footer (5 lines) ─────────────────────────
-    let [domains_area, footer_area] =
+    // ── Layout: recent domains | block reasons / footer (5 lines) ─────────
+    let [top_area, footer_area] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(5)]).areas(area);
+    let [domains_area, reasons_area] =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .areas(top_area);
+    render_reasons(state, reasons_area, frame);
 
     // ── Recent domains ─────────────────────────────────────────────────────
     let domain_items: Vec<ListItem> = state
@@ -368,6 +421,51 @@ pub fn render(
         Paragraph::new(footer_lines).block(Block::bordered().title("Top Filter")),
         footer_area,
     );
+}
+
+/// Block Reasons panel: the pie on the left, the legend on the right.  On a
+/// narrow panel the legend keeps its room and the pie shrinks or goes.
+fn render_reasons(state: &DashboardState, area: ratatui::layout::Rect, frame: &mut ratatui::Frame) {
+    use crate::tui::pie::PieChart;
+    use ratatui::{
+        layout::{Constraint, Layout},
+        style::Style,
+        text::{Line, Span},
+        widgets::{Block, Paragraph},
+    };
+
+    let block = Block::bordered().title("Block Reasons");
+    let breakdown = state.reason_breakdown();
+    if breakdown.is_empty() {
+        frame.render_widget(Paragraph::new("No blocked queries yet").block(block), area);
+        return;
+    }
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let [pie_area, legend_area] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(LEGEND_WIDTH)]).areas(inner);
+    let slices: Vec<(u64, ratatui::style::Color)> = breakdown
+        .iter()
+        .map(|share| (share.count, category_color(share.category)))
+        .collect();
+    frame.render_widget(PieChart::new(&slices), pie_area);
+
+    let legend: Vec<Line> = breakdown
+        .iter()
+        .map(|share| {
+            Line::from(vec![
+                Span::styled("■ ", Style::new().fg(category_color(share.category))),
+                Span::raw(format!(
+                    "{:<11} {:>7} {:>5.1} %",
+                    share.category.label(),
+                    share.count,
+                    share.pct
+                )),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(legend), legend_area);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -841,7 +939,166 @@ mod tests {
         assert!(state.flag_distribution().is_empty());
     }
 
+    // ── reason_breakdown ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_reason_breakdown_empty_without_blocking() {
+        let mut state = DashboardState::new();
+        state.push_event(&ev(1, ipv4(10, 0, 0, 1), StatAction::Allowed), "a.com");
+        state.push_event(&ev(2, ipv4(10, 0, 0, 1), StatAction::Proxied), "b.com");
+        assert!(state.reason_breakdown().is_empty());
+    }
+
+    #[test]
+    fn test_reason_breakdown_counts_each_query_once() {
+        let mut state = DashboardState::new();
+        let ip = ipv4(10, 0, 0, 1);
+        state.push_event(&ev(1, ip, blocked(1 << 0 | 1 << 2)), "a.com"); // list + heuristic
+        state.push_event(&ev(2, ip, blocked(1 << 1)), "b.com"); // list
+        state.push_event(&ev(3, ip, suspicious(1 << 2)), "c.com"); // heuristic
+        state.push_event(&ev(4, ip, highly_suspicious(1 << 13)), "d.com"); // answer
+        assert_eq!(
+            state.reason_breakdown(),
+            [
+                ReasonShare {
+                    category: ReasonCategory::Lists,
+                    count: 2,
+                    pct: 50.0
+                },
+                ReasonShare {
+                    category: ReasonCategory::Answer,
+                    count: 1,
+                    pct: 25.0
+                },
+                ReasonShare {
+                    category: ReasonCategory::Heuristics,
+                    count: 1,
+                    pct: 25.0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_reason_breakdown_adds_up_to_blocked_total() {
+        let mut state = DashboardState::new();
+        let ip = ipv4(10, 0, 0, 1);
+        for (timestamp, bits) in [0, 1, 1 << 4, 1 << 16, 1 << 9, 0x7fff, u32::MAX]
+            .into_iter()
+            .enumerate()
+        {
+            state.push_event(&ev(timestamp as u64, ip, blocked(bits)), "x.com");
+        }
+        state.push_event(&ev(99, ip, StatAction::Allowed), "ok.com");
+        let breakdown = state.reason_breakdown();
+        let counted: u64 = breakdown.iter().map(|share| share.count).sum();
+        assert_eq!(counted, state.global_stats().blocked);
+        let pct: f32 = breakdown.iter().map(|share| share.pct).sum();
+        assert!((pct - 100.0).abs() < 0.01, "shares add up to {pct}");
+    }
+
+    #[test]
+    fn test_reason_breakdown_unspecified_without_bits() {
+        let mut state = DashboardState::new();
+        state.push_event(&ev(1, ipv4(10, 0, 0, 1), blocked(0)), "a.com");
+        let breakdown = state.reason_breakdown();
+        assert_eq!(breakdown.len(), 1);
+        assert_eq!(breakdown[0].category, ReasonCategory::Unspecified);
+    }
+
+    #[test]
+    fn test_reason_breakdown_ignores_dnssec_errors() {
+        use dgaard_monitor_core::protocol::StatError;
+        let mut state = DashboardState::new();
+        let action = StatAction::Error(StatError::DnssecBogus);
+        state.push_event(&ev(1, ipv4(10, 0, 0, 1), action), "bogus.example");
+        assert!(state.reason_breakdown().is_empty());
+    }
+
+    #[test]
+    fn test_clear_resets_reason_breakdown() {
+        let mut state = DashboardState::new();
+        state.push_event(&ev(1, ipv4(10, 0, 0, 1), blocked(1)), "a.com");
+        state.clear();
+        assert!(state.reason_breakdown().is_empty());
+    }
+
+    #[test]
+    fn test_category_colors_are_distinct() {
+        let colors: HashSet<_> = ReasonCategory::ALL
+            .into_iter()
+            .map(category_color)
+            .collect();
+        assert_eq!(colors.len(), ReasonCategory::ALL.len());
+    }
+
     // ── render ────────────────────────────────────────────────────────────────
+
+    /// Draw the tab body on a `width` × `height` terminal; return its rows.
+    fn draw(state: &DashboardState, width: u16, height: u16) -> Vec<String> {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render(state, 0, frame.area(), frame))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|row| {
+                (0..width)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_render_reasons_placeholder_without_blocking() {
+        let lines = draw(&DashboardState::new(), 100, 20);
+        assert!(lines.iter().any(|line| line.contains("Block Reasons")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("No blocked queries yet"))
+        );
+    }
+
+    #[test]
+    fn test_render_reasons_pie_and_legend() {
+        let mut state = DashboardState::new();
+        let ip = ipv4(10, 0, 0, 1);
+        for timestamp in 0..3 {
+            state.push_event(&ev(timestamp, ip, blocked(1)), "list.example");
+        }
+        state.push_event(&ev(3, ip, suspicious(1 << 2)), "dga.example");
+        let lines = draw(&state, 100, 20);
+        let lists = lines.iter().position(|l| l.contains("Lists")).unwrap();
+        let heuristics = lines.iter().position(|l| l.contains("Heuristics")).unwrap();
+        assert!(lists < heuristics, "legend in category order");
+        assert!(lines[lists].contains("3  75.0 %"), "{}", lines[lists]);
+        assert!(lines[heuristics].contains("1  25.0 %"));
+        assert!(!lines.iter().any(|line| line.contains("Policy")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains('▀') || line.contains('▄')),
+            "pie drawn"
+        );
+    }
+
+    #[test]
+    fn test_render_reasons_narrow_panel_keeps_the_legend() {
+        let mut state = DashboardState::new();
+        state.push_event(&ev(1, ipv4(10, 0, 0, 1), blocked(1)), "list.example");
+        // Panel is 30 columns: borders leave 28, all for the legend.
+        let lines = draw(&state, 60, 15);
+        assert!(lines.iter().any(|line| line.contains("Lists")));
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains('▀') || line.contains('▄'))
+        );
+    }
 
     #[test]
     fn test_render_shows_recent_domains_and_top_filter_only() {

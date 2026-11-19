@@ -3,6 +3,7 @@
 mod app;
 mod input;
 mod keys;
+mod pie;
 mod scroll;
 mod tabs;
 mod top_bar;

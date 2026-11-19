@@ -52,7 +52,7 @@
 ## Phase 3: Analytics
 
 - [x] **Client Tracking**: Identify "Top Talkers" (most active client IPs): the `Talkers` tab
-- [ ] **Reason Breakdown**: If StatAction includes specific block reasons (Malware, Ad, Tracking), display a pie chart of block categories.
+- [x] **Reason Breakdown**: If StatAction includes specific block reasons (Malware, Ad, Tracking), display a pie chart of block categories: the `Block Reasons` panel of the `Dashboard` tab. dgaard sends reason bits, not list categories (malware/ads/tracking), so the pie groups blocked queries by detection stage: lists, policy, answer inspection, custom flags, heuristics. A query counts once, in its strongest category.
 - [ ] **Search/Filter**: Allow filtering the live feed by specific client IP or domain keyword.
 
 ## Phase 4: Data & Persistence
