@@ -40,6 +40,10 @@ event_buffer = 8192
 # Persistence — local SQLite storage
 # ---------------------------------------------------------------------------
 [persistence]
+# Keep a local SQLite history. Set to false to run without one (e.g. as a
+# non-root user or on a diskless router); REST history routes then answer 503.
+enabled = true
+
 db = "/var/dgaard/stats.sqlite"
 
 # Rolling event log retention (Tier 1).

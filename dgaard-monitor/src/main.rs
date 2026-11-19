@@ -104,23 +104,7 @@ async fn main() {
     };
 
     // Open SQLite database (standalone; active regardless of web.enabled).
-    let db: Option<std::sync::Arc<db::Database>> = match db::Database::open(
-        &persistence_cfg.db,
-        persistence_cfg.events_retention_hours,
-        persistence_cfg.aggregates_retention_days,
-    ) {
-        Ok(d) => {
-            eprintln!("Persistence database opened: {}", persistence_cfg.db);
-            Some(std::sync::Arc::new(d))
-        }
-        Err(e) => {
-            eprintln!(
-                "Warning: could not open persistence database {}: {e}",
-                persistence_cfg.db
-            );
-            None
-        }
-    };
+    let db = open_persistence(&persistence_cfg);
 
     let state = Arc::new(AppState::with_options(StateOptions {
         window: Duration::from_secs(stats_cfg.window_secs),
@@ -258,4 +242,68 @@ async fn main() {
     }
 
     eprintln!("All tasks stopped. Bye.");
+}
+
+/// Open the SQLite history, unless `[persistence] enabled = false`. A failure
+/// is not fatal: the monitor runs without history and says how to fix it.
+fn open_persistence(cfg: &config::PersistenceConfig) -> Option<Arc<db::Database>> {
+    if !cfg.enabled {
+        eprintln!("Persistence disabled ([persistence] enabled = false)");
+        return None;
+    }
+    match db::Database::open(
+        &cfg.db,
+        cfg.events_retention_hours,
+        cfg.aggregates_retention_days,
+    ) {
+        Ok(database) => {
+            eprintln!("Persistence database opened: {}", cfg.db);
+            Some(Arc::new(database))
+        }
+        Err(e) => {
+            eprintln!(
+                "Warning: could not open persistence database {}: {e}; set \
+                 [persistence] db to a writable path, or enabled = false",
+                cfg.db
+            );
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn persistence(enabled: bool, db: &std::path::Path) -> config::PersistenceConfig {
+        config::PersistenceConfig {
+            enabled,
+            db: db.to_str().unwrap().to_string(),
+            ..config::PersistenceConfig::default()
+        }
+    }
+
+    /// Regression: persistence could not be turned off, so a non-root user
+    /// got a warning about /var/dgaard/stats.sqlite on every start.
+    #[test]
+    fn disabled_persistence_opens_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats.sqlite");
+        assert!(open_persistence(&persistence(false, &path)).is_none());
+        assert!(!path.exists(), "no database file when disabled");
+    }
+
+    #[test]
+    fn enabled_persistence_opens_the_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats.sqlite");
+        assert!(open_persistence(&persistence(true, &path)).is_some());
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn unwritable_path_runs_without_history() {
+        let path = std::path::Path::new("/nonexistent/dir/stats.sqlite");
+        assert!(open_persistence(&persistence(true, path)).is_none());
+    }
 }

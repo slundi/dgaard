@@ -35,6 +35,9 @@ event_buffer = 8192
 # -----------------------------------------------------------------------------
 # Local SQLite storage: a rolling event log plus hourly aggregates.
 [persistence]
+# Keep a local SQLite history. When false, REST history routes answer 503.
+enabled = true
+
 # SQLite database file (opened in WAL mode).
 db = "/var/dgaard/stats.sqlite"
 

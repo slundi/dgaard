@@ -150,7 +150,8 @@ pkgs.runCommand "test-dgaard-monitor-module" { nativeBuildInputs = [ pkgs.ripgre
     exit 1
   fi
   # [persistence] defaults
-  rg -qF 'db = "/var/dgaard/stats.sqlite"'           ${toml cfgDefaults}
+  rg -qF 'db = "/var/lib/dgaard/stats.sqlite"'       ${toml cfgDefaults}
+  rg -qF 'enabled = true'                            ${toml cfgDefaults}
   rg -qF 'events_retention_hours = 72'               ${toml cfgDefaults}
   rg -qF 'aggregates_retention_days = 90'            ${toml cfgDefaults}
   # [stats] defaults

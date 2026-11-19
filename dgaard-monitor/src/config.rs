@@ -228,6 +228,9 @@ impl Default for StatsConfig {
 
 #[derive(Debug)]
 pub struct PersistenceConfig {
+    /// `false` keeps no SQLite history at all (REST history routes then
+    /// answer 503), e.g. for a non-root user or a diskless router.
+    pub enabled: bool,
     pub db: String,
     pub events_retention_hours: u32,
     pub aggregates_retention_days: u32,
@@ -248,6 +251,7 @@ fn default_aggregates_retention_days() -> u32 {
 impl Default for PersistenceConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             db: default_db(),
             events_retention_hours: default_events_retention_hours(),
             aggregates_retention_days: default_aggregates_retention_days(),
@@ -272,7 +276,6 @@ fn get_str<'a>(
     }
 }
 
-#[cfg(any(feature = "rest", feature = "nats"))]
 fn get_bool(table: &toml_span::value::Table<'_>, key: &str) -> Result<Option<bool>, ConfigError> {
     match table.get(key) {
         Some(v) => match v.as_ref() {
@@ -430,9 +433,17 @@ fn parse_persistence(
     check_keys(
         table,
         "persistence",
-        &["db", "events_retention_hours", "aggregates_retention_days"],
+        &[
+            "enabled",
+            "db",
+            "events_retention_hours",
+            "aggregates_retention_days",
+        ],
     )?;
     let mut cfg = PersistenceConfig::default();
+    if let Some(enabled) = get_bool(table, "enabled")? {
+        cfg.enabled = enabled;
+    }
     if let Some(s) = get_str(table, "db")? {
         cfg.db = s.to_string();
     }
@@ -1123,6 +1134,15 @@ index  = "/data/hosts.bin"
         assert_eq!(cfg.persistence.db, "/var/dgaard/stats.sqlite");
         assert_eq!(cfg.persistence.events_retention_hours, 72);
         assert_eq!(cfg.persistence.aggregates_retention_days, 90);
+    }
+
+    #[test]
+    fn test_persistence_can_be_disabled() {
+        assert!(Config::default().persistence.enabled);
+        let cfg = Config::parse("[persistence]\nenabled = false\n").unwrap();
+        assert!(!cfg.persistence.enabled);
+        let err = parse_err("[persistence]\nenabled = \"no\"\n");
+        assert!(matches!(err, ConfigError::InvalidType { .. }), "{err}");
     }
 
     #[test]

@@ -53,6 +53,7 @@ let
     };
 
     persistence = {
+      enabled = cfg.persistence.enable;
       db = cfg.persistence.db;
       events_retention_hours = cfg.persistence.eventsRetentionHours;
       aggregates_retention_days = cfg.persistence.aggregatesRetentionDays;
@@ -201,9 +202,16 @@ in
     # [persistence]
     # -------------------------------------------------------------------------
     persistence = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Keep a local SQLite history. When false, REST history routes answer 503.";
+      };
       db = lib.mkOption {
         type = lib.types.str;
-        default = "/var/dgaard/stats.sqlite";
+        # The unit's StateDirectory: everything else, /var/dgaard included, is
+        # read-only under ProtectSystem = "strict".
+        default = "/var/lib/dgaard/stats.sqlite";
         description = "Path to the SQLite database file.";
       };
       eventsRetentionHours = lib.mkOption {

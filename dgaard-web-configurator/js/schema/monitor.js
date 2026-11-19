@@ -70,6 +70,12 @@ export const MONITOR_SCHEMA = {
       doc: 'Local SQLite storage: a rolling event log plus hourly aggregates.',
       fields: [
         {
+          key: 'enabled',
+          type: 'bool',
+          default: true,
+          doc: 'Keep a local SQLite history. When false, REST history routes answer 503.',
+        },
+        {
           key: 'db',
           type: 'path',
           default: '/var/dgaard/stats.sqlite',

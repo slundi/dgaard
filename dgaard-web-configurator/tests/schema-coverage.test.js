@@ -164,3 +164,23 @@ test('schema structure is well formed', () => {
     }
   }
 });
+
+/// The value of `key` in the section at `path`.
+function schemaDefault(schema, path, key) {
+  const section = schema.sections.find((candidate) => candidate.path === path);
+  assert.ok(section, `${schema.id}: no [${path}] section`);
+  const field = section.fields.find((candidate) => candidate.key === key);
+  assert.ok(field, `${schema.id}: no ${path}.${key}`);
+  return field.default;
+}
+
+test('the monitor defaults read where dgaard writes by default', () => {
+  assert.equal(
+    schemaDefault(MONITOR_SCHEMA, 'input', 'socket'),
+    schemaDefault(ENGINE_SCHEMA, 'server', 'stats_socket_path'),
+  );
+  assert.equal(
+    schemaDefault(MONITOR_SCHEMA, 'input', 'index'),
+    schemaDefault(ENGINE_SCHEMA, 'sources', 'host_index_path'),
+  );
+});
