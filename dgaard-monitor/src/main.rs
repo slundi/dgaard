@@ -189,14 +189,14 @@ async fn main() {
     }
 
     // Persistence writer — standalone task, active whenever the DB is open.
-    if let Some(ref db_arc) = db {
-        let s = Arc::clone(&state);
-        let d = std::sync::Arc::clone(db_arc);
-        let rx = shutdown_rx.clone();
-        handles.push(tokio::spawn(async move {
-            db::run_writer(s, d, rx).await;
-        }));
-    }
+    // Kept apart: shutdown waits for its final flush first.
+    let writer_task = db.as_ref().map(|db_arc| {
+        tokio::spawn(db::run_writer(
+            Arc::clone(&state),
+            Arc::clone(db_arc),
+            shutdown_rx.clone(),
+        ))
+    });
 
     // --- Wait for a termination signal, or for the user to quit the TUI ---
 
@@ -210,7 +210,8 @@ async fn main() {
     }
     handles.extend(ui_task);
 
-    lifecycle::shutdown(shutdown_tx, handles, db).await;
+    lifecycle::exit_on_second_signal();
+    lifecycle::shutdown(shutdown_tx, writer_task, handles, db).await;
 
     eprintln!("All tasks stopped. Bye.");
 }
