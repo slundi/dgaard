@@ -2,11 +2,12 @@
 //!
 //! `TuiApp` is the single mutable object threaded through every renderer.
 //! It owns all volatile UI state — active tab, scroll offset, freeze flag,
-//! filter string — so that each rendering function only needs a shared
+//! search prompt — so that each rendering function only needs a shared
 //! reference and never touches `AppState` directly for display decisions.
 
 use crate::config::{CountryDisplay, TuiConfig};
 use crate::tui::keys::{Action, KeyMap};
+use crate::tui::search::SearchPrompt;
 use crate::tui::tabs::Tab;
 
 /// Rows moved by `PageUp` / `PageDown` in tabs that do not know their height.
@@ -33,9 +34,9 @@ pub struct TuiApp {
     /// When `true` the live feed and queries list stop updating; new events are
     /// still buffered in `AppState` and resume on the next toggle.
     pub frozen: bool,
-    /// Active filter: client IP prefix or domain substring, applied in the
-    /// Queries and Live Feed widgets.
-    pub filter: Option<String>,
+    /// The `/` search prompt while it is open; keys go to it, not to the
+    /// key map.  The filter itself lives in `QueriesState`.
+    pub prompt: Option<SearchPrompt>,
     /// Resolved key bindings derived from `TuiConfig` at startup.
     pub keymap: KeyMap,
     /// How hosting countries are shown; starts from the config, `e` toggles.
@@ -49,7 +50,7 @@ impl TuiApp {
             active_tab: Tab::default(),
             scroll: 0,
             frozen: false,
-            filter: None,
+            prompt: None,
             keymap: KeyMap::from_config(config),
             country_display: config.country_display,
         }
@@ -69,7 +70,6 @@ impl TuiApp {
             // (Queries) handle it.
             Action::ScrollBottom => {}
             Action::Freeze => self.frozen = !self.frozen,
-            Action::ClearFilter => self.filter = None,
             // The tab state itself is cleared by the caller; the scroll offset
             // would point past the end of the emptied lists.
             Action::ClearStats => self.scroll = 0,
@@ -86,6 +86,7 @@ impl TuiApp {
             | Action::Filter
             | Action::Sort
             | Action::Search
+            | Action::ClearFilter
             | Action::Zoom => {}
         }
     }
@@ -106,7 +107,7 @@ mod tests {
         assert_eq!(app.active_tab, Tab::Dashboard);
         assert_eq!(app.scroll, 0);
         assert!(!app.frozen);
-        assert!(app.filter.is_none());
+        assert!(app.prompt.is_none());
     }
 
     #[test]
@@ -159,14 +160,6 @@ mod tests {
         assert!(app.frozen);
         app.apply(Action::Freeze);
         assert!(!app.frozen);
-    }
-
-    #[test]
-    fn test_clear_filter() {
-        let mut app = default_app();
-        app.filter = Some("192.168.1.1".to_string());
-        app.apply(Action::ClearFilter);
-        assert!(app.filter.is_none());
     }
 
     #[test]

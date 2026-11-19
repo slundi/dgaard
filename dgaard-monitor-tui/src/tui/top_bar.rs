@@ -2,14 +2,16 @@
 //!
 //!   Dashboard  Queries  Talkers  Timelines  About                  row 1: tabs
 //!   Clients: 12   Queries: 4521   Blocked: 234 (5.2 %)   avg. QPS: 1.2   row 2: metrics
-//!   ┌ Live Feed ─────────────────────────┐┌ Flag Distribution ───┐ row 3
+//!   ┌ Live Feed · /192.168 ──────────────┐┌ Flag Distribution ───┐ row 3
 //!   │ 14:23:01  192.168.1.5  example.com ││ AbpRule   █████ 48   │
 //!   │ ...                                ││ NRD       ██ 17      │
 //!   └────────────────────────────────────┘└──────────────────────┘
 //!   (active tab content)
 //!
 //! Row 3 is split 60 / 40 between the live feed (newest first) and a bar
-//! chart of the blocking flags that fired most.  It shrinks on short
+//! chart of the blocking flags that fired most.  The live feed shows the
+//! newest rows of the Queries buffer that pass the `/` search, so a quiet
+//! client stays visible while others are busy.  It shrinks on short
 //! terminals so the tab content keeps `BODY_MIN_HEIGHT` rows, and disappears
 //! when it would be too short to show anything.
 
@@ -22,8 +24,9 @@ use ratatui::{
 };
 
 use crate::tui::app::TuiApp;
-use crate::tui::tabs::Tab;
 use crate::tui::tabs::dashboard::{DashboardState, to_ratatui_color};
+use crate::tui::tabs::queries::{QueriesState, search_label};
+use crate::tui::tabs::{Tab, TabStates};
 
 /// Tallest row 3 gets, borders included.
 pub const ROW3_MAX_HEIGHT: u16 = 12;
@@ -77,12 +80,12 @@ pub fn layout(area: Rect) -> ScreenAreas {
 }
 
 /// Draw the three top rows into the areas computed by `layout`.
-pub fn render(frame: &mut Frame, areas: &ScreenAreas, app: &TuiApp, dashboard: &DashboardState) {
+pub fn render(frame: &mut Frame, areas: &ScreenAreas, app: &TuiApp, tabs: &TabStates) {
     render_tabs(frame, areas.tabs, app.active_tab);
-    render_metrics(frame, areas.metrics, dashboard);
+    render_metrics(frame, areas.metrics, &tabs.dashboard);
     if areas.live_feed.height > 0 {
-        render_live_feed(frame, areas.live_feed, dashboard);
-        render_flags(frame, areas.flags, dashboard);
+        render_live_feed(frame, areas.live_feed, &tabs.queries);
+        render_flags(frame, areas.flags, &tabs.dashboard);
     }
 }
 
@@ -117,21 +120,23 @@ fn render_metrics(frame: &mut Frame, area: Rect, dashboard: &DashboardState) {
     );
 }
 
-fn render_live_feed(frame: &mut Frame, area: Rect, dashboard: &DashboardState) {
-    let rows: Vec<Row> = dashboard
-        .live_feed()
-        .iter()
-        .rev()
-        .map(|e| {
+fn render_live_feed(frame: &mut Frame, area: Rect, queries: &QueriesState) {
+    // Borders and the header take three rows.
+    let visible = usize::from(area.height.saturating_sub(3));
+    let rows: Vec<Row> = queries
+        .newest(visible)
+        .into_iter()
+        .map(|row| {
             Row::new([
-                e.timestamp.clone(),
-                e.client.clone(),
-                e.domain.clone(),
-                e.action.clone(),
+                row.datetime.clone(),
+                row.client_ip.clone(),
+                row.domain.clone(),
+                row.flags.clone(),
             ])
-            .style(Style::new().fg(to_ratatui_color(e.color)))
+            .style(Style::new().fg(to_ratatui_color(row.domain_color)))
         })
         .collect();
+    let title = format!("Live Feed{}", search_label(&queries.filter));
 
     frame.render_widget(
         Table::new(
@@ -143,7 +148,7 @@ fn render_live_feed(frame: &mut Frame, area: Rect, dashboard: &DashboardState) {
                 Constraint::Min(12),
             ],
         )
-        .block(Block::bordered().title("Live Feed"))
+        .block(Block::bordered().title(title))
         .header(
             Row::new(["Time", "Client", "Domain", "Action"])
                 .style(Style::new().add_modifier(Modifier::BOLD)),
@@ -204,13 +209,13 @@ mod tests {
     }
 
     /// Draw the top bar on a `width` × `height` terminal and return its rows.
-    fn draw(width: u16, height: u16, dashboard: &DashboardState) -> Vec<String> {
+    fn draw(width: u16, height: u16, tabs: &TabStates) -> Vec<String> {
         let app = TuiApp::new(&TuiConfig::default());
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| {
                 let areas = layout(frame.area());
-                render(frame, &areas, &app, dashboard);
+                render(frame, &areas, &app, tabs);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -271,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_render_shows_tabs_metrics_and_row3_titles() {
-        let lines = draw(100, 30, &DashboardState::new());
+        let lines = draw(100, 30, &TabStates::default());
         assert!(lines[0].contains("Dashboard") && lines[0].contains("About"));
         assert!(lines[1].contains("Clients: 0") && lines[1].contains("Blocked: 0"));
         assert!(screen_contains(&lines, "Live Feed"));
@@ -281,10 +286,10 @@ mod tests {
 
     #[test]
     fn test_render_live_feed_newest_first() {
-        let mut dashboard = DashboardState::new();
-        dashboard.push_event(&event(1, StatAction::Allowed), "old.example");
-        dashboard.push_event(&event(2, StatAction::Allowed), "new.example");
-        let lines = draw(100, 30, &dashboard);
+        let mut tabs = TabStates::default();
+        tabs.push_event(&event(1, StatAction::Allowed), "old.example");
+        tabs.push_event(&event(2, StatAction::Allowed), "new.example");
+        let lines = draw(100, 30, &tabs);
         let row_of = |needle: &str| lines.iter().position(|l| l.contains(needle)).unwrap();
         assert!(row_of("new.example") < row_of("old.example"));
         assert!(screen_contains(&lines, "10.0.0.5"));
@@ -292,11 +297,11 @@ mod tests {
 
     #[test]
     fn test_render_flag_distribution_lists_fired_flags() {
-        let mut dashboard = DashboardState::new();
+        let mut tabs = TabStates::default();
         // ABP_RULE twice, NRD_LIST once
-        dashboard.push_event(&event(1, blocked(1 << 1)), "ads.example");
-        dashboard.push_event(&event(2, blocked((1 << 1) | (1 << 7))), "nrd.example");
-        let lines = draw(100, 30, &dashboard);
+        tabs.push_event(&event(1, blocked(1 << 1)), "ads.example");
+        tabs.push_event(&event(2, blocked((1 << 1) | (1 << 7))), "nrd.example");
+        let lines = draw(100, 30, &tabs);
         assert!(!screen_contains(&lines, "No blocked queries yet"));
         let row_of = |needle: &str| lines.iter().position(|l| l.contains(needle)).unwrap();
         assert!(row_of("AbpRule") < row_of("NRD"), "most hits on top");
@@ -305,17 +310,52 @@ mod tests {
 
     #[test]
     fn test_render_flag_distribution_keeps_what_fits() {
-        let mut dashboard = DashboardState::new();
+        let mut tabs = TabStates::default();
         // 15 different flags, each firing once; row 3 has 8 rows → 6 bars.
-        dashboard.push_event(&event(1, blocked(0x7fff)), "all.example");
-        let lines = draw(100, 20, &dashboard);
+        tabs.push_event(&event(1, blocked(0x7fff)), "all.example");
+        let lines = draw(100, 20, &tabs);
         assert!(screen_contains(&lines, "Blacklist"), "bit 0 first on ties");
         assert!(!screen_contains(&lines, "AsnBlocked"), "bit 14 cut off");
     }
 
     #[test]
+    fn test_render_live_feed_follows_the_search() {
+        use crate::tui::tabs::queries::FilterMode;
+        let mut tabs = TabStates::default();
+        let mut quiet = event(1, StatAction::Allowed);
+        quiet.client_ip = std::net::Ipv4Addr::new(10, 0, 0, 9)
+            .to_ipv6_mapped()
+            .octets();
+        tabs.push_event(&quiet, "quiet.lan");
+        // Far more than the feed can show, all from 10.0.0.5.
+        for timestamp in 2..100 {
+            tabs.push_event(&event(timestamp, StatAction::Allowed), "busy.example");
+        }
+        let lines = draw(100, 30, &tabs);
+        assert!(!screen_contains(&lines, "quiet.lan"), "pushed out");
+
+        tabs.queries.set_filter(FilterMode::search("10.0.0.9"));
+        let lines = draw(100, 30, &tabs);
+        assert!(screen_contains(&lines, "Live Feed · /10.0.0.9"));
+        assert!(screen_contains(&lines, "quiet.lan"));
+        assert!(!screen_contains(&lines, "busy.example"));
+    }
+
+    #[test]
+    fn test_render_live_feed_fills_its_rows_only() {
+        let mut tabs = TabStates::default();
+        for timestamp in 0..50 {
+            tabs.push_event(&event(timestamp, StatAction::Allowed), "x.example");
+        }
+        // Row 3 is ROW3_MAX_HEIGHT tall: borders and header leave 9 rows.
+        let lines = draw(100, 40, &tabs);
+        let shown = lines.iter().filter(|l| l.contains("x.example")).count();
+        assert_eq!(shown, usize::from(ROW3_MAX_HEIGHT - 3));
+    }
+
+    #[test]
     fn test_render_small_terminal_hides_row3() {
-        let lines = draw(80, 12, &DashboardState::new());
+        let lines = draw(80, 12, &TabStates::default());
         assert!(lines[0].contains("Dashboard"));
         assert!(lines[1].contains("Clients"));
         assert!(!screen_contains(&lines, "Live Feed"));

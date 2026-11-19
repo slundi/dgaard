@@ -1,7 +1,8 @@
 //! Dashboard tab — at-a-glance DNS activity summary.
 //!
 //! `DashboardState` also feeds the top bar shown on every tab (`top_bar`):
-//! the key metrics (`global_stats`), the live feed and the flag distribution.
+//! the key metrics (`global_stats`) and the flag distribution.  The top bar
+//! live feed reads the Queries buffer instead, which the `/` search filters.
 //! The tab body only shows what the top bar does not:
 //!
 //!   ┌ Recent Domains ─────────────────┐┌ Block Reasons ──────────────────────┐
@@ -25,18 +26,13 @@
 use std::collections::{HashSet, VecDeque};
 use std::time::Instant;
 
-use crate::tui::tabs::queries::{flags_label, format_timestamp};
 use crate::tui::util::{DomainColor, REASON_BITS, ReasonCategory, flag_label};
 use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
-use dgaard_monitor_core::util::format_client_ip;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /// Maximum entries kept in the left-panel recent-domains list.
 pub const MAX_RECENT_DOMAINS: usize = 50;
-
-/// Maximum entries kept in the live-feed panel of the top bar.
-pub const MAX_LIVE_FEED: usize = 50;
 
 // ── GlobalStats ───────────────────────────────────────────────────────────────
 
@@ -62,22 +58,6 @@ pub struct RecentDomainEntry {
     /// Resolved domain name, or `"#<hex>"` when the hash is unknown.
     pub domain: String,
     /// Colour hint for the renderer (`DomainColor`).
-    pub color: DomainColor,
-}
-
-// ── LiveFeedEntry ─────────────────────────────────────────────────────────────
-
-/// One row in the center live-feed panel.
-pub struct LiveFeedEntry {
-    /// Formatted timestamp (`HH:MM:SS`).
-    pub timestamp: String,
-    /// Formatted client IP address.
-    pub client: String,
-    /// Resolved domain name, or `"#<hex>"` when the hash is unknown.
-    pub domain: String,
-    /// Short action label (`"Allowed"`, `"Blocked:Blacklist+AbpRule"`, …).
-    pub action: String,
-    /// Colour hint for the indicator and domain text.
     pub color: DomainColor,
 }
 
@@ -134,8 +114,6 @@ pub struct DashboardState {
     category_hits: [u64; ReasonCategory::ALL.len()],
     /// Circular buffer of the most-recent domain entries, oldest at front.
     recent_domains: VecDeque<RecentDomainEntry>,
-    /// Circular buffer of the most-recent live-feed rows, oldest at front.
-    live_feed: VecDeque<LiveFeedEntry>,
 }
 
 impl DashboardState {
@@ -148,7 +126,6 @@ impl DashboardState {
             flag_hits: [0; REASON_BITS],
             category_hits: [0; ReasonCategory::ALL.len()],
             recent_domains: VecDeque::new(),
-            live_feed: VecDeque::new(),
         }
     }
 
@@ -198,19 +175,7 @@ impl DashboardState {
             self.recent_domains.pop_front();
         }
         self.recent_domains.push_back(RecentDomainEntry {
-            domain: display_domain.clone(),
-            color,
-        });
-
-        // Live feed — cap at MAX_LIVE_FEED
-        if self.live_feed.len() >= MAX_LIVE_FEED {
-            self.live_feed.pop_front();
-        }
-        self.live_feed.push_back(LiveFeedEntry {
-            timestamp: format_timestamp(event.timestamp),
-            client: format_client_ip(&event.client_ip),
             domain: display_domain,
-            action: flags_label(&event.action),
             color,
         });
     }
@@ -257,13 +222,6 @@ impl DashboardState {
     /// The renderer reverses this for a newest-on-top display.
     pub fn recent_domains(&self) -> &VecDeque<RecentDomainEntry> {
         &self.recent_domains
-    }
-
-    /// The live-feed entries, oldest at index 0, newest at the back.
-    ///
-    /// The renderer reverses this for a newest-on-top display.
-    pub fn live_feed(&self) -> &VecDeque<LiveFeedEntry> {
-        &self.live_feed
     }
 
     /// The most-active blocking filter, or `None` when no blocking events have
@@ -528,7 +486,6 @@ mod tests {
         assert_eq!(stats.blocked_pct, 0.0);
         assert_eq!(stats.avg_qps, 0.0);
         assert!(state.recent_domains().is_empty());
-        assert!(state.live_feed().is_empty());
         assert!(state.top_filter().is_none());
     }
 
@@ -547,7 +504,6 @@ mod tests {
         assert_eq!(stats.blocked, 0);
         assert_eq!(stats.avg_qps, 0.0);
         assert!(state.recent_domains().is_empty());
-        assert!(state.live_feed().is_empty());
         assert!(state.top_filter().is_none());
     }
 
@@ -562,7 +518,7 @@ mod tests {
         assert_eq!(stats.total_queries, 1);
         assert_eq!(stats.blocked, 0);
         assert_eq!(stats.active_clients, 1);
-        assert_eq!(state.live_feed().len(), 1);
+        assert_eq!(state.recent_domains().len(), 1);
     }
 
     // ── push_event — counters ─────────────────────────────────────────────────
@@ -731,67 +687,6 @@ mod tests {
         state.push_event(&event, "");
         let domain = &state.recent_domains().back().unwrap().domain;
         assert_eq!(domain, "#deadbeefcafebabe");
-    }
-
-    // ── live_feed ─────────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_live_feed_grows_up_to_max() {
-        let mut state = DashboardState::new();
-        let ip = ipv4(10, 0, 0, 1);
-        for i in 0..MAX_LIVE_FEED {
-            state.push_event(&ev(i as u64, ip, StatAction::Allowed), "a.com");
-        }
-        assert_eq!(state.live_feed().len(), MAX_LIVE_FEED);
-    }
-
-    #[test]
-    fn test_live_feed_caps_at_max_and_evicts_oldest() {
-        let mut state = DashboardState::new();
-        let ip = ipv4(10, 0, 0, 1);
-        for i in 0..(MAX_LIVE_FEED + 3) {
-            state.push_event(&ev(i as u64, ip, StatAction::Allowed), "a.com");
-        }
-        assert_eq!(state.live_feed().len(), MAX_LIVE_FEED);
-    }
-
-    #[test]
-    fn test_live_feed_entry_fields() {
-        let mut state = DashboardState::new();
-        let ip = ipv4(192, 168, 1, 5);
-        // timestamp 3_661 = 01:01:01
-        state.push_event(
-            &ev_hash(3_661, ip, 0xabc, blocked(1)), // bit 0 = STATIC_BLACKLIST
-            "ads.evil.net",
-        );
-        let entry = state.live_feed().back().unwrap();
-        assert_eq!(entry.timestamp, "01:01:01");
-        assert_eq!(entry.client, "192.168.1.5");
-        assert_eq!(entry.domain, "ads.evil.net");
-        assert_eq!(entry.action, "Blocked:Blacklist");
-        assert_eq!(entry.color, DomainColor::Red);
-    }
-
-    #[test]
-    fn test_live_feed_newest_at_back() {
-        let mut state = DashboardState::new();
-        let ip = ipv4(10, 0, 0, 1);
-        state.push_event(&ev(100, ip, StatAction::Allowed), "first.com");
-        state.push_event(&ev(200, ip, StatAction::Allowed), "last.com");
-        assert_eq!(state.live_feed().front().unwrap().domain, "first.com");
-        assert_eq!(state.live_feed().back().unwrap().domain, "last.com");
-    }
-
-    #[test]
-    fn test_live_feed_hex_fallback_when_domain_empty() {
-        let mut state = DashboardState::new();
-        let ip = ipv4(10, 0, 0, 1);
-        let event = ev_hash(100, ip, 0x1234, StatAction::Allowed);
-        state.push_event(&event, "");
-        assert_eq!(
-            state.live_feed().back().unwrap().domain,
-            "#0000000000001234"
-        );
     }
 
     // ── top_filter ────────────────────────────────────────────────────────────

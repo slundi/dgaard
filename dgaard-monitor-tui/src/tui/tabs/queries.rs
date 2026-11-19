@@ -25,8 +25,11 @@
 //! Interactive controls (`f` / `s` / `z` are global fixed bindings — available on every
 //! tab that opts in; the outer event loop dispatches `Action::Filter` / `Action::Sort` to
 //! the active tab handler):
-//!   `f`     — filter popup: enter a client IP prefix or a flag name (e.g. `"192.168"`,
-//!             `"Blacklist"`).
+//!   `/`     — search prompt (`search`): keeps the rows of one client (`192.168.1.5`),
+//!             of a client range (`192.168.1.`) or whose domain contains a keyword
+//!             (`tracker`).  The top bar Live Feed reads this buffer through `newest`,
+//!             so it shows the same rows.  `esc` clears the search.
+//!   `f`     — filter popup: enter a flag name (e.g. `"Blacklist"`).
 //!   `s`     — sort popup: toggle between newest-first and oldest-first.
 //!   `z`     — toggle frozen display; header shows `[FROZEN]`.  New events keep buffering
 //!             in `AppState` and appear when unfrozen.
@@ -46,7 +49,7 @@
 //! The data layer (all `pub fn`s, structs, and `QueriesState`) is pure Rust with no
 //! ratatui dependency, making it fully unit-testable.
 //!
-//! TODO: filter and sort popups (`f`, `s`).
+//! TODO: flag filter and sort popups (`f`, `s`).
 
 use std::collections::VecDeque;
 
@@ -57,7 +60,7 @@ use crate::tui::util::{
     INDICATOR_SUSPICIOUS, REASON_BITS, flag_label, format_country,
 };
 use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatError, StatEvent};
-use dgaard_monitor_core::util::format_client_ip;
+use dgaard_monitor_core::util::{format_client_ip, parse_client_ip};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -262,33 +265,96 @@ impl QueryRow {
     }
 }
 
+// ── Search ────────────────────────────────────────────────────────────────────
+
+/// What the `/` prompt looks for.
+///
+/// A whole IP address keeps that one client.  Anything else keeps the rows
+/// whose domain contains the text (ASCII case-insensitive) or whose client IP
+/// starts with it, so `192.168.1.` selects a range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Search {
+    /// Text as typed, trimmed; never empty.
+    text: String,
+    /// `text` written the way the Client IP column writes it, when it is a
+    /// whole address (`::ffff:10.0.0.1` and `10.0.0.1` are the same client).
+    client: Option<String>,
+}
+
+impl Search {
+    /// The search as typed, to show it and to edit it again.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    fn matches(&self, row: &QueryRow) -> bool {
+        match &self.client {
+            Some(client) => row.client_ip == *client,
+            None => {
+                contains_ignore_ascii_case(&row.domain, &self.text)
+                    || row.client_ip.starts_with(&self.text)
+            }
+        }
+    }
+}
+
+/// `true` when `haystack` contains `needle`, ignoring ASCII case, without
+/// allocating: it runs for every buffered row on every frame.
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    let needle = needle.as_bytes();
+    if needle.is_empty() {
+        return true;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
 // ── FilterMode ────────────────────────────────────────────────────────────────
 
 /// Active filter applied to the queries list.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Queries tab not wired into the TUI yet: it only shows a placeholder"
-    )
-)]
 pub enum FilterMode {
     /// No filter — all rows are visible.
     #[default]
     None,
-    /// Show only rows whose `client_ip` starts with the given prefix.
-    ByClient(String),
+    /// Rows found by the `/` prompt.
+    Search(Search),
     /// Show only rows whose `reasons` bitmask intersects the given mask.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the `f` flag filter popup is not built yet")
+    )]
     ByFlags(StatBlockReason),
 }
 
 impl FilterMode {
+    /// The filter for the `/` prompt text; blank text filters nothing.
+    pub fn search(text: &str) -> Self {
+        let text = text.trim();
+        if text.is_empty() {
+            return FilterMode::None;
+        }
+        FilterMode::Search(Search {
+            text: text.to_string(),
+            client: parse_client_ip(text).map(|ip| format_client_ip(&ip)),
+        })
+    }
+
+    /// The text of a `/` search, `None` for any other filter.
+    pub fn search_text(&self) -> Option<&str> {
+        match self {
+            FilterMode::Search(search) => Some(search.text()),
+            FilterMode::None | FilterMode::ByFlags(_) => None,
+        }
+    }
+
     /// Returns `true` if `row` passes the current filter.
     pub fn matches(&self, row: &QueryRow) -> bool {
         match self {
             FilterMode::None => true,
-            FilterMode::ByClient(prefix) => row.client_ip.starts_with(prefix.as_str()),
+            FilterMode::Search(search) => search.matches(row),
             FilterMode::ByFlags(mask) => row.reasons.intersects(*mask),
         }
     }
@@ -385,6 +451,23 @@ impl QueriesState {
         }
     }
 
+    /// The `count` most recent rows that pass the filter, newest first,
+    /// whatever the sort order: what the top bar Live Feed shows.
+    pub fn newest(&self, count: usize) -> Vec<&QueryRow> {
+        self.rows
+            .iter()
+            .rev()
+            .filter(|row| self.filter.matches(row))
+            .take(count)
+            .collect()
+    }
+
+    /// Replace the filter and go back to the top: row indexes change meaning.
+    pub fn set_filter(&mut self, filter: FilterMode) {
+        self.filter = filter;
+        self.scroll.jump_to_top();
+    }
+
     /// Total rows currently in the buffer (unfiltered).
     pub fn row_count(&self) -> usize {
         self.rows.len()
@@ -438,6 +521,14 @@ pub fn row_style(row: &QueryRow) -> ratatui::style::Style {
     }
 }
 
+/// ` · /<text>` for a title while a `/` search is active, empty otherwise.
+pub fn search_label(filter: &FilterMode) -> String {
+    filter
+        .search_text()
+        .map(|text| format!(" · /{text}"))
+        .unwrap_or_default()
+}
+
 /// Render the Queries tab body: only the rows that fit are built.
 ///
 /// Takes the state mutably to record the table height (`set_viewport`),
@@ -457,9 +548,10 @@ pub fn render(
 
     let filtered = state.filtered_count();
     let title = format!(
-        "Queries {filtered}/{} · {}{}",
+        "Queries {filtered}/{} · {}{}{}",
         state.row_count(),
         state.sort.label(),
+        search_label(&state.filter),
         if frozen { " [FROZEN]" } else { "" }
     );
     let block = Block::bordered().title(title);
@@ -808,13 +900,13 @@ mod tests {
     #[test]
     fn test_filter_by_client_prefix_match() {
         let row = blocked_row(ipv4(192, 168, 1, 5), StatBlockReason::empty());
-        assert!(FilterMode::ByClient("192.168".to_string()).matches(&row));
+        assert!(FilterMode::search("192.168").matches(&row));
     }
 
     #[test]
     fn test_filter_by_client_prefix_no_match() {
         let row = blocked_row(ipv4(10, 0, 0, 1), StatBlockReason::empty());
-        assert!(!FilterMode::ByClient("192.168".to_string()).matches(&row));
+        assert!(!FilterMode::search("192.168").matches(&row));
     }
 
     #[test]
@@ -836,6 +928,91 @@ mod tests {
     fn test_filter_by_flags_no_match_on_allowed_row() {
         let row = QueryRow::from_event(&ev(0, ipv4(1, 1, 1, 1), StatAction::Allowed), "ok.com");
         assert!(!FilterMode::ByFlags(StatBlockReason::STATIC_BLACKLIST).matches(&row));
+    }
+
+    // --- FilterMode::search ---
+
+    fn row_at(ip: [u8; 16], domain: &str) -> QueryRow {
+        QueryRow::from_event(&ev(0, ip, StatAction::Allowed), domain)
+    }
+
+    #[test]
+    fn test_search_blank_text_is_no_filter() {
+        assert_eq!(FilterMode::search(""), FilterMode::None);
+        assert_eq!(FilterMode::search("   "), FilterMode::None);
+        assert_eq!(FilterMode::None.search_text(), None);
+    }
+
+    #[test]
+    fn test_search_keeps_trimmed_text() {
+        let filter = FilterMode::search("  tracker ");
+        assert_eq!(filter.search_text(), Some("tracker"));
+        assert_eq!(
+            FilterMode::ByFlags(StatBlockReason::NRD_LIST).search_text(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_search_domain_keyword_ignores_case() {
+        let filter = FilterMode::search("TrAcKeR");
+        assert!(filter.matches(&row_at(ipv4(1, 2, 3, 4), "ads.tracker.net")));
+        assert!(filter.matches(&row_at(ipv4(1, 2, 3, 4), "TRACKER.example")));
+        assert!(!filter.matches(&row_at(ipv4(1, 2, 3, 4), "example.com")));
+    }
+
+    #[test]
+    fn test_search_whole_ip_keeps_only_that_client() {
+        let filter = FilterMode::search("192.168.1.1");
+        assert!(filter.matches(&row_at(ipv4(192, 168, 1, 1), "a.com")));
+        // A prefix match would let .10 – .19 and .100 – .199 through.
+        assert!(!filter.matches(&row_at(ipv4(192, 168, 1, 10), "a.com")));
+        assert!(!filter.matches(&row_at(ipv4(192, 168, 1, 123), "a.com")));
+    }
+
+    #[test]
+    fn test_search_whole_ip_does_not_match_domains() {
+        let filter = FilterMode::search("10.0.0.1");
+        assert!(!filter.matches(&row_at(ipv4(1, 2, 3, 4), "10.0.0.1.nip.io")));
+    }
+
+    #[test]
+    fn test_search_ip_written_differently_is_the_same_client() {
+        let ipv6: [u8; 16] = "2001:db8::1"
+            .parse::<std::net::Ipv6Addr>()
+            .unwrap()
+            .octets();
+        let row = row_at(ipv6, "a.com");
+        assert!(FilterMode::search("2001:DB8:0::1").matches(&row));
+        let mapped = FilterMode::search("::ffff:10.0.0.1");
+        assert!(mapped.matches(&row_at(ipv4(10, 0, 0, 1), "a.com")));
+    }
+
+    #[test]
+    fn test_search_partial_ip_selects_a_range() {
+        let filter = FilterMode::search("192.168.1.");
+        assert!(filter.matches(&row_at(ipv4(192, 168, 1, 7), "a.com")));
+        assert!(filter.matches(&row_at(ipv4(192, 168, 1, 200), "a.com")));
+        assert!(!filter.matches(&row_at(ipv4(192, 168, 10, 1), "a.com")));
+    }
+
+    #[test]
+    fn test_search_finds_unresolved_hashes() {
+        let row = QueryRow::from_event(&ev(0, ipv4(1, 2, 3, 4), StatAction::Allowed), "");
+        assert!(FilterMode::search("#000000000000dead").matches(&row));
+    }
+
+    #[test]
+    fn test_contains_ignore_ascii_case_edges() {
+        assert!(contains_ignore_ascii_case("abc", ""));
+        assert!(!contains_ignore_ascii_case("ab", "abc"));
+        assert!(contains_ignore_ascii_case("xn--bcher-kva.example", "BCHER"));
+    }
+
+    #[test]
+    fn test_search_label() {
+        assert_eq!(search_label(&FilterMode::None), "");
+        assert_eq!(search_label(&FilterMode::search("ads")), " · /ads");
     }
 
     // --- QueriesState ---
@@ -951,8 +1128,52 @@ mod tests {
         s.push_event(&ev(0, ipv4(192, 168, 1, 1), StatAction::Allowed), "a.com");
         s.push_event(&ev(1, ipv4(10, 0, 0, 1), StatAction::Allowed), "b.com");
         s.push_event(&ev(2, ipv4(192, 168, 1, 2), StatAction::Allowed), "c.com");
-        s.filter = FilterMode::ByClient("192.168".to_string());
+        s.filter = FilterMode::search("192.168");
         assert_eq!(s.visible_rows(10, 0).len(), 2);
+    }
+
+    // --- newest / set_filter ---
+
+    #[test]
+    fn test_newest_ignores_sort_and_applies_filter() {
+        let mut s = alternating(10);
+        s.sort = SortOrder::OldestFirst;
+        assert_eq!(timestamps(&s.newest(2)), ["00:00:09", "00:00:08"]);
+        s.filter = FilterMode::search("10.0.0.1");
+        assert_eq!(
+            timestamps(&s.newest(3)),
+            ["00:00:08", "00:00:06", "00:00:04"]
+        );
+        assert!(s.newest(0).is_empty());
+    }
+
+    #[test]
+    fn test_newest_looks_past_recent_non_matching_rows() {
+        let mut s = QueriesState::default();
+        s.push_event(&ev(0, ipv4(10, 0, 0, 9), StatAction::Allowed), "quiet.lan");
+        for ts in 1..500 {
+            s.push_event(&ev(ts, ipv4(10, 0, 0, 1), StatAction::Allowed), "busy.com");
+        }
+        s.set_filter(FilterMode::search("quiet"));
+        assert_eq!(s.newest(10).len(), 1);
+    }
+
+    #[test]
+    fn test_set_filter_goes_back_to_top() {
+        let mut s = alternating(30);
+        s.set_viewport(5);
+        s.scroll_by(8);
+        s.set_filter(FilterMode::search("10.0.0.2"));
+        assert_eq!(s.scroll(), 0);
+        assert_eq!(s.filtered_count(), 15);
+    }
+
+    #[test]
+    fn test_clear_keeps_the_filter() {
+        let mut s = alternating(4);
+        s.set_filter(FilterMode::search("10.0.0.1"));
+        s.clear();
+        assert_eq!(s.filter.search_text(), Some("10.0.0.1"));
     }
 
     #[test]
@@ -1016,7 +1237,7 @@ mod tests {
     #[test]
     fn test_visible_rows_filtered_skips_in_filtered_space() {
         let mut s = alternating(10); // .1 at even ts, .2 at odd ts
-        s.filter = FilterMode::ByClient("10.0.0.2".to_string());
+        s.filter = FilterMode::search("10.0.0.2");
         assert_eq!(
             timestamps(&s.visible_rows(2, 1)),
             ["00:00:07", "00:00:05"],
@@ -1030,7 +1251,7 @@ mod tests {
     fn test_filtered_count() {
         let mut s = alternating(10);
         assert_eq!(s.filtered_count(), 10);
-        s.filter = FilterMode::ByClient("10.0.0.1".to_string());
+        s.filter = FilterMode::search("10.0.0.1");
         assert_eq!(s.filtered_count(), 5);
         assert_eq!(s.row_count(), 10);
     }
@@ -1081,7 +1302,7 @@ mod tests {
         let mut s = alternating(30);
         s.set_viewport(10);
         s.scroll_to_bottom();
-        s.filter = FilterMode::ByClient("10.0.0.1".to_string()); // 15 rows
+        s.filter = FilterMode::search("10.0.0.1"); // 15 rows
         s.set_viewport(10);
         assert_eq!(s.scroll(), 5);
     }
@@ -1126,7 +1347,7 @@ mod tests {
     #[test]
     fn test_newest_first_filtered_out_row_does_not_shift() {
         let mut s = alternating(30);
-        s.filter = FilterMode::ByClient("10.0.0.1".to_string());
+        s.filter = FilterMode::search("10.0.0.1");
         s.set_viewport(5);
         s.scroll_by(3);
         s.push_event(
@@ -1209,13 +1430,17 @@ mod tests {
     #[test]
     fn test_render_title_counts_sort_and_frozen() {
         let mut s = alternating(10);
-        s.filter = FilterMode::ByClient("10.0.0.1".to_string());
+        s.filter = FilterMode::search("10.0.0.1");
         let lines = draw(&mut s, true, 100, 12);
         assert!(lines[0].contains("Queries 5/10"), "{}", lines[0]);
         assert!(lines[0].contains("Newest first"));
         assert!(lines[0].contains("[FROZEN]"));
+        assert!(lines[0].contains("/10.0.0.1"), "search shown");
         let lines = draw(&mut s, false, 100, 12);
         assert!(!lines[0].contains("[FROZEN]"));
+        s.filter = FilterMode::None;
+        let lines = draw(&mut s, false, 100, 12);
+        assert!(!lines[0].contains("· /"), "{}", lines[0]);
     }
 
     #[test]

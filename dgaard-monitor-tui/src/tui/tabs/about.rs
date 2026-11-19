@@ -134,7 +134,7 @@ pub fn key_bindings(keymap: &KeyMap) -> Vec<KeyBinding> {
             key: "c".to_string(),
         },
         KeyBinding {
-            action: "Search",
+            action: "Search client/domain",
             key: "/".to_string(),
         },
         KeyBinding {
@@ -143,7 +143,7 @@ pub fn key_bindings(keymap: &KeyMap) -> Vec<KeyBinding> {
         },
         // Queries-tab specific (fixed)
         KeyBinding {
-            action: "Filter flags/client",
+            action: "Filter flags",
             key: "f".to_string(),
         },
         KeyBinding {
@@ -290,7 +290,10 @@ mod tests {
     fn test_key_bindings_fixed_view_controls() {
         let bindings = key_bindings(&default_keymap());
         let freeze = bindings.iter().find(|b| b.action == "Freeze").unwrap();
-        let search = bindings.iter().find(|b| b.action == "Search").unwrap();
+        let search = bindings
+            .iter()
+            .find(|b| b.action == "Search client/domain")
+            .unwrap();
         let clear = bindings
             .iter()
             .find(|b| b.action == "Clear Filter")
@@ -321,6 +324,7 @@ mod tests {
             ("Freeze", Action::Freeze),
             ("Clear stats", Action::ClearStats),
             ("Clear Filter", Action::ClearFilter),
+            ("Search client/domain", Action::Search),
             ("Page Up", Action::PageUp),
             ("Page Down", Action::PageDown),
             ("First row", Action::ScrollTop),
@@ -340,7 +344,7 @@ mod tests {
         let bindings = key_bindings(&default_keymap());
         let filter = bindings
             .iter()
-            .find(|b| b.action == "Filter flags/client")
+            .find(|b| b.action == "Filter flags")
             .unwrap();
         let sort = bindings.iter().find(|b| b.action == "Cycle sort").unwrap();
         assert_eq!(filter.key, "f");

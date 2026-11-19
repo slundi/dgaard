@@ -5,11 +5,13 @@
 //! whether to keep going.  Kept out of the loop so it is testable without a
 //! terminal.
 
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::tui::app::TuiApp;
-use crate::tui::keys::Action;
+use crate::tui::keys::{Action, is_ctrl_c};
 use crate::tui::scroll::Scrollable;
+use crate::tui::search::SearchPrompt;
+use crate::tui::tabs::queries::FilterMode;
 use crate::tui::tabs::{Tab, TabStates};
 
 /// What the main loop does after a key press.
@@ -24,14 +26,26 @@ pub enum Flow {
 /// Unbound keys and key releases are ignored.  Scrolling goes to the active
 /// tab's own state when it has one (Queries, Talkers, Timelines),
 /// `TuiApp::scroll` otherwise.  `s` cycles the sort order on Talkers and
-/// Timelines; `t` cycles the Timelines bucket size.
+/// Timelines; `t` cycles the Timelines bucket size.  While the search prompt
+/// is open, keys edit it instead (`prompt_key`).
 pub fn handle_key(key: &KeyEvent, app: &mut TuiApp, tabs: &mut TabStates) -> Flow {
+    if app.prompt.is_some() {
+        return prompt_key(key, app, tabs);
+    }
     let Some(action) = app.keymap.resolve_event(key) else {
         return Flow::Continue;
     };
     match action {
         Action::Quit => return Flow::Quit,
         Action::ClearStats => tabs.clear(),
+        Action::Search => {
+            app.prompt = Some(SearchPrompt::open(&tabs.queries.filter));
+            return Flow::Continue;
+        }
+        Action::ClearFilter => {
+            tabs.queries.set_filter(FilterMode::None);
+            return Flow::Continue;
+        }
         Action::Sort if app.active_tab == Tab::Talkers => {
             tabs.talkers.sort = tabs.talkers.sort.next();
             return Flow::Continue;
@@ -52,6 +66,50 @@ pub fn handle_key(key: &KeyEvent, app: &mut TuiApp, tabs: &mut TabStates) -> Flo
         return Flow::Continue;
     }
     app.apply(action);
+    Flow::Continue
+}
+
+/// A key press while the search prompt is open.  Every edit re-applies the
+/// filter, so the views narrow down as the user types.
+///
+/// `enter` keeps the filter, `esc` restores the one from before the prompt,
+/// `ctrl+u` erases the line, `ctrl+c` still quits.  Other keys are ignored.
+fn prompt_key(key: &KeyEvent, app: &mut TuiApp, tabs: &mut TabStates) -> Flow {
+    if key.kind == KeyEventKind::Release {
+        return Flow::Continue;
+    }
+    if is_ctrl_c(key) {
+        return Flow::Quit;
+    }
+    let Some(prompt) = app.prompt.as_mut() else {
+        return Flow::Continue;
+    };
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let edited = match key.code {
+        KeyCode::Enter => {
+            app.prompt = None;
+            return Flow::Continue;
+        }
+        KeyCode::Esc => {
+            let previous = std::mem::take(&mut prompt.previous);
+            tabs.queries.set_filter(previous);
+            app.prompt = None;
+            return Flow::Continue;
+        }
+        KeyCode::Backspace => prompt.text.pop().is_some(),
+        KeyCode::Char('u') if ctrl => {
+            let had_text = !prompt.text.is_empty();
+            prompt.text.clear();
+            had_text
+        }
+        KeyCode::Char(character) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
+            prompt.push(character)
+        }
+        _ => false,
+    };
+    if edited {
+        tabs.queries.set_filter(prompt.filter());
+    }
     Flow::Continue
 }
 
@@ -145,7 +203,6 @@ mod tests {
         let key = press(KeyCode::Char('c'), KeyModifiers::NONE);
         assert_eq!(handle_key(&key, &mut app, &mut tabs), Flow::Continue);
         assert_eq!(tabs.dashboard.global_stats().total_queries, 0);
-        assert!(tabs.dashboard.live_feed().is_empty());
         assert_eq!(tabs.queries.row_count(), 0);
         assert_eq!(app.scroll, 0);
     }
@@ -339,6 +396,161 @@ mod tests {
         handle_key(&key(KeyCode::End), &mut app, &mut tabs);
         assert_eq!(tabs.timelines.scroll(), 20);
         assert_eq!(app.scroll, 0);
+    }
+
+    // --- search prompt ---
+
+    /// Queries tab with 10.0.0.2 asking `a.com` and 10.0.0.1 `tracker.net`.
+    fn search_setup() -> (TuiApp, TabStates) {
+        let mut app = TuiApp::new(&TuiConfig::default());
+        app.active_tab = Tab::Queries;
+        let mut tabs = TabStates::default();
+        for index in 1..=4u8 {
+            let mut event = allowed(u64::from(index));
+            event.client_ip = std::net::Ipv4Addr::new(10, 0, 0, 1 + (index + 1) % 2)
+                .to_ipv6_mapped()
+                .octets();
+            let domain = if index % 2 == 0 {
+                "a.com"
+            } else {
+                "tracker.net"
+            };
+            tabs.push_event(&event, domain);
+        }
+        (app, tabs)
+    }
+
+    fn type_text(text: &str, app: &mut TuiApp, tabs: &mut TabStates) {
+        for character in text.chars() {
+            handle_key(&key(KeyCode::Char(character)), app, tabs);
+        }
+    }
+
+    #[test]
+    fn test_slash_opens_the_prompt_on_any_tab() {
+        for tab in Tab::ALL {
+            let (mut app, mut tabs) = search_setup();
+            app.active_tab = tab;
+            handle_key(&key(KeyCode::Char('/')), &mut app, &mut tabs);
+            assert!(app.prompt.is_some(), "{tab:?}");
+        }
+    }
+
+    #[test]
+    fn test_typing_filters_live() {
+        let (mut app, mut tabs) = search_setup();
+        handle_key(&key(KeyCode::Char('/')), &mut app, &mut tabs);
+        type_text("TRACK", &mut app, &mut tabs);
+        assert_eq!(tabs.queries.filtered_count(), 2);
+        assert_eq!(tabs.queries.filter.search_text(), Some("TRACK"));
+    }
+
+    #[test]
+    fn test_prompt_keys_do_not_trigger_bindings() {
+        let (mut app, mut tabs) = search_setup();
+        handle_key(&key(KeyCode::Char('/')), &mut app, &mut tabs);
+        // q quits, c clears, z freezes, 3 changes tab — not while typing.
+        type_text("qcz3", &mut app, &mut tabs);
+        assert_eq!(app.prompt.as_ref().unwrap().text, "qcz3");
+        assert_eq!(tabs.queries.row_count(), 4);
+        assert!(!app.frozen);
+        assert_eq!(app.active_tab, Tab::Queries);
+    }
+
+    #[test]
+    fn test_shifted_characters_are_typed() {
+        let (mut app, mut tabs) = search_setup();
+        handle_key(&key(KeyCode::Char('/')), &mut app, &mut tabs);
+        let shifted = press(KeyCode::Char('A'), KeyModifiers::SHIFT);
+        handle_key(&shifted, &mut app, &mut tabs);
+        assert_eq!(app.prompt.as_ref().unwrap().text, "A");
+    }
+
+    #[test]
+    fn test_enter_keeps_the_filter() {
+        let (mut app, mut tabs) = search_setup();
+        handle_key(&key(KeyCode::Char('/')), &mut app, &mut tabs);
+        type_text("10.0.0.2", &mut app, &mut tabs);
+        handle_key(&key(KeyCode::Enter), &mut app, &mut tabs);
+        assert!(app.prompt.is_none());
+        assert_eq!(tabs.queries.filtered_count(), 2);
+        // Keys are bindings again.
+        handle_key(&key(KeyCode::Char('z')), &mut app, &mut tabs);
+        assert!(app.frozen);
+    }
+
+    #[test]
+    fn test_esc_in_prompt_restores_the_previous_filter() {
+        let (mut app, mut tabs) = search_setup();
+        tabs.queries.set_filter(FilterMode::search("a.com"));
+        handle_key(&key(KeyCode::Char('/')), &mut app, &mut tabs);
+        let text = &app.prompt.as_ref().unwrap().text;
+        assert_eq!(text, "a.com", "edits the current search");
+        type_text("x", &mut app, &mut tabs);
+        assert_eq!(tabs.queries.filtered_count(), 0);
+        handle_key(&key(KeyCode::Esc), &mut app, &mut tabs);
+        assert!(app.prompt.is_none());
+        assert_eq!(tabs.queries.filter, FilterMode::search("a.com"));
+    }
+
+    #[test]
+    fn test_esc_outside_prompt_clears_the_filter() {
+        let (mut app, mut tabs) = search_setup();
+        tabs.queries.set_filter(FilterMode::search("a.com"));
+        handle_key(&key(KeyCode::Esc), &mut app, &mut tabs);
+        assert_eq!(tabs.queries.filter, FilterMode::None);
+        assert_eq!(tabs.queries.filtered_count(), 4);
+    }
+
+    #[test]
+    fn test_backspace_and_ctrl_u_edit_the_text() {
+        let (mut app, mut tabs) = search_setup();
+        handle_key(&key(KeyCode::Char('/')), &mut app, &mut tabs);
+        type_text("a.comx", &mut app, &mut tabs);
+        assert_eq!(tabs.queries.filtered_count(), 0);
+        handle_key(&key(KeyCode::Backspace), &mut app, &mut tabs);
+        assert_eq!(tabs.queries.filtered_count(), 2);
+        let ctrl_u = press(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        handle_key(&ctrl_u, &mut app, &mut tabs);
+        assert_eq!(app.prompt.as_ref().unwrap().text, "");
+        assert_eq!(tabs.queries.filter, FilterMode::None);
+        // Nothing left to erase: harmless.
+        handle_key(&key(KeyCode::Backspace), &mut app, &mut tabs);
+        handle_key(&ctrl_u, &mut app, &mut tabs);
+        assert!(app.prompt.is_some());
+    }
+
+    #[test]
+    fn test_prompt_ignores_other_keys_and_releases() {
+        let (mut app, mut tabs) = search_setup();
+        handle_key(&key(KeyCode::Char('/')), &mut app, &mut tabs);
+        handle_key(&key(KeyCode::Down), &mut app, &mut tabs);
+        let alt_x = press(KeyCode::Char('x'), KeyModifiers::ALT);
+        handle_key(&alt_x, &mut app, &mut tabs);
+        let release = KeyEvent::new_with_kind(
+            KeyCode::Char('y'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        handle_key(&release, &mut app, &mut tabs);
+        assert_eq!(app.prompt.as_ref().unwrap().text, "");
+        assert_eq!(tabs.queries.scroll(), 0);
+    }
+
+    #[test]
+    fn test_ctrl_c_quits_from_the_prompt() {
+        let (mut app, mut tabs) = search_setup();
+        handle_key(&key(KeyCode::Char('/')), &mut app, &mut tabs);
+        let ctrl_c = press(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(handle_key(&ctrl_c, &mut app, &mut tabs), Flow::Quit);
+    }
+
+    #[test]
+    fn test_search_survives_clear_stats() {
+        let (mut app, mut tabs) = search_setup();
+        tabs.queries.set_filter(FilterMode::search("a.com"));
+        handle_key(&key(KeyCode::Char('c')), &mut app, &mut tabs);
+        assert_eq!(tabs.queries.filter, FilterMode::search("a.com"));
     }
 
     // --- country display ---

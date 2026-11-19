@@ -6,7 +6,7 @@
 //! module.
 //!
 //! Additional bindings that are not yet user-configurable (tab switching,
-//! freeze, clear stats, filter popup) are hard-coded here alongside the
+//! freeze, clear stats, search) are hard-coded here alongside the
 //! configurable ones.  `Ctrl+c` always quits: raw mode turns off `SIGINT`, so
 //! it must stay a way out whatever the config says.
 
@@ -43,13 +43,13 @@ pub enum Action {
     Filter,
     /// Open the sort popup in the Queries tab (`s`).
     Sort,
-    /// Enter domain search mode (`/`).
+    /// Open the search prompt: filter by client IP or domain keyword (`/`).
     Search,
     /// Cycle the bucket size in the Timelines tab (`t`).
     Zoom,
     /// Toggle country codes and flag emoji (`e`).
     ToggleCountry,
-    /// Clear the active filter and return to the unfiltered view.
+    /// Clear the active filter and return to the unfiltered view (`esc`).
     ClearFilter,
     /// Reset the statistics gathered since the TUI started (`c`).
     ClearStats,
@@ -140,7 +140,8 @@ impl KeyMap {
     }
 }
 
-fn is_ctrl_c(key: &KeyEvent) -> bool {
+/// `Ctrl+c`, which always quits, even while the search prompt is open.
+pub fn is_ctrl_c(key: &KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
 }
@@ -230,6 +231,13 @@ mod tests {
     fn test_fixed_toggle_country() {
         let km = default_keymap();
         assert_eq!(km.resolve("e"), Some(Action::ToggleCountry));
+    }
+
+    #[test]
+    fn test_fixed_search_and_clear_filter() {
+        let km = default_keymap();
+        assert_eq!(km.resolve("/"), Some(Action::Search));
+        assert_eq!(km.resolve("esc"), Some(Action::ClearFilter));
     }
 
     #[test]

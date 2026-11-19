@@ -53,7 +53,7 @@
 
 - [x] **Client Tracking**: Identify "Top Talkers" (most active client IPs): the `Talkers` tab
 - [x] **Reason Breakdown**: If StatAction includes specific block reasons (Malware, Ad, Tracking), display a pie chart of block categories: the `Block Reasons` panel of the `Dashboard` tab. dgaard sends reason bits, not list categories (malware/ads/tracking), so the pie groups blocked queries by detection stage: lists, policy, answer inspection, custom flags, heuristics. A query counts once, in its strongest category.
-- [ ] **Search/Filter**: Allow filtering the live feed by specific client IP or domain keyword.
+- [x] **Search/Filter**: Allow filtering the live feed by specific client IP or domain keyword: `/` opens a prompt and filters as you type, in the top bar `Live Feed` and the `Queries` tab. A whole IP keeps that one client, a partial one (`192.168.1.`) a range, anything else is a case-insensitive domain keyword. `enter` keeps the filter, `esc` cancels it (in the prompt) or clears it. The live feed now reads the 1 000-row Queries buffer, so a quiet client still shows up.
 
 ## Phase 4: Data & Persistence
 

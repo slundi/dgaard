@@ -5,6 +5,7 @@ mod input;
 mod keys;
 mod pie;
 mod scroll;
+mod search;
 mod tabs;
 mod top_bar;
 mod util;
@@ -124,8 +125,22 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) {
 }
 
 fn render_frame(frame: &mut ratatui::Frame, app: &TuiApp, tab_states: &mut TabStates) {
-    let areas = top_bar::layout(frame.area());
-    top_bar::render(frame, &areas, app, &tab_states.dashboard);
+    use ratatui::layout::{Constraint, Layout};
+
+    // The open search prompt takes the bottom row.
+    let prompt_height = if app.prompt.is_some() {
+        search::PROMPT_HEIGHT
+    } else {
+        0
+    };
+    let [screen, prompt_area] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(prompt_height)])
+            .areas(frame.area());
+    let areas = top_bar::layout(screen);
+    top_bar::render(frame, &areas, app, tab_states);
+    if let Some(prompt) = &app.prompt {
+        search::render_prompt(frame, prompt_area, prompt);
+    }
 
     let body_area = areas.body;
     match app.active_tab {
@@ -146,5 +161,86 @@ fn render_frame(frame: &mut ratatui::Frame, app: &TuiApp, tab_states: &mut TabSt
             tabs::timelines::render(&mut tab_states.timelines, app.frozen, body_area, frame)
         }
         Tab::About => tabs::about::render(&app.keymap, body_area, frame),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dgaard_monitor_core::protocol::{StatAction, StatBlockReason, StatEvent};
+    use ratatui::backend::TestBackend;
+    use scroll::Scrollable;
+    use search::SearchPrompt;
+    use tabs::queries::FilterMode;
+
+    fn event(timestamp: u64, last_octet: u8, action: StatAction) -> StatEvent {
+        StatEvent {
+            country: None,
+            timestamp,
+            domain_hash: 0xbeef,
+            client_ip: std::net::Ipv4Addr::new(10, 0, 0, last_octet)
+                .to_ipv6_mapped()
+                .octets(),
+            action,
+        }
+    }
+
+    /// Two clients: 10.0.0.1 asks `ads.tracker.net`, 10.0.0.2 `example.com`.
+    fn sample_tabs() -> TabStates {
+        let mut tabs = TabStates::default();
+        for timestamp in 0..6 {
+            let blocked = StatAction::Blocked(StatBlockReason::ABP_RULE);
+            tabs.push_event(&event(timestamp * 2, 1, blocked), "ads.tracker.net");
+            let allowed = event(timestamp * 2 + 1, 2, StatAction::Allowed);
+            tabs.push_event(&allowed, "example.com");
+        }
+        tabs
+    }
+
+    fn draw(app: &TuiApp, tabs: &mut TabStates, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render_frame(frame, app, tabs))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|row| {
+                (0..width)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_render_frame_prompt_takes_the_bottom_row() {
+        let mut app = TuiApp::new(&TuiConfig::default());
+        app.active_tab = Tab::Queries;
+        let mut tabs = sample_tabs();
+        let closed = draw(&app, &mut tabs, 110, 30);
+        assert!(!closed[29].starts_with('/'));
+        let closed_page = tabs.queries.page_size();
+
+        app.prompt = Some(SearchPrompt::open(&FilterMode::None));
+        app.prompt.as_mut().unwrap().text = "tracker".to_string();
+        tabs.queries.set_filter(FilterMode::search("tracker"));
+        let open = draw(&app, &mut tabs, 110, 30);
+        assert!(open[29].starts_with("/tracker"), "{}", open[29]);
+        assert_eq!(tabs.queries.page_size(), closed_page - 1, "body gave a row");
+        assert!(
+            open.iter()
+                .any(|line| line.contains("Live Feed · /tracker"))
+        );
+        assert!(open.iter().any(|line| line.contains("Queries 6/12")));
+        assert!(!open.iter().any(|line| line.contains("example.com")));
+    }
+
+    #[test]
+    fn test_render_frame_without_prompt_has_no_cursor_line() {
+        let app = TuiApp::new(&TuiConfig::default());
+        let mut tabs = sample_tabs();
+        let lines = draw(&app, &mut tabs, 110, 30);
+        assert!(lines.iter().any(|line| line.contains("Recent Domains")));
+        assert!(lines[29].starts_with('└'), "{}", lines[29]);
     }
 }
