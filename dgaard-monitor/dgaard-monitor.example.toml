@@ -90,7 +90,15 @@ key_scroll_down = "down"
 # Append formatted lines to this file.
 # file = "/var/log/dgaard/dns.log"
 
-# Template for each forwarded line.
+# Line format for the file and the HTTP POST body:
+#   "template"      — the `template` below (default)
+#   "json"          — one JSON object per event
+#   "syslog"        — RFC 5424
+#   "cef"           — ArcSight Common Event Format
+#   "elasticsearch" — Bulk API NDJSON (POSTs are batched)
+format = "template"
+
+# Template for each forwarded line when format = "template".
 # Available placeholders: {timestamp}, {client_ip}, {action}, {domain}
 template = "{timestamp} {client_ip} {action} {domain}"
 

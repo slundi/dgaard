@@ -1,4 +1,4 @@
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct TuiConfig {
     /// Terminal refresh interval in milliseconds.
     pub tick_ms: u64,

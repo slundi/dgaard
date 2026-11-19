@@ -29,13 +29,13 @@ impl ForwardFormat {
 
 /// Controls where enriched events are forwarded.
 ///
-/// When `file` is set events are appended to that path; otherwise they go to
-/// stdout (if any forwarding option is active).  `template` is a
+/// When `file` is set events are appended to that path; forwarding never
+/// writes to stdout, and runs only with a `file` or a `forward_url`. `template` is a
 /// [strftime-like] format string where the following placeholders are
 /// replaced: `{timestamp}`, `{client_ip}`, `{action}`, `{domain}`.
 /// `forward_url` sends each matching event as an HTTP POST.
 /// `filter` lists the action variants to forward; an empty list means *all*.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct ForwardingConfig {
     /// Append formatted lines to this file. Forwarding never writes to
     /// stdout: it belongs to the TUI or to the headless JSON stream.

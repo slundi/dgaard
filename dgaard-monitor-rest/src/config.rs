@@ -5,7 +5,7 @@
 
 /// Shared connectivity settings inherited by every REST module
 /// (`[api]`, `[websocket]`, `[mcp]`, `[web]`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ServerConfig {
     pub listen: String,
     /// Static bearer token required on every authenticated request.
@@ -30,7 +30,7 @@ impl Default for ServerConfig {
 }
 
 /// `[api]` — REST endpoints.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ApiConfig {
     pub enabled: bool,
     pub port: u16,
@@ -48,7 +48,7 @@ impl Default for ApiConfig {
 }
 
 /// `[websocket]` — live event stream.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WebSocketConfig {
     pub enabled: bool,
     pub port: u16,
@@ -66,7 +66,7 @@ impl Default for WebSocketConfig {
 }
 
 /// `[mcp]` — Model Context Protocol endpoint.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct McpConfig {
     pub enabled: bool,
     pub port: u16,
@@ -84,7 +84,7 @@ impl Default for McpConfig {
 }
 
 /// `[web]` — embedded SPA + supporting endpoints. Mounted at `/`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WebConfig {
     pub enabled: bool,
     pub port: u16,

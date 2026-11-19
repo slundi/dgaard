@@ -11,7 +11,7 @@ pub use dgaard_monitor_core::config::{ForwardFormat, ForwardingConfig};
 #[cfg(feature = "tui")]
 pub use dgaard_monitor_tui::config::TuiConfig;
 #[cfg(not(feature = "tui"))]
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct TuiConfig;
 
 #[cfg(feature = "rest")]
@@ -19,25 +19,25 @@ pub use dgaard_monitor_rest::config::{
     ApiConfig, McpConfig, ServerConfig, WebConfig, WebSocketConfig,
 };
 #[cfg(not(feature = "rest"))]
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct ServerConfig;
 #[cfg(not(feature = "rest"))]
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct ApiConfig;
 #[cfg(not(feature = "rest"))]
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct WebSocketConfig;
 #[cfg(not(feature = "rest"))]
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct McpConfig;
 #[cfg(not(feature = "rest"))]
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct WebConfig;
 
 #[cfg(feature = "nats")]
 pub use dgaard_monitor_nats::config::NatsConfig;
 #[cfg(not(feature = "nats"))]
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct NatsConfig;
 
 /// Valid TCP ports for the REST modules (0 would bind a random port).
@@ -168,7 +168,7 @@ pub struct Config {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct InputConfig {
     pub socket: String,
     pub index: String,
@@ -208,7 +208,7 @@ impl Default for InputConfig {
 }
 
 /// `[stats]` — in-memory statistics.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct StatsConfig {
     /// Length of the sliding window of recent events served by the REST
     /// services (API, MCP, web UI).
@@ -226,7 +226,7 @@ impl Default for StatsConfig {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct PersistenceConfig {
     /// `false` keeps no SQLite history at all (REST history routes then
     /// answer 503), e.g. for a non-root user or a diskless router.
@@ -377,13 +377,74 @@ fn get_table<'a>(
     }
 }
 
+/// Keys each section accepts. The parser rejects any other key, and a test
+/// checks that the example file documents every one of them.
+const SECTION_KEYS: &[(&str, &[&str])] = &[
+    (
+        "input",
+        &[
+            "socket",
+            "index",
+            "engine_config_path",
+            "event_buffer",
+            "peer_uid",
+        ],
+    ),
+    (
+        "persistence",
+        &[
+            "enabled",
+            "db",
+            "events_retention_hours",
+            "aggregates_retention_days",
+        ],
+    ),
+    ("stats", &["window_secs", "max_window_events"]),
+    (
+        "tui",
+        &[
+            "tick_ms",
+            "key_quit",
+            "key_pause",
+            "key_scroll_up",
+            "key_scroll_down",
+        ],
+    ),
+    (
+        "forwarding",
+        &["file", "template", "forward_url", "filter", "format"],
+    ),
+    ("server", &["listen", "token"]),
+    ("api", &["enabled", "port", "root_path"]),
+    ("websocket", &["enabled", "port", "root_path"]),
+    ("mcp", &["enabled", "port", "root_path"]),
+    (
+        "web",
+        &[
+            "enabled",
+            "port",
+            "history_size",
+            "beaconing_min_observations",
+            "beaconing_cov_threshold",
+        ],
+    ),
+    (
+        "nats",
+        &["enabled", "url", "publish_subject", "subscribe_subject"],
+    ),
+];
+
+fn section_keys(section: &str) -> &'static [&'static str] {
+    SECTION_KEYS
+        .iter()
+        .find(|(name, _)| *name == section)
+        .map_or(&[], |(_, keys)| keys)
+}
+
 /// Reject keys `section` does not define: a typo would otherwise be ignored
 /// and the default used without notice.
-fn check_keys(
-    table: &toml_span::value::Table<'_>,
-    section: &str,
-    known: &[&str],
-) -> Result<(), ConfigError> {
+fn check_keys(table: &toml_span::value::Table<'_>, section: &str) -> Result<(), ConfigError> {
+    let known = section_keys(section);
     match table.keys().find(|key| !known.contains(&key.name.as_ref())) {
         Some(key) => Err(ConfigError::UnknownKey {
             key: format!("{section}.{}", key.name),
@@ -399,17 +460,7 @@ fn check_keys(
 // ---------------------------------------------------------------------------
 
 fn parse_input(table: &toml_span::value::Table<'_>) -> Result<InputConfig, ConfigError> {
-    check_keys(
-        table,
-        "input",
-        &[
-            "socket",
-            "index",
-            "engine_config_path",
-            "event_buffer",
-            "peer_uid",
-        ],
-    )?;
+    check_keys(table, "input")?;
     let mut cfg = InputConfig::default();
     if let Some(s) = get_str(table, "socket")? {
         cfg.socket = s.to_string();
@@ -430,16 +481,7 @@ fn parse_input(table: &toml_span::value::Table<'_>) -> Result<InputConfig, Confi
 fn parse_persistence(
     table: &toml_span::value::Table<'_>,
 ) -> Result<PersistenceConfig, ConfigError> {
-    check_keys(
-        table,
-        "persistence",
-        &[
-            "enabled",
-            "db",
-            "events_retention_hours",
-            "aggregates_retention_days",
-        ],
-    )?;
+    check_keys(table, "persistence")?;
     let mut cfg = PersistenceConfig::default();
     if let Some(enabled) = get_bool(table, "enabled")? {
         cfg.enabled = enabled;
@@ -457,7 +499,7 @@ fn parse_persistence(
 }
 
 fn parse_stats(table: &toml_span::value::Table<'_>) -> Result<StatsConfig, ConfigError> {
-    check_keys(table, "stats", &["window_secs", "max_window_events"])?;
+    check_keys(table, "stats")?;
     let mut cfg = StatsConfig::default();
     if let Some(n) = get_int_in_range(table, "window_secs", WINDOW_SECS_RANGE)? {
         cfg.window_secs = n;
@@ -470,17 +512,7 @@ fn parse_stats(table: &toml_span::value::Table<'_>) -> Result<StatsConfig, Confi
 
 #[cfg(feature = "tui")]
 fn parse_tui(table: &toml_span::value::Table<'_>) -> Result<TuiConfig, ConfigError> {
-    check_keys(
-        table,
-        "tui",
-        &[
-            "tick_ms",
-            "key_quit",
-            "key_pause",
-            "key_scroll_up",
-            "key_scroll_down",
-        ],
-    )?;
+    check_keys(table, "tui")?;
     let mut cfg = TuiConfig::default();
     if let Some(n) = get_int_in_range(table, "tick_ms", TICK_MS_RANGE)? {
         cfg.tick_ms = n;
@@ -501,11 +533,7 @@ fn parse_tui(table: &toml_span::value::Table<'_>) -> Result<TuiConfig, ConfigErr
 }
 
 fn parse_forwarding(table: &toml_span::value::Table<'_>) -> Result<ForwardingConfig, ConfigError> {
-    check_keys(
-        table,
-        "forwarding",
-        &["file", "template", "forward_url", "filter", "format"],
-    )?;
+    check_keys(table, "forwarding")?;
     let mut cfg = ForwardingConfig::default();
     if let Some(s) = get_str(table, "file")? {
         cfg.file = Some(s.to_string());
@@ -563,7 +591,7 @@ fn canonical_action(entry: &str) -> Option<String> {
 
 #[cfg(feature = "rest")]
 fn parse_server(table: &toml_span::value::Table<'_>) -> Result<ServerConfig, ConfigError> {
-    check_keys(table, "server", &["listen", "token"])?;
+    check_keys(table, "server")?;
     let mut cfg = ServerConfig::default();
     if let Some(s) = get_str(table, "listen")? {
         cfg.listen = s.to_string();
@@ -576,7 +604,7 @@ fn parse_server(table: &toml_span::value::Table<'_>) -> Result<ServerConfig, Con
 
 #[cfg(feature = "rest")]
 fn parse_api(table: &toml_span::value::Table<'_>) -> Result<ApiConfig, ConfigError> {
-    check_keys(table, "api", &["enabled", "port", "root_path"])?;
+    check_keys(table, "api")?;
     let mut cfg = ApiConfig::default();
     if let Some(b) = get_bool(table, "enabled")? {
         cfg.enabled = b;
@@ -592,7 +620,7 @@ fn parse_api(table: &toml_span::value::Table<'_>) -> Result<ApiConfig, ConfigErr
 
 #[cfg(feature = "rest")]
 fn parse_websocket(table: &toml_span::value::Table<'_>) -> Result<WebSocketConfig, ConfigError> {
-    check_keys(table, "websocket", &["enabled", "port", "root_path"])?;
+    check_keys(table, "websocket")?;
     let mut cfg = WebSocketConfig::default();
     if let Some(b) = get_bool(table, "enabled")? {
         cfg.enabled = b;
@@ -608,7 +636,7 @@ fn parse_websocket(table: &toml_span::value::Table<'_>) -> Result<WebSocketConfi
 
 #[cfg(feature = "rest")]
 fn parse_mcp(table: &toml_span::value::Table<'_>) -> Result<McpConfig, ConfigError> {
-    check_keys(table, "mcp", &["enabled", "port", "root_path"])?;
+    check_keys(table, "mcp")?;
     let mut cfg = McpConfig::default();
     if let Some(b) = get_bool(table, "enabled")? {
         cfg.enabled = b;
@@ -624,11 +652,7 @@ fn parse_mcp(table: &toml_span::value::Table<'_>) -> Result<McpConfig, ConfigErr
 
 #[cfg(feature = "nats")]
 fn parse_nats(table: &toml_span::value::Table<'_>) -> Result<NatsConfig, ConfigError> {
-    check_keys(
-        table,
-        "nats",
-        &["enabled", "url", "publish_subject", "subscribe_subject"],
-    )?;
+    check_keys(table, "nats")?;
     let mut cfg = NatsConfig::default();
     if let Some(b) = get_bool(table, "enabled")? {
         cfg.enabled = b;
@@ -654,17 +678,7 @@ fn parse_nats(table: &toml_span::value::Table<'_>) -> Result<NatsConfig, ConfigE
 
 #[cfg(feature = "rest")]
 fn parse_web(table: &toml_span::value::Table<'_>) -> Result<WebConfig, ConfigError> {
-    check_keys(
-        table,
-        "web",
-        &[
-            "enabled",
-            "port",
-            "history_size",
-            "beaconing_min_observations",
-            "beaconing_cov_threshold",
-        ],
-    )?;
+    check_keys(table, "web")?;
     let mut cfg = WebConfig::default();
     if let Some(b) = get_bool(table, "enabled")? {
         cfg.enabled = b;
@@ -1509,36 +1523,96 @@ subscribe_subject = "upstream.events"
 
     // --- Example file ---
 
-    /// Lock the shipped example TOML to the parser: any drift between
-    /// `dgaard-monitor.example.toml` and the section/field schema fails CI.
-    #[cfg(feature = "rest")]
+    const EXAMPLE: &str = include_str!("../dgaard-monitor.example.toml");
+
+    /// Lock the shipped example TOML to the parser: every section must hold
+    /// the built-in defaults, except the two values the example sets on
+    /// purpose. Only the REST sections used to be checked (review F11).
     #[test]
     fn example_file_parses_and_matches_defaults() {
-        let example = include_str!("../dgaard-monitor.example.toml");
-        let cfg = Config::parse(example).expect("example file must parse");
-        // Only a section for a feature this build lacks may warn.
-        assert!(
-            cfg.warnings
-                .iter()
-                .all(|w| w.contains("[nats]") && !cfg!(feature = "nats")),
-            "{:?}",
-            cfg.warnings
+        let cfg = Config::parse(EXAMPLE).expect("example file must parse");
+        // Only sections of features this build lacks may warn.
+        for warning in &cfg.warnings {
+            assert!(
+                FEATURE_SECTIONS
+                    .iter()
+                    .any(|(section, _, enabled)| !enabled
+                        && warning.contains(&format!("[{section}]"))),
+                "unexpected warning: {warning}"
+            );
+        }
+        let defaults = Config::default();
+
+        // Deliberate: the socket path of dgaard's own example config.
+        assert_eq!(
+            cfg.input,
+            InputConfig {
+                socket: "/var/run/dgaard/stats.sock".to_string(),
+                ..InputConfig::default()
+            }
         );
+        assert_eq!(cfg.persistence, defaults.persistence);
+        assert_eq!(cfg.stats, defaults.stats);
+        assert_eq!(cfg.tui, defaults.tui);
+        // Deliberate: forward only the actions worth an alert.
+        assert_eq!(
+            cfg.forwarding,
+            ForwardingConfig {
+                filter: vec![
+                    "Blocked".to_string(),
+                    "Suspicious".to_string(),
+                    "HighlySuspicious".to_string(),
+                ],
+                ..ForwardingConfig::default()
+            }
+        );
+        assert_eq!(cfg.server, defaults.server);
+        assert_eq!(cfg.api, defaults.api);
+        assert_eq!(cfg.websocket, defaults.websocket);
+        assert_eq!(cfg.mcp, defaults.mcp);
+        assert_eq!(cfg.web, defaults.web);
+        assert_eq!(cfg.nats, defaults.nats);
+    }
 
-        // Server defaults inherited by every REST module.
-        assert_eq!(cfg.server.listen, "127.0.0.1");
-        assert_eq!(cfg.server.token, "changeme");
+    /// `(section, key)` for every key the example sets or shows commented out
+    /// (`# key = value`).
+    fn example_keys() -> Vec<(String, String)> {
+        let mut section = String::new();
+        let mut keys = Vec::new();
+        for line in EXAMPLE.lines() {
+            if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                section = name.to_string();
+                continue;
+            }
+            let entry = line.strip_prefix("# ").unwrap_or(line);
+            if let Some((key, _)) = entry.split_once(" = ")
+                && !key.is_empty()
+                && key.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+            {
+                keys.push((section.clone(), key.to_string()));
+            }
+        }
+        keys
+    }
 
-        // Every module ships disabled and on its documented port.
-        assert!(!cfg.api.enabled);
-        assert_eq!(cfg.api.port, 8080);
-        assert_eq!(cfg.api.root_path, "/api/v1");
-        assert!(!cfg.websocket.enabled);
-        assert_eq!(cfg.websocket.port, 8081);
-        assert!(!cfg.mcp.enabled);
-        assert_eq!(cfg.mcp.port, 8082);
-        assert!(!cfg.web.enabled);
-        assert_eq!(cfg.web.port, 8083);
-        assert_eq!(cfg.web.history_size, 1000);
+    /// A key added to the parser must be documented in the example, set or
+    /// commented out; a key shown in the example must exist.
+    #[test]
+    fn example_file_documents_every_key() {
+        let documented = example_keys();
+        for (section, keys) in SECTION_KEYS {
+            for key in *keys {
+                assert!(
+                    documented.iter().any(|(s, k)| s == section && k == key),
+                    "[{section}] {key} is missing from dgaard-monitor.example.toml"
+                );
+            }
+        }
+        for (section, key) in &documented {
+            assert!(
+                section_keys(section).contains(&key.as_str()),
+                "the example shows [{section}] {key}, which the parser does not accept"
+            );
+        }
     }
 }
